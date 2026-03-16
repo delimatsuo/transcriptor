@@ -93,7 +93,8 @@ class SummaryUpdate(BaseModel):
 
 
 class Suggestion(BaseModel):
-    questions: list[str]
+    questions: list[str] = Field(default_factory=list)  # backward compat
+    markdown: str = ""  # full structured response (preferred)
     context: str = ""  # brief explanation of why these questions
 
 
@@ -115,6 +116,11 @@ class ErrorPayload(BaseModel):
     severity: ErrorSeverity
     message: str
     code: str = ""
+
+
+class SetContextRequest(BaseModel):
+    doc_type: str
+    text: str
 
 
 class WSMessage(BaseModel):

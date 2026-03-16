@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type {
   ConnectionHealth,
   Suggestion,
+  SuggestionEntry,
   TranscriptSegment,
   WSMessage,
 } from "@/types/ws";
@@ -19,6 +20,8 @@ interface UseWebSocketReturn {
   summary: string;
   isSummaryFinal: boolean;
   suggestions: string[];
+  suggestionHistory: SuggestionEntry[];
+  latestSuggestions: string[];
   connectionHealth: ConnectionHealth;
   lastError: string | null;
   connect: (sessionId: string) => void;
@@ -29,7 +32,9 @@ export function useWebSocket(): UseWebSocketReturn {
   const [transcript, setTranscript] = useState<TranscriptSegment[]>([]);
   const [summary, setSummary] = useState("");
   const [isSummaryFinal, setIsSummaryFinal] = useState(false);
-  const [suggestions, setSuggestions] = useState<string[]>([]);
+  const [suggestionHistory, setSuggestionHistory] = useState<SuggestionEntry[]>(
+    [],
+  );
   const [connectionHealth, setConnectionHealth] =
     useState<ConnectionHealth>("disconnected");
   const [lastError, setLastError] = useState<string | null>(null);
@@ -77,7 +82,12 @@ export function useWebSocket(): UseWebSocketReturn {
       }
       case "suggestion": {
         const payload = msg.payload as unknown as Suggestion;
-        setSuggestions(payload.questions);
+        const entry: SuggestionEntry = {
+          questions: payload.questions,
+          markdown: payload.markdown,
+          timestamp: Date.now(),
+        };
+        setSuggestionHistory((prev) => [...prev, entry]);
         break;
       }
       case "session_state": {
@@ -88,8 +98,15 @@ export function useWebSocket(): UseWebSocketReturn {
         };
         setTranscript(state.transcript);
         if (state.latest_summary) setSummary(state.latest_summary);
-        if (state.pending_suggestions)
-          setSuggestions(state.pending_suggestions);
+        if (state.pending_suggestions) {
+          setSuggestionHistory((prev) => [
+            ...prev,
+            {
+              questions: state.pending_suggestions,
+              timestamp: Date.now(),
+            },
+          ]);
+        }
         break;
       }
       case "connection_status": {
@@ -133,7 +150,7 @@ export function useWebSocket(): UseWebSocketReturn {
       setTranscript([]);
       setSummary("");
       setIsSummaryFinal(false);
-      setSuggestions([]);
+      setSuggestionHistory([]);
       setLastError(null);
       lastSeqRef.current = 0;
       retryDelayRef.current = INITIAL_RETRY_DELAY;
@@ -200,11 +217,19 @@ export function useWebSocket(): UseWebSocketReturn {
     };
   }, []);
 
+  // Derive backward-compatible values
+  const latestSuggestions =
+    suggestionHistory.length > 0
+      ? suggestionHistory[suggestionHistory.length - 1].questions
+      : [];
+
   return {
     transcript,
     summary,
     isSummaryFinal,
-    suggestions,
+    suggestions: latestSuggestions,
+    suggestionHistory,
+    latestSuggestions,
     connectionHealth,
     lastError,
     connect: connectWs,

@@ -1,56 +1,161 @@
 "use client";
 
+import ReactMarkdown from "react-markdown";
+import type { TranscriptSegment } from "@/types/ws";
+
+const SUMMARY_ALLOWED_ELEMENTS = [
+  "p", "strong", "em", "h2", "h3", "h4", "ul", "ol", "li", "code", "br", "hr",
+];
+
 interface Props {
   summary: string;
   isFinal: boolean;
+  transcript?: TranscriptSegment[];
+  isInterview?: boolean;
 }
 
-export default function SummaryPanel({ summary, isFinal }: Props) {
+function downloadText(content: string, filename: string) {
+  const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+export default function SummaryPanel({
+  summary,
+  isFinal,
+  transcript = [],
+  isInterview = false,
+}: Props) {
   if (!summary) return null;
+
+  const handleDownloadReport = () => {
+    downloadText(summary, "interview-assessment-report.txt");
+  };
+
+  const handleDownloadTranscript = () => {
+    const text = transcript
+      .filter((s) => s.is_final)
+      .map((s) => `[${s.speaker}] ${s.text}`)
+      .join("\n\n");
+    downloadText(text, "interview-transcript.txt");
+  };
 
   return (
     <div
       style={{
-        padding: 16,
-        borderTop: "1px solid #e5e7eb",
-        maxHeight: 300,
+        padding: "24px 28px",
+        borderTop: "1px solid #f5f5f7",
+        maxHeight: isFinal ? "none" : 300,
         overflowY: "auto",
       }}
     >
       <div
         style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 8,
-          marginBottom: 8,
+          backgroundColor: "#fafafa",
+          borderRadius: 12,
+          padding: "20px 24px",
+          border: "1px solid #f0f0f0",
+          boxShadow: "0 1px 4px rgba(0, 0, 0, 0.03)",
         }}
       >
-        <h2 style={{ fontSize: 18, fontWeight: 600 }}>
-          {isFinal ? "Final Summary" : "Rolling Summary"}
-        </h2>
-        {!isFinal && (
-          <span
-            style={{
-              fontSize: 11,
-              color: "#6b7280",
-              backgroundColor: "#f3f4f6",
-              padding: "2px 6px",
-              borderRadius: 4,
-            }}
-          >
-            live
-          </span>
-        )}
-      </div>
-      <div
-        style={{
-          fontSize: 14,
-          lineHeight: 1.6,
-          whiteSpace: "pre-wrap",
-          color: "#374151",
-        }}
-      >
-        {summary}
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            marginBottom: 16,
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <h2
+              style={{
+                fontSize: 13,
+                fontWeight: 600,
+                color: "#86868b",
+                textTransform: "uppercase",
+                letterSpacing: "0.5px",
+                margin: 0,
+              }}
+            >
+              {isFinal
+                ? isInterview
+                  ? "Interview Assessment"
+                  : "Session Summary"
+                : "Rolling Summary"}
+            </h2>
+            {!isFinal && (
+              <span
+                style={{
+                  fontSize: 11,
+                  color: "#86868b",
+                  backgroundColor: "#f5f5f7",
+                  padding: "2px 8px",
+                  borderRadius: 100,
+                  fontWeight: 500,
+                }}
+              >
+                updating
+              </span>
+            )}
+          </div>
+
+          {isFinal && (
+            <div style={{ display: "flex", gap: 8 }}>
+              <button
+                onClick={handleDownloadReport}
+                style={{
+                  padding: "6px 14px",
+                  backgroundColor: "white",
+                  color: "#007aff",
+                  border: "1px solid #d2d2d7",
+                  borderRadius: 100,
+                  fontWeight: 500,
+                  cursor: "pointer",
+                  fontSize: 12,
+                  transition: "all 0.2s ease",
+                }}
+              >
+                Download Report
+              </button>
+              {transcript.length > 0 && (
+                <button
+                  onClick={handleDownloadTranscript}
+                  style={{
+                    padding: "6px 14px",
+                    backgroundColor: "white",
+                    color: "#007aff",
+                    border: "1px solid #d2d2d7",
+                    borderRadius: 100,
+                    fontWeight: 500,
+                    cursor: "pointer",
+                    fontSize: 12,
+                    transition: "all 0.2s ease",
+                  }}
+                >
+                  Download Transcript
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+
+        <div
+          style={{
+            fontSize: 14,
+            lineHeight: 1.6,
+            color: "#424245",
+          }}
+        >
+          <ReactMarkdown allowedElements={SUMMARY_ALLOWED_ELEMENTS}>
+            {summary}
+          </ReactMarkdown>
+        </div>
       </div>
     </div>
   );

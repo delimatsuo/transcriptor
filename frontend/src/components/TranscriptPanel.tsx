@@ -6,69 +6,155 @@ import type { TranscriptSegment } from "@/types/ws";
 interface Props {
   segments: TranscriptSegment[];
   speakerMap?: Record<string, string>;
+  readOnly?: boolean;
 }
 
-export default function TranscriptPanel({ segments, speakerMap = {} }: Props) {
+const SPEAKER_STYLES: Record<string, { color: string; bg: string; label: string }> = {
+  Entrevistador: { color: "#007aff", bg: "rgba(0, 122, 255, 0.08)", label: "Entrevistador" },
+  Interviewer: { color: "#007aff", bg: "rgba(0, 122, 255, 0.08)", label: "Interviewer" },
+  Candidato: { color: "#34c759", bg: "rgba(52, 199, 89, 0.08)", label: "Candidato" },
+  Candidate: { color: "#34c759", bg: "rgba(52, 199, 89, 0.08)", label: "Candidate" },
+};
+
+function getSpeakerStyle(speaker: string) {
+  // Check for known speaker labels
+  for (const [key, style] of Object.entries(SPEAKER_STYLES)) {
+    if (speaker.toLowerCase().includes(key.toLowerCase())) {
+      return style;
+    }
+  }
+  // Fallback: alternate colors based on speaker ID
+  const fallbackColors = [
+    { color: "#007aff", bg: "rgba(0, 122, 255, 0.08)" },
+    { color: "#34c759", bg: "rgba(52, 199, 89, 0.08)" },
+    { color: "#af52de", bg: "rgba(175, 82, 222, 0.08)" },
+    { color: "#ff9500", bg: "rgba(255, 149, 0, 0.08)" },
+    { color: "#ff3b30", bg: "rgba(255, 59, 48, 0.08)" },
+  ];
+  const idx = parseInt(speaker.replace(/\D/g, "") || "0", 10) % fallbackColors.length;
+  return { ...fallbackColors[idx], label: speaker };
+}
+
+export default function TranscriptPanel({ segments, speakerMap = {}, readOnly = false }: Props) {
   const bottomRef = useRef<HTMLDivElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [segments.length]);
+    if (readOnly) return;
+    // Only auto-scroll if user is near the bottom
+    const container = containerRef.current;
+    if (container) {
+      const isNearBottom =
+        container.scrollHeight - container.scrollTop - container.clientHeight < 120;
+      if (isNearBottom) {
+        bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+      }
+    }
+  }, [segments.length, readOnly]);
 
   const getSpeakerLabel = (speaker: string) => speakerMap[speaker] || speaker;
 
-  const getSpeakerColor = (speaker: string) => {
-    const colors = ["#3b82f6", "#8b5cf6", "#ec4899", "#f97316", "#14b8a6"];
-    const idx =
-      parseInt(speaker.replace(/\D/g, "") || "0", 10) % colors.length;
-    return colors[idx];
-  };
-
   return (
     <div
+      ref={containerRef}
       style={{
         flex: 1,
         overflowY: "auto",
-        padding: 16,
+        padding: "24px 28px",
         display: "flex",
         flexDirection: "column",
-        gap: 8,
+        gap: 4,
       }}
     >
-      <h2 style={{ fontSize: 18, fontWeight: 600, marginBottom: 8 }}>
-        Transcript
-      </h2>
-
-      {segments.length === 0 && (
-        <p style={{ color: "#9ca3af", fontStyle: "italic" }}>
-          Waiting for speech...
-        </p>
-      )}
-
-      {segments.map((seg) => (
-        <div
-          key={seg.id}
+      {!readOnly && (
+        <h2
           style={{
-            padding: "8px 12px",
-            borderRadius: 8,
-            backgroundColor: seg.is_final ? "#f9fafb" : "#fffbeb",
-            borderLeft: `3px solid ${getSpeakerColor(seg.speaker)}`,
-            opacity: seg.is_final ? 1 : 0.7,
+            fontSize: 13,
+            fontWeight: 600,
+            color: "#86868b",
+            textTransform: "uppercase",
+            letterSpacing: "0.5px",
+            marginBottom: 16,
           }}
         >
+          Transcript
+        </h2>
+      )}
+
+      {segments.length === 0 && (
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            height: 120,
+          }}
+        >
+          <p style={{ color: "#86868b", fontSize: 15 }}>
+            Waiting for speech...
+          </p>
+        </div>
+      )}
+
+      {segments.map((seg) => {
+        const style = getSpeakerStyle(getSpeakerLabel(seg.speaker));
+        return (
           <div
+            key={seg.id}
             style={{
-              fontSize: 11,
-              fontWeight: 600,
-              color: getSpeakerColor(seg.speaker),
-              marginBottom: 2,
+              padding: "10px 16px",
+              borderRadius: 12,
+              backgroundColor: seg.is_final ? "transparent" : "#fafafa",
+              opacity: seg.is_final ? 1 : 0.6,
+              transition: "opacity 0.3s ease",
             }}
           >
-            {getSpeakerLabel(seg.speaker)}
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                marginBottom: 4,
+              }}
+            >
+              <span
+                style={{
+                  fontSize: 11,
+                  fontWeight: 600,
+                  color: style.color,
+                  backgroundColor: style.bg,
+                  padding: "2px 10px",
+                  borderRadius: 100,
+                  letterSpacing: "0.2px",
+                }}
+              >
+                {getSpeakerLabel(seg.speaker)}
+              </span>
+              {!seg.is_final && (
+                <span
+                  style={{
+                    fontSize: 10,
+                    color: "#aeaeb2",
+                    fontStyle: "italic",
+                  }}
+                >
+                  transcribing...
+                </span>
+              )}
+            </div>
+            <div
+              style={{
+                fontSize: 15,
+                lineHeight: 1.6,
+                color: seg.is_final ? "#1d1d1f" : "#aeaeb2",
+                paddingLeft: 2,
+              }}
+            >
+              {seg.text}
+            </div>
           </div>
-          <div style={{ fontSize: 14, lineHeight: 1.5 }}>{seg.text}</div>
-        </div>
-      ))}
+        );
+      })}
 
       <div ref={bottomRef} />
     </div>

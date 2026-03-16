@@ -32,6 +32,12 @@ export interface ActionItem {
   completed: boolean;
 }
 
+export interface SuggestionEntry {
+  questions: string[];
+  markdown?: string;
+  timestamp: number;
+}
+
 export interface Session {
   id: string;
   mode: SessionMode;
@@ -58,6 +64,7 @@ export interface SummaryUpdate {
 
 export interface Suggestion {
   questions: string[];
+  markdown?: string;
   context: string;
 }
 
