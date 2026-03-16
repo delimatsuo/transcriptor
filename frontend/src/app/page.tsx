@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { useWebSocket } from "@/hooks/useWebSocket";
 import ConnectionStatus from "@/components/ConnectionStatus";
 import TranscriptPanel from "@/components/TranscriptPanel";
@@ -17,6 +17,7 @@ export default function Home() {
   const [sessionMode, setSessionMode] = useState<SessionMode>("meeting");
   const [isActive, setIsActive] = useState(false);
   const [preInterviewBriefing, setPreInterviewBriefing] = useState("");
+  const disconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const {
     transcript,
@@ -31,12 +32,18 @@ export default function Home() {
 
   const handleSessionStart = useCallback(
     (id: string, mode: SessionMode) => {
+      // Cancel any pending disconnect from a previous session
+      if (disconnectTimerRef.current) {
+        clearTimeout(disconnectTimerRef.current);
+        disconnectTimerRef.current = null;
+        disconnect();
+      }
       setSessionId(id);
       setSessionMode(mode);
       setIsActive(true);
       connect(id);
     },
-    [connect],
+    [connect, disconnect],
   );
 
   const handleSessionStop = useCallback(async () => {
@@ -50,7 +57,10 @@ export default function Home() {
       }
     }
     setIsActive(false);
-    setTimeout(() => disconnect(), 10000);
+    disconnectTimerRef.current = setTimeout(() => {
+      disconnect();
+      disconnectTimerRef.current = null;
+    }, 10000);
   }, [sessionId, disconnect]);
 
   const isInterview = sessionMode === "interview";

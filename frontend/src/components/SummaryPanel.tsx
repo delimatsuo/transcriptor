@@ -1,112 +1,17 @@
 "use client";
 
+import ReactMarkdown from "react-markdown";
 import type { TranscriptSegment } from "@/types/ws";
+
+const SUMMARY_ALLOWED_ELEMENTS = [
+  "p", "strong", "em", "h2", "h3", "h4", "ul", "ol", "li", "code", "br", "hr",
+];
 
 interface Props {
   summary: string;
   isFinal: boolean;
   transcript?: TranscriptSegment[];
   isInterview?: boolean;
-}
-
-function renderFormattedText(text: string) {
-  // Simple markdown-like rendering for headers, bullets, and bold
-  const lines = text.split("\n");
-  return lines.map((line, i) => {
-    const trimmed = line.trim();
-
-    // Headers (## or ###)
-    if (trimmed.startsWith("### ")) {
-      return (
-        <h4
-          key={i}
-          style={{
-            fontSize: 14,
-            fontWeight: 600,
-            color: "#1d1d1f",
-            margin: "16px 0 6px 0",
-          }}
-        >
-          {trimmed.slice(4)}
-        </h4>
-      );
-    }
-    if (trimmed.startsWith("## ")) {
-      return (
-        <h3
-          key={i}
-          style={{
-            fontSize: 16,
-            fontWeight: 600,
-            color: "#1d1d1f",
-            margin: "20px 0 8px 0",
-          }}
-        >
-          {trimmed.slice(3)}
-        </h3>
-      );
-    }
-    if (trimmed.startsWith("# ")) {
-      return (
-        <h2
-          key={i}
-          style={{
-            fontSize: 18,
-            fontWeight: 600,
-            color: "#1d1d1f",
-            margin: "20px 0 8px 0",
-          }}
-        >
-          {trimmed.slice(2)}
-        </h2>
-      );
-    }
-
-    // Bullet points
-    if (trimmed.startsWith("- ") || trimmed.startsWith("* ")) {
-      const content = trimmed.slice(2);
-      return (
-        <div
-          key={i}
-          style={{
-            display: "flex",
-            gap: 8,
-            padding: "2px 0",
-            fontSize: 14,
-            lineHeight: 1.6,
-            color: "#424245",
-          }}
-        >
-          <span style={{ color: "#86868b", flexShrink: 0 }}>&#8226;</span>
-          <span dangerouslySetInnerHTML={{ __html: applyInlineFormatting(content) }} />
-        </div>
-      );
-    }
-
-    // Empty lines
-    if (trimmed === "") {
-      return <div key={i} style={{ height: 8 }} />;
-    }
-
-    // Regular text
-    return (
-      <p
-        key={i}
-        style={{
-          fontSize: 14,
-          lineHeight: 1.6,
-          color: "#424245",
-          margin: "4px 0",
-        }}
-        dangerouslySetInnerHTML={{ __html: applyInlineFormatting(trimmed) }}
-      />
-    );
-  });
-}
-
-function applyInlineFormatting(text: string): string {
-  // Bold: **text**
-  return text.replace(/\*\*(.*?)\*\*/g, '<strong style="color:#1d1d1f;font-weight:600">$1</strong>');
 }
 
 function downloadText(content: string, filename: string) {
@@ -240,7 +145,17 @@ export default function SummaryPanel({
           )}
         </div>
 
-        <div>{renderFormattedText(summary)}</div>
+        <div
+          style={{
+            fontSize: 14,
+            lineHeight: 1.6,
+            color: "#424245",
+          }}
+        >
+          <ReactMarkdown allowedElements={SUMMARY_ALLOWED_ELEMENTS}>
+            {summary}
+          </ReactMarkdown>
+        </div>
       </div>
     </div>
   );

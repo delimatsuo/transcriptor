@@ -421,6 +421,8 @@ async def _generate_final_summary(session_id: str) -> None:
 
     except Exception:
         logger.exception("final_summary_error", session_id=session_id)
+    finally:
+        interview_documents.pop(session_id, None)
 
 
 async def _stop_pipeline(session_id: str) -> None:
@@ -434,6 +436,10 @@ async def _stop_pipeline(session_id: str) -> None:
                 await task
             except asyncio.CancelledError:
                 pass
+
+    # Clean up interview runtime state (documents cleaned after final summary)
+    interview_suggestion_counters.pop(session_id, None)
+    single_source_warned.discard(session_id)
 
 
 # --- REST Endpoints ---
@@ -471,7 +477,7 @@ async def stop_session(session_id: str):
     session = await session_mgr.stop_session(session_id)
 
     if session is None:
-        return {"error": "Session not found"}, 404
+        raise HTTPException(status_code=404, detail="Session not found")
 
     # Generate final summary async
     asyncio.create_task(_generate_final_summary(session_id))
@@ -502,7 +508,7 @@ async def upload_document(
     try:
         text = parse_document(data, filename)
     except DocumentParseError as e:
-        return {"error": str(e)}, 400
+        raise HTTPException(status_code=400, detail=str(e))
 
     # Store extracted text for interview context
     if session_id not in interview_documents:
@@ -631,7 +637,7 @@ async def get_session(session_id: str):
     assert session_mgr
     session = session_mgr.get_session(session_id)
     if session is None:
-        return {"error": "Session not found"}, 404
+        raise HTTPException(status_code=404, detail="Session not found")
     return session.model_dump()
 
 
