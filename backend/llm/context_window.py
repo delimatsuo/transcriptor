@@ -1,0 +1,91 @@
+"""Sliding window summary manager for long-running sessions."""
+
+from __future__ import annotations
+
+import asyncio
+import time
+
+import structlog
+
+from backend.config import Settings
+from backend.llm.gemini import GeminiClient
+from backend.llm.meeting_prompts import ROLLING_SUMMARY_PROMPT
+
+logger = structlog.get_logger()
+
+# Trigger rolling summary every ~300 new words
+WORD_THRESHOLD = 300
+# Max time between summaries (fallback)
+MAX_TIME_BETWEEN_SUMMARIES_SECONDS = 180  # 3 minutes
+
+
+class ContextWindowManager:
+    """Manages rolling summaries to keep LLM context bounded.
+
+    Input: compressed prior summary (~500 tokens) + new transcript chunk
+    Output: updated rolling summary
+    """
+
+    def __init__(self, settings: Settings, gemini: GeminiClient) -> None:
+        self.settings = settings
+        self.gemini = gemini
+        self._current_summary: str = ""
+        self._last_summary_seq: int = 0
+        self._last_summary_time: float = 0.0
+        self._lock = asyncio.Lock()
+
+    @property
+    def current_summary(self) -> str:
+        return self._current_summary
+
+    @property
+    def last_summary_seq(self) -> int:
+        return self._last_summary_seq
+
+    def should_summarize(self, word_count_since_last: int) -> bool:
+        """Check if it's time to generate a new rolling summary."""
+        if word_count_since_last >= WORD_THRESHOLD:
+            return True
+
+        if self._last_summary_time > 0:
+            elapsed = time.monotonic() - self._last_summary_time
+            if elapsed >= MAX_TIME_BETWEEN_SUMMARIES_SECONDS and word_count_since_last > 50:
+                return True
+
+        return False
+
+    async def update_summary(
+        self,
+        new_transcript_chunk: str,
+        current_seq: int,
+    ) -> str:
+        """Generate an updated rolling summary incorporating new transcript content."""
+        async with self._lock:
+            user_message = (
+                f"## Previous Summary\n{self._current_summary or '(start of session)'}\n\n"
+                f"## New Transcript Content\n{new_transcript_chunk}"
+            )
+
+            try:
+                updated = await self.gemini.generate(
+                    system_instruction=ROLLING_SUMMARY_PROMPT,
+                    user_message=user_message,
+                    temperature=0.2,
+                    max_output_tokens=1024,
+                )
+
+                self._current_summary = updated.strip()
+                self._last_summary_seq = current_seq
+                self._last_summary_time = time.monotonic()
+
+                logger.info(
+                    "rolling_summary_updated",
+                    seq=current_seq,
+                    summary_length=len(self._current_summary),
+                )
+
+                return self._current_summary
+
+            except Exception:
+                logger.exception("rolling_summary_error")
+                return self._current_summary

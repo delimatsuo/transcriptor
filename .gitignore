@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+dist/
+build/
+
+# Node
+node_modules/
+.next/
+out/
+
+# Environment
+.env
+.env.local
+
+# Audio backups
+*.flac
+*.wav
+recordings/
+
+# GCP keys (should use ADC instead)
+*.json
+!package.json
+!package-lock.json
+!tsconfig.json
+!firestore.rules
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
