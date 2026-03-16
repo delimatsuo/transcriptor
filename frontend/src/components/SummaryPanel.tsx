@@ -1,56 +1,246 @@
 "use client";
 
+import type { TranscriptSegment } from "@/types/ws";
+
 interface Props {
   summary: string;
   isFinal: boolean;
+  transcript?: TranscriptSegment[];
+  isInterview?: boolean;
 }
 
-export default function SummaryPanel({ summary, isFinal }: Props) {
+function renderFormattedText(text: string) {
+  // Simple markdown-like rendering for headers, bullets, and bold
+  const lines = text.split("\n");
+  return lines.map((line, i) => {
+    const trimmed = line.trim();
+
+    // Headers (## or ###)
+    if (trimmed.startsWith("### ")) {
+      return (
+        <h4
+          key={i}
+          style={{
+            fontSize: 14,
+            fontWeight: 600,
+            color: "#1d1d1f",
+            margin: "16px 0 6px 0",
+          }}
+        >
+          {trimmed.slice(4)}
+        </h4>
+      );
+    }
+    if (trimmed.startsWith("## ")) {
+      return (
+        <h3
+          key={i}
+          style={{
+            fontSize: 16,
+            fontWeight: 600,
+            color: "#1d1d1f",
+            margin: "20px 0 8px 0",
+          }}
+        >
+          {trimmed.slice(3)}
+        </h3>
+      );
+    }
+    if (trimmed.startsWith("# ")) {
+      return (
+        <h2
+          key={i}
+          style={{
+            fontSize: 18,
+            fontWeight: 600,
+            color: "#1d1d1f",
+            margin: "20px 0 8px 0",
+          }}
+        >
+          {trimmed.slice(2)}
+        </h2>
+      );
+    }
+
+    // Bullet points
+    if (trimmed.startsWith("- ") || trimmed.startsWith("* ")) {
+      const content = trimmed.slice(2);
+      return (
+        <div
+          key={i}
+          style={{
+            display: "flex",
+            gap: 8,
+            padding: "2px 0",
+            fontSize: 14,
+            lineHeight: 1.6,
+            color: "#424245",
+          }}
+        >
+          <span style={{ color: "#86868b", flexShrink: 0 }}>&#8226;</span>
+          <span dangerouslySetInnerHTML={{ __html: applyInlineFormatting(content) }} />
+        </div>
+      );
+    }
+
+    // Empty lines
+    if (trimmed === "") {
+      return <div key={i} style={{ height: 8 }} />;
+    }
+
+    // Regular text
+    return (
+      <p
+        key={i}
+        style={{
+          fontSize: 14,
+          lineHeight: 1.6,
+          color: "#424245",
+          margin: "4px 0",
+        }}
+        dangerouslySetInnerHTML={{ __html: applyInlineFormatting(trimmed) }}
+      />
+    );
+  });
+}
+
+function applyInlineFormatting(text: string): string {
+  // Bold: **text**
+  return text.replace(/\*\*(.*?)\*\*/g, '<strong style="color:#1d1d1f;font-weight:600">$1</strong>');
+}
+
+function downloadText(content: string, filename: string) {
+  const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+export default function SummaryPanel({
+  summary,
+  isFinal,
+  transcript = [],
+  isInterview = false,
+}: Props) {
   if (!summary) return null;
+
+  const handleDownloadReport = () => {
+    downloadText(summary, "interview-assessment-report.txt");
+  };
+
+  const handleDownloadTranscript = () => {
+    const text = transcript
+      .filter((s) => s.is_final)
+      .map((s) => `[${s.speaker}] ${s.text}`)
+      .join("\n\n");
+    downloadText(text, "interview-transcript.txt");
+  };
 
   return (
     <div
       style={{
-        padding: 16,
-        borderTop: "1px solid #e5e7eb",
-        maxHeight: 300,
+        padding: "24px 28px",
+        borderTop: "1px solid #f5f5f7",
+        maxHeight: isFinal ? "none" : 300,
         overflowY: "auto",
       }}
     >
       <div
         style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 8,
-          marginBottom: 8,
+          backgroundColor: "#fafafa",
+          borderRadius: 12,
+          padding: "20px 24px",
+          border: "1px solid #f0f0f0",
+          boxShadow: "0 1px 4px rgba(0, 0, 0, 0.03)",
         }}
       >
-        <h2 style={{ fontSize: 18, fontWeight: 600 }}>
-          {isFinal ? "Final Summary" : "Rolling Summary"}
-        </h2>
-        {!isFinal && (
-          <span
-            style={{
-              fontSize: 11,
-              color: "#6b7280",
-              backgroundColor: "#f3f4f6",
-              padding: "2px 6px",
-              borderRadius: 4,
-            }}
-          >
-            live
-          </span>
-        )}
-      </div>
-      <div
-        style={{
-          fontSize: 14,
-          lineHeight: 1.6,
-          whiteSpace: "pre-wrap",
-          color: "#374151",
-        }}
-      >
-        {summary}
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            marginBottom: 16,
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <h2
+              style={{
+                fontSize: 13,
+                fontWeight: 600,
+                color: "#86868b",
+                textTransform: "uppercase",
+                letterSpacing: "0.5px",
+                margin: 0,
+              }}
+            >
+              {isFinal
+                ? isInterview
+                  ? "Interview Assessment"
+                  : "Session Summary"
+                : "Rolling Summary"}
+            </h2>
+            {!isFinal && (
+              <span
+                style={{
+                  fontSize: 11,
+                  color: "#86868b",
+                  backgroundColor: "#f5f5f7",
+                  padding: "2px 8px",
+                  borderRadius: 100,
+                  fontWeight: 500,
+                }}
+              >
+                updating
+              </span>
+            )}
+          </div>
+
+          {isFinal && (
+            <div style={{ display: "flex", gap: 8 }}>
+              <button
+                onClick={handleDownloadReport}
+                style={{
+                  padding: "6px 14px",
+                  backgroundColor: "white",
+                  color: "#007aff",
+                  border: "1px solid #d2d2d7",
+                  borderRadius: 100,
+                  fontWeight: 500,
+                  cursor: "pointer",
+                  fontSize: 12,
+                  transition: "all 0.2s ease",
+                }}
+              >
+                Download Report
+              </button>
+              {transcript.length > 0 && (
+                <button
+                  onClick={handleDownloadTranscript}
+                  style={{
+                    padding: "6px 14px",
+                    backgroundColor: "white",
+                    color: "#007aff",
+                    border: "1px solid #d2d2d7",
+                    borderRadius: 100,
+                    fontWeight: 500,
+                    cursor: "pointer",
+                    fontSize: 12,
+                    transition: "all 0.2s ease",
+                  }}
+                >
+                  Download Transcript
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+
+        <div>{renderFormattedText(summary)}</div>
       </div>
     </div>
   );

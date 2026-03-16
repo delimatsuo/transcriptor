@@ -54,10 +54,10 @@ class Settings(BaseSettings):
         default="us", description="Google STT v2 region (chirp_3 requires 'us' or 'eu', chirp_2 uses 'global')"
     )
     stt_speaker_label_self: str = Field(
-        default="Você", description="Label for the user's own voice"
+        default="Entrevistador", description="Label for the user's own voice"
     )
     stt_speaker_label_other: str = Field(
-        default="Outro", description="Label for the other participant's voice"
+        default="Candidato", description="Label for the other participant's voice"
     )
     stt_stream_max_duration_seconds: int = Field(
         default=270,  # 4:30

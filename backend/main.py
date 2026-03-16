@@ -7,8 +7,9 @@ from contextlib import asynccontextmanager
 
 import structlog
 import uvicorn
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, Form
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import PlainTextResponse
 
 from backend.audio.buffer import AudioBuffer
 from backend.audio.capture import AudioCapture
@@ -16,7 +17,12 @@ from backend.config import Settings, get_settings
 from backend.documents.parser import parse_document, DocumentParseError
 from backend.llm.context_window import ContextWindowManager
 from backend.llm.gemini import GeminiClient
-from backend.llm.interview_prompts import INTERVIEW_SYSTEM_PROMPT, build_interview_user_message
+from backend.llm.interview_prompts import (
+    INTERVIEW_SYSTEM_PROMPT,
+    INTERVIEW_REPORT_PROMPT,
+    PRE_INTERVIEW_ANALYSIS_PROMPT,
+    build_interview_user_message,
+)
 from backend.llm.meeting_prompts import FINAL_SUMMARY_PROMPT
 from backend.schemas.models import (
     ActionItem,
@@ -26,6 +32,7 @@ from backend.schemas.models import (
     ErrorSeverity,
     SessionMode,
     SessionStatus,
+    SetContextRequest,
     Suggestion,
     SummaryUpdate,
     TranscriptDelta,
@@ -57,6 +64,11 @@ pipeline_tasks: dict[str, list[asyncio.Task]] = {}
 
 # Interview context
 interview_documents: dict[str, dict[str, str]] = {}  # session_id -> {resume, jd}
+interview_suggestion_counters: dict[str, int] = {}  # session_id -> final segment count
+single_source_warned: set[str] = set()  # sessions already warned about single audio source
+
+# Concurrency guard for pre-interview analysis
+_analyze_semaphore = asyncio.Semaphore(2)
 
 
 @asynccontextmanager
@@ -227,15 +239,25 @@ async def _on_transcript(session_id: str, segment: TranscriptSegment) -> None:
         if context_window.should_summarize(word_count):
             asyncio.create_task(_generate_rolling_summary(session_id))
 
-    # Interview mode: generate suggestions on speaker turn
+    # Interview mode: generate suggestions every 5th final segment
     session = session_mgr.get_session(session_id)
     if (
         session
         and session.mode == SessionMode.INTERVIEW
         and segment.is_final
-        and session_id in interview_documents
     ):
-        asyncio.create_task(_generate_interview_suggestions(session_id))
+        interview_suggestion_counters.setdefault(session_id, 0)
+        interview_suggestion_counters[session_id] += 1
+
+        # Detect single audio source after 3 final segments
+        if (
+            interview_suggestion_counters[session_id] == 3
+            and session_id not in single_source_warned
+        ):
+            asyncio.create_task(_check_single_audio_source(session_id))
+
+        if interview_suggestion_counters[session_id] % 5 == 0:
+            asyncio.create_task(_generate_interview_suggestions(session_id))
 
 
 async def _generate_rolling_summary(session_id: str) -> None:
@@ -269,40 +291,67 @@ async def _generate_rolling_summary(session_id: str) -> None:
         logger.exception("rolling_summary_error", session_id=session_id)
 
 
+async def _check_single_audio_source(session_id: str) -> None:
+    """Check if all final segments have the same speaker — warn about single audio source."""
+    assert session_mgr
+
+    segments = session_mgr.get_transcript(session_id)
+    final_segments = [s for s in segments if s.is_final]
+    if len(final_segments) < 3:
+        return
+
+    speakers = {s.speaker for s in final_segments}
+    if len(speakers) <= 1:
+        single_source_warned.add(session_id)
+        logger.warning("single_audio_source_detected", session_id=session_id, speaker=speakers)
+        seq = ws_manager.next_sequence(session_id)
+        error = ErrorPayload(
+            severity=ErrorSeverity.WARNING,
+            message="Audio de apenas uma fonte detectado. Verifique a configuração do BlackHole para capturar o áudio remoto.",
+            code="single_audio_source",
+        )
+        msg = WSMessage.error_msg(session_id, seq, error)
+        await ws_manager.broadcast(session_id, msg)
+
+
 async def _generate_interview_suggestions(session_id: str) -> None:
     """Generate interview follow-up question suggestions."""
     assert session_mgr and gemini_client
 
     docs = interview_documents.get(session_id, {})
-    if not docs:
-        return
 
     try:
         recent = session_mgr.get_recent_transcript_text(session_id, max_segments=10)
 
         user_msg = build_interview_user_message(
-            resume_text=docs.get("resume", ""),
-            jd_text=docs.get("jd", ""),
+            resume_text=docs.get("resume", "") if docs else "",
+            jd_text=docs.get("jd", "") if docs else "",
             recent_transcript=recent,
+            briefing_text=docs.get("briefing", "") if docs else "",
+            candidate_name=docs.get("candidate_name", "") if docs else "",
         )
 
         response = await gemini_client.generate(
             system_instruction=INTERVIEW_SYSTEM_PROMPT,
             user_message=user_msg,
             temperature=0.4,
-            max_output_tokens=512,
+            max_output_tokens=2048,
         )
 
-        # Parse questions from response
-        questions = []
-        for line in response.split("\n"):
-            line = line.strip()
-            if line and (line[0].isdigit() and "." in line[:3]):
-                questions.append(line.split(".", 1)[-1].strip())
+        if response.strip():
+            # Extract numbered questions for backward compat
+            questions = []
+            for line in response.split("\n"):
+                line = line.strip()
+                if line and len(line) > 2 and line[0].isdigit() and "." in line[:4]:
+                    questions.append(line.split(".", 1)[-1].strip())
 
-        if questions:
             seq = ws_manager.next_sequence(session_id)
-            suggestion = Suggestion(questions=questions, context="Based on candidate's latest response")
+            suggestion = Suggestion(
+                questions=questions,
+                markdown=response.strip(),
+                context="Based on candidate's latest response",
+            )
             msg = WSMessage.suggestion_msg(session_id, seq, suggestion)
             await ws_manager.broadcast(session_id, msg)
 
@@ -318,10 +367,30 @@ async def _generate_final_summary(session_id: str) -> None:
     if not transcript_text:
         return
 
+    session = session_mgr.get_session(session_id)
+    is_interview = session and session.mode == SessionMode.INTERVIEW
+
     try:
+        if is_interview:
+            from datetime import date
+            prompt = INTERVIEW_REPORT_PROMPT.replace("{interview_date}", date.today().strftime("%d/%m/%Y"))
+            docs = interview_documents.get(session_id, {})
+            user_parts = []
+            if docs.get("resume"):
+                user_parts.append(f"## Currículo / CV do Candidato\n{docs['resume']}")
+            if docs.get("jd"):
+                user_parts.append(f"## Descrição da Vaga / Job Description\n{docs['jd']}")
+            if docs.get("briefing"):
+                user_parts.append(f"## Briefing Pré-Entrevista\n{docs['briefing']}")
+            user_parts.append(f"## Transcrição Completa da Entrevista\n{transcript_text}")
+            user_message = "\n\n".join(user_parts)
+        else:
+            prompt = FINAL_SUMMARY_PROMPT
+            user_message = f"## Transcript\n{transcript_text}"
+
         summary = await gemini_client.generate(
-            system_instruction=FINAL_SUMMARY_PROMPT,
-            user_message=f"## Transcript\n{transcript_text}",
+            system_instruction=prompt,
+            user_message=user_message,
             temperature=0.2,
             max_output_tokens=4096,
         )
@@ -455,6 +524,99 @@ async def upload_document(
     return {"ok": True, "extracted_chars": len(text)}
 
 
+@app.post("/api/sessions/{session_id}/context")
+async def set_interview_context(session_id: str, body: SetContextRequest):
+    """Set interview context text directly (e.g., pasted job description or briefing)."""
+    allowed_types = {"resume", "jd", "briefing", "candidate_name"}
+    if body.doc_type not in allowed_types:
+        raise HTTPException(status_code=400, detail=f"doc_type must be one of {allowed_types}")
+    if len(body.text) > 100_000:
+        raise HTTPException(status_code=400, detail="text exceeds 100,000 character limit")
+    if session_id not in interview_documents:
+        interview_documents[session_id] = {}
+    interview_documents[session_id][body.doc_type] = body.text
+    return {"ok": True, "chars": len(body.text)}
+
+
+@app.post("/api/analyze")
+async def analyze_candidate(
+    jd_text: str = Form(...),
+    file: UploadFile | None = File(None),
+):
+    """Pre-interview analysis: compare CV against JD and return a briefing."""
+    assert gemini_client
+
+    # Validate JD length
+    if len(jd_text) > 50_000:
+        raise HTTPException(status_code=400, detail="jd_text exceeds 50,000 character limit")
+
+    # Parse CV if provided
+    cv_text = ""
+    if file is not None:
+        # Validate content type
+        allowed_types = {
+            "application/pdf",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "text/plain",
+        }
+        content_type = file.content_type or ""
+        if content_type not in allowed_types:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported file type: {content_type}. Use PDF, DOCX, or TXT.",
+            )
+        data = await file.read()
+        filename = file.filename or "document"
+        try:
+            cv_text = parse_document(data, filename)
+        except DocumentParseError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+    # Cap combined input
+    combined = cv_text + jd_text
+    if len(combined) > 30_000:
+        logger.warning("analyze_input_truncated", original_len=len(combined))
+        # Truncate CV first (JD is required, CV is supplementary)
+        max_cv = 30_000 - len(jd_text)
+        if max_cv > 0:
+            cv_text = cv_text[:max_cv]
+        else:
+            cv_text = ""
+
+    # Build user message
+    parts = []
+    if cv_text:
+        parts.append(f"## Currículo / CV do Candidato\n{cv_text}")
+    else:
+        parts.append("## Currículo / CV do Candidato\n(Não fornecido)")
+    parts.append(f"## Descrição da Vaga / Job Description\n{jd_text}")
+    user_message = "\n\n".join(parts)
+
+    # Call Gemini with timeout and semaphore
+    async with _analyze_semaphore:
+        try:
+            briefing = await asyncio.wait_for(
+                gemini_client.generate(
+                    system_instruction=PRE_INTERVIEW_ANALYSIS_PROMPT,
+                    user_message=user_message,
+                    temperature=0.3,
+                    max_output_tokens=2048,
+                ),
+                timeout=30,
+            )
+        except asyncio.TimeoutError:
+            raise HTTPException(status_code=504, detail="Analysis timed out")
+        except Exception:
+            logger.exception("analyze_candidate_error")
+            raise HTTPException(status_code=500, detail="Analysis failed")
+
+    return {
+        "briefing_markdown": briefing,
+        "cv_text": cv_text,
+        "jd_text": jd_text,
+    }
+
+
 @app.get("/api/sessions")
 async def list_sessions():
     """List recent sessions."""
@@ -479,6 +641,30 @@ async def get_transcript(session_id: str):
     assert session_mgr
     segments = session_mgr.get_transcript(session_id)
     return {"segments": [s.model_dump() for s in segments]}
+
+
+@app.get("/api/sessions/{session_id}/transcript/download")
+async def download_transcript(session_id: str):
+    """Download the full transcript as a plain text file."""
+    assert session_mgr
+    segments = session_mgr.get_transcript(session_id)
+    if not segments:
+        return PlainTextResponse("No transcript available.", status_code=404)
+
+    lines = []
+    for seg in segments:
+        if not seg.is_final:
+            continue
+        ts = f"[{seg.start_time:.1f}s]" if seg.start_time is not None else ""
+        speaker = seg.speaker or "?"
+        lines.append(f"{ts} {speaker}: {seg.text}")
+
+    content = "\n".join(lines)
+    return PlainTextResponse(
+        content,
+        media_type="text/plain; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="transcript-{session_id}.txt"'},
+    )
 
 
 # --- WebSocket ---
