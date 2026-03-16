@@ -1,0 +1,70 @@
+name: Rollback
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to rollback'
+        required: true
+        type: choice
+        options: [staging, production]
+      method:
+        description: 'Rollback method'
+        required: true
+        type: choice
+        options: [traffic-split, git-revert, redeploy-tag]
+      revision_or_tag:
+        description: 'Cloud Run revision or git tag'
+        required: true
+        type: string
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  GCP_PROJECT_ID: transcriptor-490222
+  GCP_REGION: us-central1
+
+jobs:
+  rollback:
+    runs-on: ubuntu-latest
+    env:
+      BACKEND_SERVICE: ${{ inputs.environment == 'production' && 'tars-backend' || 'tars-backend-staging' }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+
+      - name: Validate revision input
+        env:
+          REVISION: ${{ inputs.revision_or_tag }}
+        run: |
+          if ! echo "$REVISION" | grep -qE '^[a-zA-Z0-9._-]+$'; then
+            echo "ERROR: Invalid revision format. Only alphanumeric, dots, hyphens, and underscores allowed."
+            exit 1
+          fi
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@ba79af03959ebeac9769e648f473a284504d9193 # v2
+        with:
+          workload_identity_provider: 'projects/33726443105/locations/global/workloadIdentityPools/github-pool/providers/github-provider'
+          service_account: 'github-deploy@${{ env.GCP_PROJECT_ID }}.iam.gserviceaccount.com'
+
+      - name: Setup Cloud SDK
+        uses: google-github-actions/setup-gcloud@77e7a554d41e2ee56fc945c52dfd3f33d12def9a # v2
+
+      - name: Rollback Cloud Run (traffic split)
+        if: inputs.method == 'traffic-split'
+        env:
+          REVISION: ${{ inputs.revision_or_tag }}
+        run: |
+          gcloud run services update-traffic "$BACKEND_SERVICE" \
+            --to-revisions="${REVISION}"=100 \
+            --project "$GCP_PROJECT_ID" \
+            --region "$GCP_REGION"
+
+      - name: Rollback (not yet implemented)
+        if: inputs.method == 'git-revert' || inputs.method == 'redeploy-tag'
+        run: |
+          echo "ERROR: ${{ inputs.method }} rollback not yet implemented."
+          echo "Use traffic-split method or perform a manual rollback."
+          exit 1
