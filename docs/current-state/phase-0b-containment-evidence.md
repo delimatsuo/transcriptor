@@ -2,9 +2,9 @@
 
 **Executed:** 2026-07-15
 
-**Evidence timestamp:** 2026-07-15T18:18:22Z
+**Evidence timestamp:** 2026-07-15T18:29:50Z
 
-**Status:** Immediate deployment and anonymous-access paths contained; the isolated synthetic-only development boundary is established but inactive; Phase 0B remains incomplete pending source preservation and final gate review
+**Status:** Immediate deployment and anonymous-access paths contained; the isolated synthetic-only development boundary, repository boundary, and GitHub approval boundary are established; Phase 0B remains incomplete pending final panel review
 
 **Authorized scope:** Disable automatic/unauthenticated deployment, inventory live GitHub and Google Cloud state, preserve existing data, and establish an isolated development boundary. This record does not authorize Phase 1, a branch push, deletion, or use of real interview data.
 
@@ -39,6 +39,13 @@ Containment executed:
 - The checked-in workflow was changed locally to manual build-only: no push trigger, OIDC permission, GCP authentication, Cloud Run deployment, Firebase deployment, or `--allow-unauthenticated` command remains.
 
 The local workflow change is not pushed. The remote disable plus disabled Google identity prevents deployment from the existing remote workflow without relying on a branch push from this dirty worktree.
+
+Repository protection executed after containment:
+
+- `main` and `staging` require pull requests, enforce protection for administrators, require linear history and conversation resolution, and disallow force-pushes and deletion.
+- The repository has one administrator, so the required external approval count is zero; the pull-request boundary remains mandatory without creating a single-maintainer deadlock.
+- GitHub environments `staging` and `production` require approval by `delimatsuo` and accept only the matching `staging` and `main` branches, respectively.
+- The disabled workflow does not reference these environments. Any future deployment implementation must use the matching environment and pass a separate release review.
 
 ## 3. Legacy GCP project inventory
 
@@ -186,18 +193,24 @@ Isolated resources and provider controls:
 
 The isolated project is now a configured but deliberately inactive development boundary. It is not a deployed environment and must contain synthetic data only.
 
-## 5. Remaining gates
+## 5. Repository preservation and clean baseline
+
+- Preserved the unfinished speaker-correlation and Meet-extension work on local branch `codex/preserve-speaker-correlation-wip-20260715`, commit `f5fc9f61cfddfc67de6bb2cf7af7c23f402c9840`.
+- The preservation commit intentionally includes ignored `extension/manifest.json` and excludes generated `frontend/tsconfig.tsbuildinfo`, agent memory, local secrets, documentation, and containment configuration.
+- Committed only the reviewed Phase 0 containment/configuration/documentation package to `staging` as `e8fb026f77be11fe43450f9727553520c42d9f94`.
+- Created clean worktree `/Volumes/Extreme Pro/myprojects/Transcriptor-worktrees/native-companion-phase1` on local branch `codex/native-companion-phase1` from that containment commit.
+- No branch or commit was pushed.
+
+## 6. Remaining gates
 
 Before Phase 0B can be marked complete:
 
-1. Preserve the dirty tracked, untracked, and ignored source on an explicitly authorized branch/worktree boundary and name the clean implementation baseline.
-2. Add GitHub branch/environment protections before any deployment workflow is restored.
-3. Re-run the plan review and obtain an explicit Phase 1 proceed decision; any approval to enable the runtime identity must include lower provider quota overrides.
+1. Re-run the plan review and obtain an explicit Phase 1 proceed decision; any approval to enable the runtime identity must include lower provider quota overrides.
 
-## 6. Current decision
+## 7. Current decision
 
 - **Immediate public/deployment exposure:** contained.
 - **Legacy data:** private in observed checks and preserved; retention/deletion unresolved.
 - **Isolated development environment:** billing and private resources configured; inactive, synthetic-only, no hosted endpoint, and runtime identity disabled.
-- **Phase 0B:** incomplete.
+- **Phase 0B:** incomplete pending final panel review only.
 - **Phase 1:** blocked.

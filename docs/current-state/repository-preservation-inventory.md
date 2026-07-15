@@ -22,6 +22,15 @@ This inventory did not initially authorize staging, committing, branching, pushi
 
 The original worktree remains unchanged and dirty. The preservation commit is a recoverable snapshot, not a claim that the unfinished feature is reviewed, approved, tested, or suitable for the Phase 1 baseline.
 
+Clean implementation boundary:
+
+- Containment commit on local `staging`: `e8fb026f77be11fe43450f9727553520c42d9f94`.
+- Clean branch: `codex/native-companion-phase1`.
+- Clean worktree: `/Volumes/Extreme Pro/myprojects/Transcriptor-worktrees/native-companion-phase1`.
+- Starting commit: `e8fb026f77be11fe43450f9727553520c42d9f94`.
+- The clean worktree had no tracked or untracked changes at creation.
+- Neither the preservation branch nor the clean branch was pushed.
+
 ## Pre-existing tracked source files with local modifications
 
 - `backend/main.py`
@@ -95,4 +104,4 @@ Preservation is complete only when:
 - The selected clean baseline and preserved-work location are named explicitly.
 - The user separately authorizes the branch/worktree operation.
 
-Current result: the WIP source is recoverable at the named local commit, the ignored manifest is included, generated build state is excluded, and no source change was overwritten. The containment commit and clean implementation worktree are recorded separately after they are created.
+Current result: the WIP source is recoverable at the named local commit, the ignored manifest is included, generated build state is excluded, no source change was overwritten, and the clean implementation branch/worktree is named above.

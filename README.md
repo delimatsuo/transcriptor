@@ -16,7 +16,7 @@ T.A.R.S. is an executive-search interview companion. The target product uses a n
 
 **Development environment:** `transcriptor-dev-20260715` is billed, labeled synthetic-only, and configured with an empty private Firestore database, private GCS bucket, empty secret container, disabled runtime identity, disabled STT data logging, and disabled Vertex cache. It has no hosted endpoint and is deliberately inactive.
 
-Immediate public/deployment exposure is contained, but Phase 0B and Phase 1 remain blocked. See the [containment evidence](</Volumes/Extreme Pro/myprojects/Transcriptor/docs/current-state/phase-0b-containment-evidence.md>).
+Immediate public/deployment exposure is contained. The repository and GitHub approval boundaries are established; Phase 0B awaits only panel re-review, and Phase 1 remains blocked until that decision. See the [containment evidence](</Volumes/Extreme Pro/myprojects/Transcriptor/docs/current-state/phase-0b-containment-evidence.md>).
 
 ## Current prototype versus target product
 
@@ -54,10 +54,8 @@ When documents appear to disagree, use this order:
 
 Immediate containment and the inactive development boundary are established. Before Phase 1 can begin:
 
-1. Preserve and inventory all tracked, untracked, and ignored work.
-2. Keep the BRL 250 monthly dev budget active and configure lower provider quota overrides in the same approved change that enables the runtime identity.
+1. Re-run the plan gate with direct containment evidence.
+2. If approved, keep the BRL 250 monthly dev budget active and configure lower provider quota overrides in the same approved change that enables the runtime identity.
 3. Put minimal authentication, ownership, limits, and revocation before hosted audio.
-4. Add GitHub branch/environment protection before any deployment workflow is restored.
-5. Re-run the plan gate with direct containment evidence.
 
 See the [repository preservation inventory](</Volumes/Extreme Pro/myprojects/Transcriptor/docs/current-state/repository-preservation-inventory.md>) for the dirty-work boundary.

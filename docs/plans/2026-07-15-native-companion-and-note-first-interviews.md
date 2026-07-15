@@ -320,7 +320,7 @@ Exit gate:
 
 This phase changes active deployment/security configuration and requires separate user authorization. Documentation-only approval does not authorize it.
 
-**Execution update, 2026-07-15:** Immediate deployment and anonymous-access paths were contained. The isolated project is now billed and configured as an inactive synthetic-only boundary: private empty Firestore/GCS resources, an empty secret container, a disabled least-privilege runtime identity, disabled STT data logging, disabled Vertex cache, a BRL 250 monthly project budget, and no hosted endpoint. This phase remains incomplete pending source preservation, deployment-gate protection, and panel re-review. Direct evidence and remaining gates are in `docs/current-state/phase-0b-containment-evidence.md`.
+**Execution update, 2026-07-15:** Immediate deployment and anonymous-access paths were contained. The isolated project is billed and configured as an inactive synthetic-only boundary: private empty Firestore/GCS resources, an empty secret container, a disabled least-privilege runtime identity, disabled STT data logging, disabled Vertex cache, a BRL 250 monthly project budget, and no hosted endpoint. The unfinished feature work is preserved on a separate local branch, a clean implementation worktree is named, protected pull-request boundaries are active on `main`/`staging`, and approval-gated GitHub environments exist. Panel re-review is the only remaining Phase 0B gate. Direct evidence is in `docs/current-state/phase-0b-containment-evidence.md`.
 
 Work:
 
