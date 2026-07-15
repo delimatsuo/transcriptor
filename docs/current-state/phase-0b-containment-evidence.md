@@ -221,5 +221,5 @@ The reconciled review record is `docs/reviews/2026-07-15-phase-1-gate-panel-revi
 - **Legacy data:** private in observed checks and preserved; retention/deletion unresolved.
 - **Isolated development environment:** billing and private resources configured; inactive, synthetic-only, no hosted endpoint, and runtime identity disabled.
 - **Phase 0B:** complete.
-- **Phase 1A:** explicitly authorized; guard-first commit `f7c16f2` is locally verified and awaiting review before conformance.
+- **Phase 1A:** explicitly authorized; hardened guard tip `9ea9580` passed review and conformance may proceed.
 - **Phases 1B-1D:** blocked.

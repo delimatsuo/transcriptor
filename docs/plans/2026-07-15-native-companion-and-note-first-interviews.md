@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-15
 
-**Status:** Architecture direction accepted. Phase 0B is complete. Phase 1A offline work is explicitly authorized; guard-first commit `f7c16f2` awaits review before conformance. Phases 1B-1D remain blocked.
+**Status:** Architecture direction accepted. Phase 0B is complete. Phase 1A offline work is explicitly authorized; hardened guard tip `9ea9580` passed review and conformance may proceed. Phases 1B-1D remain blocked.
 
 **Scope:** Governing plan and gate definition; no implementation is authorized by this document
 
@@ -346,7 +346,7 @@ Exit gate:
 
 The detailed gate table is normative in `docs/plans/2026-07-15-phase-1-native-capture-spike.md`:
 
-1. **Phase 1A — offline protocol conformance:** fixed synthetic bytes, canonical schema/bindings, deterministic provider simulation, no credentials or network. This gate is explicitly authorized; its guard-first slice awaits review before conformance continues.
+1. **Phase 1A — offline protocol conformance:** fixed synthetic bytes, canonical schema/bindings, deterministic provider simulation, no credentials or network. This gate is explicitly authorized and guard review passed; conformance may proceed through the guarded runner.
 2. **Phase 1B — hosted allowlisted fixtures:** isolated authenticated gateway and STT using server-issued fixture manifests only. It remains blocked behind security design, exact-project attestation, lower quotas, least privilege, fresh containment evidence, a tested kill switch, and separate authorization.
 3. **Phase 1C — offline native capture:** controlled generated-fixture routing into an in-memory/null sink with network/provider access disabled. It remains blocked behind hardware/OS, benchmark, privacy, accessibility/language, contamination, and separate-authorization gates.
 4. **Phase 1D — integrated synthetic end-to-end:** combines passed 1B and 1C controls for native-to-hosted-STT verification. It remains separately blocked and does not permit ambient/human audio.
@@ -550,6 +550,6 @@ Each item should remain a small, reviewable pull request with its own verificati
 
 ## 17. Approval boundary
 
-Approving this document approves the architecture direction and gate sequence only. Phase 0B is complete. The panel decision was **approve with conditions: Phase 1A offline only**, and the user later explicitly authorized Phase 1A after the docs-only baseline and preflight were recorded. The guard-first implementation awaits review before conformance. Phases 1B, 1C, and 1D remain blocked behind their named evidence and separate authorization.
+Approving this document approves the architecture direction and gate sequence only. Phase 0B is complete. The panel decision was **approve with conditions: Phase 1A offline only**, and the user later explicitly authorized Phase 1A after the docs-only baseline and preflight were recorded. Hardened guard tip `9ea9580` passed review and conformance may proceed. Phases 1B, 1C, and 1D remain blocked behind their named evidence and separate authorization.
 
 No approval here authorizes a branch push, merge, deployment beyond a precisely approved Phase 1B mutation set, hosted/native/integrated work outside its gate, external pilot access, ambient or human audio, real candidate/customer data, or migration or deletion of existing data.

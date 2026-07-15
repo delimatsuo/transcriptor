@@ -1,6 +1,6 @@
 # Companion Streaming Protocol Contract
 
-**Status:** Normative target; Phase 1A offline work is authorized. The guard-first boundary and canonical schema are implemented and awaiting review before conformance. Phases 1B-1D remain blocked.
+**Status:** Normative target; Phase 1A offline work is authorized and guard review passed. Protocol conformance may proceed; Phases 1B-1D remain blocked.
 
 **Date:** 2026-07-15
 

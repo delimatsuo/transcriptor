@@ -2,11 +2,13 @@
 
 **Recorded:** 2026-07-15T19:12:27Z
 
-**Status:** Guard-first slice implemented and locally verified; independent guard review is required before protocol/state-machine conformance proceeds.
+**Status:** Guard-first slice implemented, hardened, verified, and approved for Phase 1A conformance. See `docs/reviews/2026-07-15-phase-1a-guard-review.md`.
 
 **Authorization:** The user explicitly approved the staff decision to begin Phase 1A under the guard-first conditions. This did not authorize Phase 1B-1D, push, merge, deployment, cloud mutation, native capture, ambient/human audio, real data, or legacy-data mutation.
 
-**Guard commit:** `f7c16f233a51766f0ea622fc2b9534689865d89e`
+**Base guard commit:** `f7c16f233a51766f0ea622fc2b9534689865d89e`
+
+**Reviewed hardened tip:** `9ea95803e92ae740e6078903b2665cf604e1db09`
 
 **Parent evidence commit:** `95266a0dfc801dcec4c6ca2c11c35159df48e924`
 
@@ -32,10 +34,10 @@ The committed wrapper `companion/protocol/scripts/run_offline_guard.sh` executes
 Post-commit result:
 
 ```json
-{"errors":0,"failures":0,"phase":"1A-guard","successful":true,"testsRun":12}
+{"errors":0,"failures":0,"phase":"1A-guard","successful":true,"testsRun":13}
 ```
 
-Both runs passed all 12 tests. Verified behaviors include:
+Both runs passed all 13 tests. Verified behaviors include:
 
 - inherited fake credential, gateway, and proxy variables are removed by the wrapper;
 - missing `TARS_PHASE1A_MODE=offline` aborts before test discovery;
@@ -45,6 +47,7 @@ Both runs passed all 12 tests. Verified behaviors include:
 - payload-file creation, subprocess execution, fork/spawn paths, and post-start environment mutation are blocked;
 - schema and manifest are present, unignored, and tracked in the Git index;
 - the three fixture recipes reproduce their committed lengths and digests;
+- the only runtime catalog loader pins the committed manifest SHA-256 and exposes no arbitrary path loader;
 - unlisted fixture IDs and a tampered digest are rejected;
 - the schema exposes bounded metadata only and no audio or transcript-content field;
 - repeated executions return identical summaries.
@@ -60,6 +63,6 @@ Both runs passed all 12 tests. Verified behaviors include:
 - Staged/committed files outside `.gitignore` and `companion/protocol/`: `0`.
 - `git diff --check` passed for the guard commit.
 
-## 4. Remaining gate
+## 4. Review result
 
-The guard commit is ready for read-only review. Protocol state-machine and Swift/Python conformance work must not begin until that review confirms the executable boundary and the tracked schema rules. A passing guard review does not authorize any Phase 1B-1D activity.
+The guard review passed after commit `9ea9580` resolved the arbitrary-manifest-path finding. Phase 1A protocol state-machine and Swift/Python conformance may proceed inside the clean worktree. This does not authorize any Phase 1B-1D activity.
