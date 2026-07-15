@@ -1,4 +1,8 @@
-# T.A.R.S. backend for Cloud Run
+# CURRENT PROTOTYPE CONTAINER, NOT A PRODUCTION-READY CONTROL PLANE.
+# The packaged backend still couples server orchestration with local
+# sounddevice/BlackHole capture, while the approved target moves capture into a
+# native macOS companion. Deployment remains blocked pending containment, auth,
+# ownership, isolated environments, tests, and a re-run plan gate.
 FROM python:3.12-slim
 
 WORKDIR /app

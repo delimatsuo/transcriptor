@@ -1,5 +1,10 @@
 name: Rollback
 
+# PARTIAL PROTOTYPE RUNBOOK: Only Cloud Run traffic-split rollback is
+# implemented. This workflow does not restore Firebase Hosting, IAM, Firestore
+# rules, environment configuration, secrets, or data migrations. It is not an
+# adequate production recovery plan. See the 2026-07-15 panel review.
+
 on:
   workflow_dispatch:
     inputs:
