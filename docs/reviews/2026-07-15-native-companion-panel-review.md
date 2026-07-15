@@ -1,5 +1,7 @@
 # Native Companion Plan Panel Review
 
+**Current status:** Historical initial review. Its Phase 1 block was superseded by `docs/reviews/2026-07-15-phase-1-gate-panel-review.md`, which conditionally clears Phase 1A offline only. The findings below remain the record of the earlier decision at that time.
+
 **Date:** 2026-07-15
 
 **Reviewers:** Staff Engineering, Security/Privacy Engineering, Product UI/UX Engineering

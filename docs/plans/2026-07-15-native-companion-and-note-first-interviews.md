@@ -2,9 +2,9 @@
 
 **Date:** 2026-07-15
 
-**Status:** Architecture direction accepted for planning; Phase 1 implementation blocked by the 2026-07-15 panel review
+**Status:** Architecture direction accepted. Phase 0B is complete. The panel conditionally cleared Phase 1A offline only; implementation requires explicit user authorization. Phases 1B-1D remain blocked.
 
-**Scope:** Planning only; no implementation is authorized by this document
+**Scope:** Governing plan and gate definition; no implementation is authorized by this document
 
 **Primary outcome:** A macOS-first, provider-independent interview companion that captures device audio, retains no raw audio by default, lets recruiters take timestamped notes, and produces evidence-grounded assessments.
 
@@ -320,7 +320,7 @@ Exit gate:
 
 This phase changes active deployment/security configuration and requires separate user authorization. Documentation-only approval does not authorize it.
 
-**Execution update, 2026-07-15:** Immediate deployment and anonymous-access paths were contained. The isolated project is billed and configured as an inactive synthetic-only boundary: private empty Firestore/GCS resources, an empty secret container, a disabled least-privilege runtime identity, disabled STT data logging, disabled Vertex cache, a BRL 250 monthly project budget, and no hosted endpoint. The unfinished feature work is preserved on a separate local branch, a clean implementation worktree is named, protected pull-request boundaries are active on `main`/`staging`, and approval-gated GitHub environments exist. Panel re-review is the only remaining Phase 0B gate. Direct evidence is in `docs/current-state/phase-0b-containment-evidence.md`.
+**Execution update, 2026-07-15:** Immediate deployment and anonymous-access paths were contained. The isolated project is billed and configured as an inactive synthetic-only boundary: private empty Firestore/GCS resources, an empty secret container, a disabled least-privilege runtime identity, disabled STT data logging, disabled Vertex cache, a BRL 250 monthly project budget, and no hosted endpoint. The unfinished feature work is preserved on a separate local branch, a clean implementation worktree is named, protected pull-request boundaries are active on `main`/`staging`, and approval-gated GitHub environments exist. The panel re-review completed with no P0 objections and conditionally cleared Phase 1A offline only. Phase 0B is complete. Direct evidence is in `docs/current-state/phase-0b-containment-evidence.md`.
 
 Work:
 
@@ -340,32 +340,24 @@ Exit gate:
 - Live-state evidence identifies and contains every current service and data store in scope.
 - The development environment is isolated and its STT/Vertex settings are recorded.
 - Existing source is recoverable and the clean baseline is named.
-- The review panel re-runs and clears Phase 1 explicitly.
+- The review panel re-runs and records the exact Phase 1 gate, authorization boundary, and remaining blocks.
 
-### Phase 1: Protocol, secure gateway, native capture, and privacy spike
+### Phase 1: Gated protocol, gateway, native capture, and integration spike
 
-Work:
+The detailed gate table is normative in `docs/plans/2026-07-15-phase-1-native-capture-spike.md`:
 
-- Begin with synthetic audio fixtures only.
-- Implement protocol conformance fixtures for deterministic IDs, fencing, distinct acknowledgements, release eligibility, retries, exact gaps, and final-event idempotency.
-- Implement minimal authenticated companion enrollment, server-derived user/organization ownership, revocation, quotas, and limits.
-- Bring up the streaming gateway only inside the verified isolated development environment.
-- Prove bounded gateway queues, transient provider forwarding, durable content-free forwarding metadata, and durable transcript/gap events.
-- Then prove simultaneous mic and system-audio capture using native macOS APIs.
-- Test common headsets, Bluetooth, device switching, and browser/native meeting apps.
-- Prove a bounded in-memory companion audio queue with no persistent audio.
-- Measure transcript latency, CPU, memory, and network usage.
-- Decide whether separate mic/system channels remain sufficient or remote diarization is required for the initial product.
+1. **Phase 1A — offline protocol conformance:** fixed synthetic bytes, canonical schema/bindings, deterministic provider simulation, no credentials or network. This gate is panel-approved with conditions but requires explicit user authorization.
+2. **Phase 1B — hosted allowlisted fixtures:** isolated authenticated gateway and STT using server-issued fixture manifests only. It remains blocked behind security design, exact-project attestation, lower quotas, least privilege, fresh containment evidence, a tested kill switch, and separate authorization.
+3. **Phase 1C — offline native capture:** controlled generated-fixture routing into an in-memory/null sink with network/provider access disabled. It remains blocked behind hardware/OS, benchmark, privacy, accessibility/language, contamination, and separate-authorization gates.
+4. **Phase 1D — integrated synthetic end-to-end:** combines passed 1B and 1C controls for native-to-hosted-STT verification. It remains separately blocked and does not permit ambient/human audio.
 
-Exit gate:
+Shared exit principles:
 
-- Protocol conformance tests pass before any native audio is sent.
-- Unauthenticated, revoked, stale-lease, and cross-tenant audio is rejected.
-- A 60-minute synthetic call works across at least Meet, Zoom, Teams, and browser media.
-- Mic and system audio are captured independently.
-- No raw-audio artifact remains after success, stop, or forced termination.
-- The protocol survives a network interruption without duplicate final events and reports exact gaps when recovery is impossible.
-- Consented human audio remains blocked until isolated-project settings and the synthetic gate have direct evidence.
+- Delivery is at least once and processing is idempotent; every attempt-independent known coverage range has exactly one non-overlapping terminal transcript-or-gap outcome.
+- Unknown forced-termination boundaries are reported as unknown coverage, not fabricated exact gaps.
+- Physical capture, transport, per-source health, coverage, finalization, and deletion remain independent user-visible truths.
+- No raw-audio artifact remains after the applicable success, stop, discard, contamination, or forced-termination checks.
+- A gate approval never authorizes a later gate, push, merge, deployment beyond an explicitly approved 1B mutation set, real data, or legacy-data mutation.
 
 ### Phase 2: Secure internal alpha
 
@@ -518,13 +510,13 @@ Each item should remain a small, reviewable pull request with its own verificati
 1. Reconcile documentation and inventory all tracked, untracked, ignored, and generated work.
 2. Obtain separate authorization and complete the Phase 0B deployment/security containment gate.
 3. Preserve the existing dirty speaker-correlation work and select a clean implementation baseline.
-4. Re-run the plan panel and obtain an explicit Phase 1 proceed decision.
-5. Add automated test scaffolding and a CI quality gate using synthetic fixtures.
-6. Implement the protocol schema, acknowledgement/release rules, gap semantics, and conformance tests.
-7. Add minimal authenticated companion enrollment, revocation, limits, and organization-scoped sessions.
-8. Add the isolated development streaming gateway and durable transcript/gap event store.
-9. Add a macOS capture spike outside the production path with no-persistent-audio verification.
-10. Add the signed internal companion shell, permission UX, and authoritative state synchronization.
+4. Re-run the plan panel and record the conditional Phase 1A-only decision.
+5. Obtain explicit Phase 1A authorization; add offline test scaffolding with networking disabled and fixed synthetic fixtures.
+6. Implement the canonical protocol schema/bindings, acknowledgement/release rules, attempt-independent coverage semantics, and offline conformance tests.
+7. After separate Phase 1B authorization, add minimal authenticated companion enrollment, revocation, limits, exact-project enforcement, and organization-scoped sessions.
+8. Add the isolated development streaming gateway and durable transcript/gap event store for allowlisted fixtures only.
+9. After separate Phase 1C authorization, add an offline macOS fixture-capture spike outside the production path with no-persistent-audio verification.
+10. After separate Phase 1D authorization, run integrated native-to-hosted synthetic verification; only later add the signed internal companion shell, permission UX, and authoritative state synchronization.
 11. Add timestamped notes and bookmarks with explicit synchronization states.
 12. Add durable recovery, retention, deletion, and audit events.
 13. Add competency coverage and evidence-linked reports.
@@ -558,6 +550,6 @@ Each item should remain a small, reviewable pull request with its own verificati
 
 ## 17. Approval boundary
 
-Approving this document approves the architecture direction and planning sequence only. Phase 1 is blocked. This document does not authorize source-code or active-configuration changes, branch manipulation, pushes, deployment, hosted audio, external pilot access, real candidate data, or migration of existing data.
+Approving this document approves the architecture direction and gate sequence only. Phase 0B is complete. The panel decision is **approve with conditions: Phase 1A offline only**, but this document does not authorize implementation. The user must explicitly authorize Phase 1A after the docs-only baseline and preflight are recorded. Phases 1B, 1C, and 1D remain blocked behind their named evidence and separate authorization.
 
-The approved next action is documentation reconciliation. After that, the user must separately authorize Phase 0B containment and live-state verification. Phase 1 may begin only after containment evidence exists and a new panel review explicitly changes the block decision.
+No approval here authorizes a branch push, merge, deployment beyond a precisely approved Phase 1B mutation set, hosted/native/integrated work outside its gate, external pilot access, ambient or human audio, real candidate/customer data, or migration or deletion of existing data.

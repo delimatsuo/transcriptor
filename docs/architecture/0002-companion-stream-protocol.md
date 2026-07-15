@@ -1,6 +1,6 @@
 # Companion Streaming Protocol Contract
 
-**Status:** Normative target; implementation blocked pending Phase 0 containment and panel re-review
+**Status:** Normative target; Phase 1A offline implementation is panel-approved with conditions but requires explicit user authorization. Phases 1B-1D remain blocked.
 
 **Date:** 2026-07-15
 
@@ -13,7 +13,7 @@
 
 ## 1. Purpose and boundary
 
-This contract defines the minimum transport behavior between the macOS companion and the authenticated T.A.R.S. streaming gateway. It exists to make audio custody, retries, gaps, and user-visible state testable.
+This contract defines the minimum transport behavior between the macOS companion and the authenticated T.A.R.S. streaming gateway. It exists to make audio custody, retries, gaps, and user-visible state testable. Transport is at least once and processing is idempotent; the observable invariant is exactly one non-overlapping terminal transcript-or-gap outcome for every attempt-independent known coverage range, not impossible end-to-end exactly-once delivery.
 
 It is a target requirement, not a description of the current Python prototype. It does not authorize implementation, hosted audio, branch pushes, or deployment.
 
@@ -51,12 +51,14 @@ Audio chunks additionally carry:
 - sample rate, channel count, encoding, and duration
 - a payload digest used for retry validation, not as a content log
 
+Each chunk also maps to an attempt-independent `coverageId` derived from protocol version, session, stream, capture generation, source, sequence, and sample range. STT attempt generation is processing metadata and is not part of coverage identity.
+
 Identity rules:
 
 - `eventId` is deterministically derived from protocol version, session, stream, capture generation, event type, and source sequence or client mutation ID.
 - Retrying an event uses the same ID and identical payload. The gateway rejects an ID reused with different content.
 - A new capture after stop, permission loss, or device re-enrollment uses a new `captureGeneration` and new stream IDs.
-- Final transcript IDs are deterministically derived from session, stream, capture generation, covered audio sequence range, STT attempt generation, and result ordinal. Once committed, the same final event ID is used on replay.
+- Final transcript IDs are deterministically derived from attempt-independent coverage identity and result ordinal. STT attempt generation is recorded as provenance but cannot create a second terminal outcome for the same coverage. Once committed, the same final event ID is used on replay.
 - Notes and bookmarks use client-generated stable mutation IDs and server-assigned stable record IDs returned by the first durable acknowledgement.
 
 The server processes each source independently but preserves ordering within a source. It must not infer that microphone and system-audio sequence numbers share one clock or counter.
@@ -113,11 +115,11 @@ An acknowledgement must never advance past a gap. A sparse success is represente
 2. On reconnect, the companion sends its last observed admission, forwarding, and durable-transcript watermarks.
 3. The server returns the authoritative watermarks, active fencing generation, and exact resend range.
 4. The client resends only ranges not authoritatively forwarded. Retries reuse their original event IDs and payload digests.
-5. The gateway deduplicates already admitted or forwarded events and never creates a second durable transcript event from the same final-event identity.
+5. The gateway deduplicates already admitted or forwarded events and never creates a second terminal transcript or gap outcome for the same coverage identity.
 6. A stale connection or stale fencing generation cannot admit, forward, pause, resume, or stop a session.
 7. Text/metadata mutations remain in a durable encrypted outbox until `event.durable`; raw audio never enters that outbox.
 
-If a failure leaves forwarding status ambiguous, the server must use its stream lease and content-free forwarding journal to resolve the range. If it cannot prove safe replay or successful forwarding, it declares the exact range as a gap instead of silently guessing.
+If a failure leaves forwarding status ambiguous, the server must use its stream lease and content-free forwarding journal to resolve the range. If it can prove the affected sequence/sample boundaries but cannot prove safe replay or successful forwarding, it declares that exact range as a gap. If forced termination means the end boundary itself is unknowable, it records an honest unknown-coverage interval and reason instead of fabricating precision.
 
 ## 6. Gap contract
 
@@ -125,10 +127,11 @@ A `capture.gap` event is durable, user-visible, and contains:
 
 - `gapId`
 - session, stream, source, capture generation, and STT attempt generation
-- `firstSequence` and `lastSequenceInclusive`
-- `firstSample` and `lastSampleExclusive`
-- monotonic start and end timestamps
-- duration
+- `coverageId` when both boundaries are known
+- `firstSequence` and nullable `lastSequenceInclusive`
+- `firstSample` and nullable `lastSampleExclusive`
+- monotonic start and nullable end timestamps
+- known duration or an explicit `unknown_end` boundary status
 - reason code
 - whether raw audio was never captured, discarded before forwarding, or forwarded without a durable transcript
 - whether retry is possible
@@ -147,13 +150,15 @@ Initial reason codes include:
 
 Gaps cannot be edited away. A user may add an explanation or exclude the affected passage from assessment, but the coverage record remains.
 
+Terminal transcript and gap coverage for the same source/generation must not overlap. A transaction or equivalent single-writer projection enforces terminal uniqueness by coverage identity. Crash tests cover failure before and after simulated/provider write, forwarding-journal commit, transcript commit, reconnect negotiation, and STT-attempt rotation.
+
 ## 7. Pause, stop, and finalization protocol
 
 - `capture.pause.requested` is a command. Physical capture stops only when the companion emits `capture.paused` with the authoritative capture generation and last captured sequence per source.
 - Pre-pause chunks may continue through admission, forwarding, and transcript finalization. The UI must say that previously captured audio is finishing.
 - Resume creates no overlapping sequence range and is rejected if consent, permission, lease, or device health is invalid.
 - `session.stop.requested` causes the companion to stop acquiring new audio immediately and emit `capture.stopped` with final captured ranges.
-- The user chooses whether still-unforwarded in-memory audio is sent or discarded. Discarding creates an exact gap.
+- The user chooses whether still-unforwarded in-memory audio is sent or discarded. Discarding creates an exact gap only when the companion can prove both boundaries; otherwise it creates unknown-end coverage.
 - `session.finalizing` continues until every captured range is represented by a durable transcript coverage event or a durable gap.
 - `session.completed` is emitted only after finalization. Completion is not assessment approval.
 
@@ -195,10 +200,12 @@ Before native audio reaches any hosted endpoint, automated tests must prove:
 - a forwarding acknowledgement advances only over contiguous, journaled ranges;
 - final transcript replay preserves IDs and does not duplicate projections;
 - reconnect produces exact resend ranges;
-- buffer overflow and ambiguous forwarding create exact durable gaps;
+- buffer overflow and ambiguous forwarding create exact durable gaps where boundaries are known and explicit unknown-boundary coverage where they are not;
 - pause and stop ranges contain no newly captured audio after the companion's authoritative boundary;
 - logs contain no audio, transcript, notes, documents, credentials, or payload digests usable as content identifiers;
 - a 60- and 90-minute synthetic test stays within approved memory and message limits.
+
+Phase 1A runs these semantics against one canonical versioned schema, Swift and Python binding validation, a deterministic provider simulator, fixed synthetic-byte manifests, and process networking disabled. It must abort on credential lookup, implicit environment/project selection, network access, non-fixture input, or persistent audio. Hosted authentication and provider tests belong to separately authorized Phase 1B.
 
 ## 10. Unresolved implementation choices
 
