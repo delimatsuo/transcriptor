@@ -2,13 +2,15 @@
 
 This directory is isolated Phase 1A work. It is not imported by the current backend or frontend and is not part of any deployment path.
 
-The guard-first slice establishes the execution boundary before protocol state-machine or conformance implementation begins:
+The guard-first slice establishes the execution boundary for all protocol state-machine and conformance implementation:
 
 - `scripts/run_offline_guard.sh` clears the inherited environment and runs the standard-library test process under the macOS Seatbelt profile in `sandbox/phase1a-offline.sb`.
 - The Seatbelt profile denies every network operation.
 - Python guards reject credential-, project-, endpoint-, token-, and secret-shaped environment variables; production/cloud imports; subprocess execution; and filesystem mutation.
 - `fixtures/phase1a-v1.manifest.json` is the only byte-fixture input. Fixtures are generated and verified in memory.
 - `schema/protocol-v1.schema.json` is the tracked canonical v1 schema boundary. It contains metadata only; audio payload bytes are transported separately and never represented in JSON.
+
+The Python binding and terminal-coverage model is implemented in `python/tars_phase1a/model.py`. Its deterministic vectors, bounds, retry, ordering, and terminal-uniqueness tests run only through the guarded wrapper. The provider/reconnect/fencing simulator, Swift validation, and long-duration gates remain in progress.
 
 ## Canonical coverage identity
 

@@ -6,7 +6,7 @@ T.A.R.S. is an executive-search interview companion. The target product uses a n
 
 **Architecture direction:** accepted for planning.
 
-**Phase 1 implementation:** Phase 1A offline-only work is explicitly authorized. The hardened guard tip `9ea9580` passed review; protocol/state-machine conformance may proceed inside the clean worktree. Phases 1B-1D remain blocked.
+**Phase 1 implementation:** Phase 1A offline-only work is explicitly authorized. The hardened guard tip `9ea9580` passed review, and Python protocol-model commit `76d28dc` passes 29 guarded tests; deterministic simulator and cross-language conformance remain. Phases 1B-1D remain blocked.
 
 **Documentation reconciliation:** complete for project-owned documents and conflicting active configuration comments; generated and third-party dependency documentation is classified but not rewritten.
 
@@ -40,15 +40,16 @@ When documents appear to disagree, use this order:
 2. **Live containment evidence:** [Phase 0B containment evidence](docs/current-state/phase-0b-containment-evidence.md)
 3. **Phase 1A baseline evidence:** [baseline and preflight readback](docs/current-state/phase-1a-baseline-preflight-evidence.md)
 4. **Phase 1A guard evidence:** [guard-first implementation readback](docs/current-state/phase-1a-guard-evidence.md)
-5. **Governing product and architecture plan:** [native companion and note-first interviews](docs/plans/2026-07-15-native-companion-and-note-first-interviews.md)
-6. **Accepted architecture direction:** [ADR 0001](docs/architecture/0001-native-companion-cloud-stt.md)
-7. **Normative protocol target:** [companion streaming protocol](docs/architecture/0002-companion-stream-protocol.md)
-8. **Normative privacy target:** [data-flow, retention, and deletion contract](docs/privacy/data-flow-retention-contract.md)
-9. **Normative product behavior:** [companion and web state contract](docs/product/companion-web-state-contract.md)
-10. **Phase-specific execution plans:** [Phase 1 native capture spike](docs/plans/2026-07-15-phase-1-native-capture-spike.md)
-11. **Review decisions:** [initial 2026-07-15 panel review](docs/reviews/2026-07-15-native-companion-panel-review.md), [Phase 1 gate re-review](docs/reviews/2026-07-15-phase-1-gate-panel-review.md), and [Phase 1A guard review](docs/reviews/2026-07-15-phase-1a-guard-review.md)
-12. **Historical records:** `DEPLOY-SETUP.md` and similar dated setup logs describe what was attempted at that time; they are not current authorization or target architecture.
-13. **Active configuration and source:** workflows, manifests, rules, Dockerfiles, and code describe current behavior. They do not override an explicit safety gate or authorize deployment.
+5. **Phase 1A conformance evidence:** [incremental protocol-model and simulator readback](docs/current-state/phase-1a-conformance-evidence.md)
+6. **Governing product and architecture plan:** [native companion and note-first interviews](docs/plans/2026-07-15-native-companion-and-note-first-interviews.md)
+7. **Accepted architecture direction:** [ADR 0001](docs/architecture/0001-native-companion-cloud-stt.md)
+8. **Normative protocol target:** [companion streaming protocol](docs/architecture/0002-companion-stream-protocol.md)
+9. **Normative privacy target:** [data-flow, retention, and deletion contract](docs/privacy/data-flow-retention-contract.md)
+10. **Normative product behavior:** [companion and web state contract](docs/product/companion-web-state-contract.md)
+11. **Phase-specific execution plans:** [Phase 1 native capture spike](docs/plans/2026-07-15-phase-1-native-capture-spike.md)
+12. **Review decisions:** [initial 2026-07-15 panel review](docs/reviews/2026-07-15-native-companion-panel-review.md), [Phase 1 gate re-review](docs/reviews/2026-07-15-phase-1-gate-panel-review.md), and [Phase 1A guard review](docs/reviews/2026-07-15-phase-1a-guard-review.md)
+13. **Historical records:** `DEPLOY-SETUP.md` and similar dated setup logs describe what was attempted at that time; they are not current authorization or target architecture.
+14. **Active configuration and source:** workflows, manifests, rules, Dockerfiles, and code describe current behavior. They do not override an explicit safety gate or authorize deployment.
 
 `AGENTS.md` is generated agent-memory context. It is non-normative and must not be used as product, privacy, security, deployment, or release documentation.
 
@@ -56,7 +57,7 @@ When documents appear to disagree, use this order:
 
 Phase 0B containment is complete. The user explicitly authorized Phase 1A offline work, and hardened guard tip `9ea95803e92ae740e6078903b2665cf604e1db09` passed review after its deterministic negative suite and artifact checks.
 
-The next activity is Python coverage and terminal-outcome conformance against deterministic vectors, followed by the offline provider/reconnect/fencing simulator and Swift validation. No Phase 1B-1D permission is implied.
+Python coverage and terminal-outcome conformance is complete at commit `76d28dc`, with 29 guarded tests passing twice. The next activity is the offline provider/reconnect/fencing simulator, followed by Swift validation and long-duration/artifact conformance. No Phase 1B-1D permission is implied.
 
 Phase 1B hosted fixtures still requires separate authorization, lower provider quotas, exact-project/runtime attestation, least privilege, reviewed authentication, protected approval, fresh containment readback, and a tested kill switch. Phase 1C offline native fixture capture and Phase 1D integrated synthetic testing also retain their separate gates.
 
