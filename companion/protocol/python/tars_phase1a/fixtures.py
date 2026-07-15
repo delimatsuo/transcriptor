@@ -8,6 +8,14 @@ from typing import Any, Dict, Mapping
 from .guard import GuardViolation
 
 
+COMMITTED_MANIFEST_SHA256 = (
+    "69b2405ce25db344fd6178fce23c0dc7c563efb2849e0e1ab295c7fc78eb8508"
+)
+_COMMITTED_MANIFEST_PATH = (
+    Path(__file__).resolve().parents[2] / "fixtures" / "phase1a-v1.manifest.json"
+)
+
+
 class FixtureCatalog:
     """Closed fixture catalog backed by the committed manifest."""
 
@@ -32,14 +40,6 @@ class FixtureCatalog:
                 raise GuardViolation("fixture IDs must be unique strings")
             indexed[fixture_id] = fixture
         self._fixtures = indexed
-
-    @classmethod
-    def from_path(cls, path: Path) -> "FixtureCatalog":
-        with path.open("r", encoding="utf-8") as manifest_file:
-            manifest = json.load(manifest_file)
-        if not isinstance(manifest, dict):
-            raise GuardViolation("fixture manifest root must be an object")
-        return cls(manifest)
 
     def fixture_ids(self):  # type: ignore[no-untyped-def]
         return tuple(sorted(self._fixtures))
@@ -85,3 +85,17 @@ class FixtureCatalog:
                 output.append(state & 0xFF)
             return bytes(output)
         raise GuardViolation("unsupported fixture generator: " + str(kind))
+
+
+def load_committed_catalog() -> FixtureCatalog:
+    """Load only the pinned, repository-owned Phase 1A manifest."""
+
+    manifest_bytes = _COMMITTED_MANIFEST_PATH.read_bytes()
+    digest = hashlib.sha256(manifest_bytes).hexdigest()
+    if digest != COMMITTED_MANIFEST_SHA256:
+        raise GuardViolation("committed fixture manifest digest mismatch")
+
+    manifest = json.loads(manifest_bytes.decode("utf-8"))
+    if not isinstance(manifest, dict):
+        raise GuardViolation("fixture manifest root must be an object")
+    return FixtureCatalog(manifest)

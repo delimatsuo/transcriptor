@@ -10,7 +10,11 @@ import unittest
 from copy import deepcopy
 from pathlib import Path
 
-from tars_phase1a.fixtures import FixtureCatalog
+from tars_phase1a.fixtures import (
+    COMMITTED_MANIFEST_SHA256,
+    FixtureCatalog,
+    load_committed_catalog,
+)
 from tars_phase1a.guard import GuardViolation, validate_environment
 
 
@@ -95,7 +99,7 @@ class ImportAndMutationGuardTests(unittest.TestCase):
 
 class FixtureAndSchemaGuardTests(unittest.TestCase):
     def test_manifest_is_closed_and_all_digests_verify(self) -> None:
-        catalog = FixtureCatalog.from_path(MANIFEST_PATH)
+        catalog = load_committed_catalog()
         self.assertEqual(
             catalog.fixture_ids(),
             ("counter-3200-v1", "lcg-3200-v1", "zero-3200-v1"),
@@ -105,9 +109,16 @@ class FixtureAndSchemaGuardTests(unittest.TestCase):
                 self.assertEqual(len(catalog.generate(fixture_id)), 3200)
 
     def test_unlisted_fixture_is_rejected(self) -> None:
-        catalog = FixtureCatalog.from_path(MANIFEST_PATH)
+        catalog = load_committed_catalog()
         with self.assertRaises(GuardViolation):
             catalog.generate("candidate-interview.wav")
+
+    def test_committed_manifest_digest_is_pinned(self) -> None:
+        self.assertEqual(
+            COMMITTED_MANIFEST_SHA256,
+            "69b2405ce25db344fd6178fce23c0dc7c563efb2849e0e1ab295c7fc78eb8508",
+        )
+        self.assertFalse(hasattr(FixtureCatalog, "from_path"))
 
     def test_tampered_fixture_digest_is_rejected(self) -> None:
         with MANIFEST_PATH.open("r", encoding="utf-8") as manifest_file:
