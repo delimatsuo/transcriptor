@@ -4,7 +4,7 @@
 
 **Evidence timestamp:** 2026-07-15T18:29:50Z
 
-**Status:** Phase 0B complete. Immediate deployment and anonymous-access paths are contained; isolated development, repository, and GitHub approval boundaries are established; the final panel review conditionally cleared Phase 1A offline only.
+**Status:** Phase 0B complete. Immediate deployment and anonymous-access paths are contained; isolated development, repository, and GitHub approval boundaries are established. The conditionally cleared and separately authorized Phase 1A offline gate later passed at `9f3f3a0`.
 
 **Authorized scope:** Disable automatic/unauthenticated deployment, inventory live GitHub and Google Cloud state, preserve existing data, and establish an isolated development boundary. This record does not authorize Phase 1A implementation, a branch push, deletion, hosted/native capture, or use of real interview data.
 
@@ -221,5 +221,5 @@ The reconciled review record is `docs/reviews/2026-07-15-phase-1-gate-panel-revi
 - **Legacy data:** private in observed checks and preserved; retention/deletion unresolved.
 - **Isolated development environment:** billing and private resources configured; inactive, synthetic-only, no hosted endpoint, and runtime identity disabled.
 - **Phase 0B:** complete.
-- **Phase 1A:** explicitly authorized; hardened guard tip `9ea9580` passed review and conformance may proceed.
+- **Phase 1A:** offline conformance passed at `9f3f3a0`.
 - **Phases 1B-1D:** blocked.

@@ -1,5 +1,7 @@
 # Phase 1A Guard Review
 
+**Current status:** Historical satisfied gate. Full Phase 1A conformance later passed at `9f3f3a0`; the findings below remain the guard decision at reviewed tip `9ea9580`.
+
 **Reviewed:** 2026-07-15T20:18:33Z
 
 **Reviewed tip:** `9ea95803e92ae740e6078903b2665cf604e1db09`

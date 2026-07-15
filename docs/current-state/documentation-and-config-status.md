@@ -25,20 +25,20 @@ The 2026-07-15 reconciliation reviewed every project-owned Markdown document at 
 | Surface | Classification | Current meaning | Required handling |
 | --- | --- | --- | --- |
 | `README.md` | Canonical | Entry point, status, and documentation hierarchy | Keep synchronized with review gates |
-| `docs/plans/2026-07-15-native-companion-and-note-first-interviews.md` | Canonical governing plan | Approved direction; Phase 1A conditionally cleared, 1B-1D blocked | Architecture changes require plan/ADR updates |
+| `docs/plans/2026-07-15-native-companion-and-note-first-interviews.md` | Canonical governing plan | Approved direction; Phase 1A passed, 1B-1D blocked | Architecture changes require plan/ADR updates |
 | `docs/architecture/0001-native-companion-cloud-stt.md` | Normative target | Device capture plus cloud STT decision | Does not authorize implementation or deployment |
 | `docs/architecture/0002-companion-stream-protocol.md` | Normative target | Audio custody, acknowledgement, release, retry, and exact-gap semantics | Required before hosted audio; does not authorize implementation |
 | `docs/privacy/data-flow-retention-contract.md` | Normative target | Required privacy/data lifecycle | Explicitly not a claim about current prototype behavior |
 | `docs/product/companion-web-state-contract.md` | Normative target | Capture authority and user-visible state semantics | Required before protocol/UI implementation |
-| `docs/plans/2026-07-15-phase-1-native-capture-spike.md` | Phase plan | 1A offline authorized; guard review passed; 1B-1D blocked | Conformance may proceed only through the guarded runner |
+| `docs/plans/2026-07-15-phase-1-native-capture-spike.md` | Phase plan | 1A offline passed at `9f3f3a0`; 1B-1D blocked | Later gates require their named evidence, review, and separate authorization |
 | `docs/test-fixtures/phase-1a-synthetic-byte-manifest.md` | Normative test-input manifest | Fixed content-free byte recipes and checksums for 1A | Generated in memory only; reject unlisted input |
 | `companion/protocol/vectors/protocol-v1-vectors.json` | Normative conformance vectors | Shared content-free protocol identities and metadata for Python/Swift | Both binding suites must consume this exact tracked file |
 | `docs/reviews/2026-07-15-native-companion-panel-review.md` | Canonical review record | Panel decision and blockers | Update only through a new review record |
 | `docs/reviews/2026-07-15-phase-1-gate-panel-review.md` | Canonical review record | Re-review consensus and Phase 1A-only decision | Governs the current panel gate |
-| `docs/reviews/2026-07-15-phase-1a-guard-review.md` | Canonical review record | Guard review, resolved P1, and conformance proceed decision | Governs the current Phase 1A implementation gate |
+| `docs/reviews/2026-07-15-phase-1a-guard-review.md` | Historical satisfied review gate | Guard review, resolved P1, and conformance proceed decision | Retain as the decision at reviewed tip `9ea9580` |
 | `docs/current-state/phase-0b-containment-evidence.md` | Current-state evidence | Live GitHub/GCP inventory, containment mutations, and remaining gates | Refresh after any relevant external-state change |
 | `docs/current-state/phase-1a-baseline-preflight-evidence.md` | Current-state evidence | Immutable Phase 1A baseline plus repository, fixture, and live-containment preflight | Refresh before implementation if relevant state drifts |
-| `docs/current-state/phase-1a-guard-evidence.md` | Current-state evidence | Guard-first implementation, negative tests, artifact scan, and remaining review gate | Governs the current Phase 1A execution boundary |
+| `docs/current-state/phase-1a-guard-evidence.md` | Historical implementation evidence | Guard-first implementation, negative tests, artifact scan, and completed review gate | Superseded for current status by full conformance evidence |
 | `docs/current-state/phase-1a-conformance-evidence.md` | Current-state evidence | Incremental protocol-model, simulator, cross-language, and final 1A verification | Update after every completed conformance slice |
 | `docs/current-state/repository-preservation-inventory.md` | Current-state record | Dirty/untracked/ignored file boundary | Refresh before any branch/worktree operation |
 | `DEPLOY-SETUP.md` | Historical | March 2026 prototype deployment setup log | Retain with superseded/incomplete warning |
@@ -107,4 +107,4 @@ The immediate P0 is contained with direct evidence:
 - Both legacy buckets enforce Public Access Prevention.
 - Vertex AI in-memory caching is disabled in the legacy project.
 
-Phase 0B is complete. Billing, the inactive service/data/provider boundary, source preservation, clean worktree, protected branches, and approval-gated GitHub environments are configured. The isolated project has private empty Firestore/GCS resources, an empty secret container, a disabled runtime identity, verified-disabled STT data logging, verified-disabled Vertex cache, and a BRL 250 monthly project budget. The user explicitly authorized Phase 1A offline work after the panel and baseline checks. Hardened guard tip `9ea9580` passed review. Python model/simulator and Swift binding work through commit `915f16c` passes 53 Python and 4 Swift guarded tests; long-duration tests and final scans remain. Phases 1B-1D remain blocked. See `docs/current-state/phase-1a-conformance-evidence.md`.
+Phase 0B and Phase 1A offline protocol conformance are complete. Billing, the inactive service/data/provider boundary, source preservation, clean worktree, protected branches, and approval-gated GitHub environments are configured. The isolated project has private empty Firestore/GCS resources, an empty secret container, a disabled runtime identity, verified-disabled STT data logging, verified-disabled Vertex cache, and a BRL 250 monthly project budget. At implementation tip `9f3f3a0`, 54 Python and 4 Swift tests pass twice, including 60/90-minute bounded-memory runs, and the artifact/scope scan is clean. Phases 1B-1D remain blocked behind their named evidence, review, and separate authorization. See `docs/current-state/phase-1a-conformance-evidence.md`.

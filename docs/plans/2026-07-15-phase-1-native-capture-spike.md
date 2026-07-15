@@ -1,6 +1,6 @@
 # Phase 1 Plan: macOS Native Capture and Privacy Spike
 
-**Status:** Phase 1A offline work is explicitly authorized. Hardened guard tip `9ea9580` passed review and protocol/state-machine conformance may proceed. Phases 1B, 1C, and 1D remain blocked.
+**Status:** Phase 1A offline protocol/state-machine conformance passed at `9f3f3a0`. Phases 1B, 1C, and 1D remain blocked.
 
 **Date:** 2026-07-15
 
@@ -42,7 +42,7 @@ This is a technical and privacy spike, not a production application.
 
 ## 4. Gate model and authorization boundary
 
-Phase 0B containment and the panel re-review are complete. The panel decision was **approve with conditions: Phase 1A offline only**, and the user explicitly authorized that gate. Hardened guard tip `9ea9580` passed review, so remaining 1A conformance work may proceed through the guarded runner. Later gates still require their own explicit authorization.
+Phase 0B containment and the panel re-review are complete. The panel decision was **approve with conditions: Phase 1A offline only**, the user explicitly authorized that gate, and its reviewed guard plus conformance exit criteria passed at `9f3f3a0`. Later gates still require their own explicit authorization.
 
 | Gate | Allowed work | Prohibited work | Entry evidence | Exit evidence | Authorization and stop behavior |
 | --- | --- | --- | --- | --- | --- |
@@ -50,6 +50,8 @@ Phase 0B containment and the panel re-review are complete. The panel decision wa
 | **1B: hosted allowlisted fixtures** | Isolated authenticated gateway and STT forwarding for server-allowlisted fixture bytes only | Native capture, ambient/human audio, real identities/data, legacy-project access, implicit project/ADC selection, push-triggered deployment | Separate user authorization; reviewed gateway threat model; exact project/account/runtime identity attestation; lower STT/Vertex quotas; least-privilege roles; populated secrets; protected-environment approval; fresh containment readback | Negative auth/tenant/replay/limit tests; allowlisted fixture digest/range enforcement; provider/cost limits; network/log/artifact evidence; independently executable kill switch tested | Stop and execute the kill switch on project/identity/config mismatch, unexpected traffic/content, quota failure, or public/cross-tenant access. Runtime identity, API enablement, endpoint creation, secret population, deployment, and quota changes remain an explicitly documented mutation set. |
 | **1C: offline native capture** | macOS permissions and capture into an in-memory/null protocol sink using controlled generated-fixture routing | Hosted gateway/provider access, ambient or human speech, persistent audio, real interview UI/data | Separate user authorization; supported macOS/test-Mac inventory; Python baseline and numeric thresholds; controlled fixture-routing procedure; persistent test-mode label; fixture-use attestation distinct from participant consent; local kill control | Compatibility, resource, privacy, accessibility, English/PT-BR, multi-window, and comprehension evidence; post-run artifact scan; contamination tests | Stop, clear memory, and mark the run invalid on ambient/unrelated-audio contamination, unknown routing, persistent artifacts, or capture outside the test indicator. |
 | **1D: integrated synthetic end-to-end** | Native generated-fixture capture through the reviewed hosted gateway to STT | Ambient/human audio, real data, production or legacy mutation, external traffic | Separate user authorization after 1B and 1C pass; every 1B control re-read and every 1C fixture/privacy control active | Repeatable 60/90-minute matrix, transcript quality/latency/resource report, network evidence, terminal-coverage evidence, no-persistent-audio proof, go/no-go recommendation | Inherits both 1B cloud kill switch and 1C local contamination stop. Any failed inherited control blocks the run. |
+
+**Phase 1A execution result:** Passed at implementation tip `9f3f3a0`. The guarded suite runs 54 Python and 4 Swift tests twice, including deterministic identities, fake-identity ownership, fencing, reconnect, crash points, exact/unknown gaps, and logical 60/90-minute bounded-memory streams. The final artifact/scope scan reports zero artifacts, forbidden imports, or out-of-scope paths. Direct evidence is in `docs/current-state/phase-1a-conformance-evidence.md`.
 
 Every gate must name an owner, pass/fail criterion, evidence artifact, and stop condition in its implementation checklist. A gate approval does not authorize a later gate, branch push, merge, deployment outside the precisely documented mutation set, real data, or legacy-data mutation.
 
@@ -310,4 +312,4 @@ Stop and review rather than expanding the spike if:
 
 ## 11. Approval boundary
 
-Phase 0B containment and panel review are complete, and the user explicitly authorized Phase 1A offline work after its baseline preflight. Hardened guard tip `9ea9580` passed review; protocol/state-machine conformance may proceed through the guarded runner. Phases 1B, 1C, and 1D remain blocked behind their named evidence and separate authorization. No gate approval implicitly authorizes a push, merge, deployment beyond an explicitly approved 1B mutation set, external traffic, ambient/human audio, real candidate/customer data, or legacy-data mutation.
+Phase 0B containment and panel review are complete, and the separately authorized Phase 1A offline protocol/state-machine gate passed at `9f3f3a0`. Phases 1B, 1C, and 1D remain blocked behind their named evidence and separate authorization. No gate approval implicitly authorizes a push, merge, deployment beyond an explicitly approved 1B mutation set, external traffic, ambient/human audio, real candidate/customer data, or legacy-data mutation.

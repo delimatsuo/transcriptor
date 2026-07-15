@@ -1,8 +1,8 @@
 # Phase 1A Offline Conformance Evidence
 
-**Recorded:** 2026-07-15T20:50:23Z
+**Recorded:** 2026-07-15T21:00:31Z
 
-**Status:** In progress. The canonical Python protocol model, deterministic provider/reconnect/fencing simulator, shared vectors, and Swift bindings are implemented and verified; long-duration and final artifact conformance remain.
+**Status:** Passed. Phase 1A offline protocol conformance is complete at verified implementation tip `9f3f3a0`; Phases 1B-1D remain blocked behind their separate evidence and authorization gates.
 
 **Authorization:** Phase 1A offline protocol conformance only. This does not authorize Phase 1B-1D, push, merge, deployment, cloud/provider access, native capture, ambient or human audio, real data, or legacy-data mutation.
 
@@ -15,6 +15,10 @@
 **Simulator commit:** `61104250efb5b5c4b1770904cf932c3542ed17a6`
 
 **Cross-language commit:** `915f16cc3213739ec47f53e716f684862eeb5436`
+
+**Long-duration commit:** `eaed0e62c4b445783a709fc98b84c64f610e91bf`
+
+**Verified implementation tip:** `9f3f3a08db7c77401fab8e6c2272041f589aa183`
 
 **Reviewed guard tip:** `9ea95803e92ae740e6078903b2665cf604e1db09`
 
@@ -70,6 +74,12 @@ After cross-language commit `915f16c`, the wrapper ran Python and Swift twice ea
 
 SwiftPM's own nested sandbox is disabled because macOS rejects nesting it inside the outer Seatbelt process. The outer reviewed `(deny network*)` sandbox remains active around the Swift compiler and test process. This does not relax the Phase 1A network boundary.
 
+At verified implementation tip `9f3f3a0`, the final wrapper run passed 54 Python and 4 Swift tests twice:
+
+```json
+{"phase":"1A-guard","python":{"errors":0,"failures":0,"phase":"1A-guard","successful":true,"testsRun":54},"successful":true,"swift":{"successful":true,"testsRun":4}}
+```
+
 The new model tests directly verify:
 
 - independent fixed vectors for coverage, audio-event, transcript-terminal, and unknown-end-gap identities;
@@ -101,6 +111,15 @@ The cross-language tests additionally verify:
 - encoded Swift terminal metadata round-trips deterministically and remains inside the control-message bound;
 - known coverage carries exact monotonic start/end times and unknown coverage carries an honest start time without a fabricated end.
 
+The long-duration test executes, per guarded Python run:
+
+| Source | Logical duration | Chunks | Forwarding/terminal batches | Peak client raw bytes | Peak gateway raw bytes | Final raw bytes |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Microphone | 60 minutes | 36,000 | 1,800 | 64,000 | 64,000 | 0 |
+| System audio | 90 minutes | 54,000 | 2,700 | 64,000 | 64,000 | 0 |
+
+Both runs include periodic reconnect negotiation and STT-attempt rotation. Their final admitted, forwarded, and durable-transcript sequence/sample/time watermarks equal the complete logical source range.
+
 ## 3. Artifact and scope checks
 
 - `git diff --check`: passed before commit.
@@ -110,11 +129,23 @@ The cross-language tests additionally verify:
 - Provider calls, network access, filesystem payload writes, native capture, and production imports: none.
 - Swift repository build/cache directories after the run: `0`; all compiler output used deleted `/tmp` scratch directories.
 - Swift external package dependencies and `Package.resolved`: `0`.
+- Final reproducible artifact/scope scan:
+
+```json
+{"artifacts":0,"forbiddenImports":0,"outOfScopePaths":0,"phase":"1A-artifact-scan","successful":true}
+```
+
+- Changes outside `.gitignore`, `README.md`, `docs/`, and `companion/protocol/` since the reviewed guard base: `0`.
 - Stop conditions encountered: none.
 
-## 4. Remaining Phase 1A work
+## 4. Gate result and next boundary
 
-1. 60- and 90-minute bounded-memory/determinism tests.
-2. Final artifact, scope, repeatability, and worktree-boundary scans.
+Phase 1A passed its named exit criteria:
 
-Phase 1A is not complete until the remaining work passes and this record is tied to the final reviewed commit. Later phases remain blocked behind their separate gates.
+- networking and credential/environment escape attempts fail closed;
+- Python and Swift validate one tracked schema and shared vector set;
+- deterministic identities, bounds, fencing, retries, reconnect, crash points, overflow, exact and unknown-end gaps, and terminal uniqueness pass;
+- 60/90-minute logical runs remain inside the approved queue bounds and finish with zero raw bytes;
+- final repository artifact and scope scans pass.
+
+This is an offline protocol result only. It does not authorize a branch push, merge, deployment, cloud/provider access, hosted gateway, native capture, ambient or human audio, real data, legacy mutation, or any Phase 1B-1D activity. Phase 1B may begin only after its threat model, exact-project/runtime controls, lower quotas, least privilege, kill switch, fresh containment evidence, review, and separate user authorization are complete.

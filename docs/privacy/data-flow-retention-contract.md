@@ -1,6 +1,6 @@
 # T.A.R.S. Data Flow, Retention, and Deletion Contract
 
-**Status:** Normative target draft; current prototype is non-compliant. Phase 1A offline work is authorized and guard review passed; conformance may proceed. Phases 1B-1D remain blocked.
+**Status:** Normative target draft; current prototype is non-compliant. Phase 1A offline conformance passed at `9f3f3a0`; Phases 1B-1D remain blocked.
 
 **Date:** 2026-07-15
 
