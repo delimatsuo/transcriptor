@@ -6,7 +6,7 @@ T.A.R.S. is an executive-search interview companion. The target product uses a n
 
 **Architecture direction:** accepted for planning.
 
-**Phase 1 implementation:** Phase 1A offline-only work is explicitly authorized. The hardened guard tip `9ea9580` passed review; Python protocol-model commit `76d28dc` and simulator commit `6110425` pass 49 guarded tests. Swift, long-duration, and final artifact conformance remain. Phases 1B-1D remain blocked.
+**Phase 1 implementation:** Phase 1A offline-only work is explicitly authorized. The hardened guard tip `9ea9580` passed review; Python model/simulator and Swift binding work through `915f16c` passes 53 Python and 4 Swift guarded tests. Long-duration and final artifact conformance remain. Phases 1B-1D remain blocked.
 
 **Documentation reconciliation:** complete for project-owned documents and conflicting active configuration comments; generated and third-party dependency documentation is classified but not rewritten.
 
@@ -57,7 +57,7 @@ When documents appear to disagree, use this order:
 
 Phase 0B containment is complete. The user explicitly authorized Phase 1A offline work, and hardened guard tip `9ea95803e92ae740e6078903b2665cf604e1db09` passed review after its deterministic negative suite and artifact checks.
 
-Python coverage, terminal-outcome, provider, reconnect, fencing, and crash conformance is complete through commit `6110425`, with 49 guarded tests passing twice. The next activity is Swift validation against shared vectors, followed by long-duration and final artifact conformance. No Phase 1B-1D permission is implied.
+Python coverage, terminal-outcome, provider, reconnect, fencing, crash, shared-vector, and Swift binding conformance is complete through commit `915f16c`, with 53 Python and 4 Swift tests passing twice. The next activity is 60/90-minute bounded-memory testing and final artifact/scope conformance. No Phase 1B-1D permission is implied.
 
 Phase 1B hosted fixtures still requires separate authorization, lower provider quotas, exact-project/runtime attestation, least privilege, reviewed authentication, protected approval, fresh containment readback, and a tested kill switch. Phase 1C offline native fixture capture and Phase 1D integrated synthetic testing also retain their separate gates.
 

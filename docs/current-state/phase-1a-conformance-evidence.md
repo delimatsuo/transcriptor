@@ -1,8 +1,8 @@
 # Phase 1A Offline Conformance Evidence
 
-**Recorded:** 2026-07-15T20:28:31Z
+**Recorded:** 2026-07-15T20:50:23Z
 
-**Status:** In progress. The canonical Python protocol model plus deterministic provider/reconnect/fencing simulator are implemented and verified; Swift, long-duration, and final artifact conformance remain.
+**Status:** In progress. The canonical Python protocol model, deterministic provider/reconnect/fencing simulator, shared vectors, and Swift bindings are implemented and verified; long-duration and final artifact conformance remain.
 
 **Authorization:** Phase 1A offline protocol conformance only. This does not authorize Phase 1B-1D, push, merge, deployment, cloud/provider access, native capture, ambient or human audio, real data, or legacy-data mutation.
 
@@ -13,6 +13,8 @@
 **Model commit:** `76d28dc2b4a1edb1586f1a2f9ff115bc46145d55`
 
 **Simulator commit:** `61104250efb5b5c4b1770904cf932c3542ed17a6`
+
+**Cross-language commit:** `915f16cc3213739ec47f53e716f684862eeb5436`
 
 **Reviewed guard tip:** `9ea95803e92ae740e6078903b2665cf604e1db09`
 
@@ -37,6 +39,15 @@ The simulator slice adds:
 - exact `unknown_forwarding_state`, `stt_stream_failed`, and `buffer_overflow` gaps plus honest `unknown_end` process-termination coverage;
 - metadata-only forwarding journals and diagnostics without fixture digests or content fields.
 
+The cross-language slice adds:
+
+- one committed content-free vector file consumed by both Python and Swift;
+- Swift protocol identities and typed audio/known-coverage/unknown-coverage/terminal metadata bindings with the same bounds and fail-closed validation as Python;
+- schema-versus-binding field checks and deterministic round-trip tests in both languages;
+- exact monotonic start/end coverage fields required by the governing protocol; time fields do not alter attempt-independent coverage IDs;
+- a SwiftPM package with no external package dependencies;
+- Swift builds and tests under the same outer network-denying Seatbelt profile, with isolated `/tmp` home, module cache, temp, and build directories removed after every run.
+
 ## 2. Verification results
 
 Command:
@@ -50,6 +61,14 @@ After the model commit, both executions passed all 29 tests. After the simulator
 ```json
 {"errors":0,"failures":0,"phase":"1A-guard","successful":true,"testsRun":49}
 ```
+
+After cross-language commit `915f16c`, the wrapper ran Python and Swift twice each and compared each language's deterministic summary:
+
+```json
+{"phase":"1A-guard","python":{"errors":0,"failures":0,"phase":"1A-guard","successful":true,"testsRun":53},"successful":true,"swift":{"successful":true,"testsRun":4}}
+```
+
+SwiftPM's own nested sandbox is disabled because macOS rejects nesting it inside the outer Seatbelt process. The outer reviewed `(deny network*)` sandbox remains active around the Swift compiler and test process. This does not relax the Phase 1A network boundary.
 
 The new model tests directly verify:
 
@@ -74,6 +93,14 @@ The simulator tests additionally verify:
 - an unknowable forced-termination boundary is recorded as `unknown_end` instead of fabricated precision;
 - logs and forwarding records contain counts/ranges only and no fixture digest or content field.
 
+The cross-language tests additionally verify:
+
+- Swift and Python produce identical coverage, audio-event, transcript-terminal, and unknown-gap IDs from one shared vector;
+- typed audio and terminal metadata contain every required schema field and no undeclared field;
+- malformed identifiers, reversed time coverage, and tampered event IDs fail closed in Swift;
+- encoded Swift terminal metadata round-trips deterministically and remains inside the control-message bound;
+- known coverage carries exact monotonic start/end times and unknown coverage carries an honest start time without a fabricated end.
+
 ## 3. Artifact and scope checks
 
 - `git diff --check`: passed before commit.
@@ -81,11 +108,13 @@ The simulator tests additionally verify:
 - `__pycache__` and `.pyc` artifacts under `companion/protocol/`: `0`.
 - Production/cloud/network-client imports in the implementation: `0`.
 - Provider calls, network access, filesystem payload writes, native capture, and production imports: none.
+- Swift repository build/cache directories after the run: `0`; all compiler output used deleted `/tmp` scratch directories.
+- Swift external package dependencies and `Package.resolved`: `0`.
 - Stop conditions encountered: none.
 
 ## 4. Remaining Phase 1A work
 
-1. Swift binding validation against shared deterministic vectors.
-2. 60- and 90-minute bounded-memory/determinism tests plus final artifact and scope scans.
+1. 60- and 90-minute bounded-memory/determinism tests.
+2. Final artifact, scope, repeatability, and worktree-boundary scans.
 
 Phase 1A is not complete until the remaining work passes and this record is tied to the final reviewed commit. Later phases remain blocked behind their separate gates.
