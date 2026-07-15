@@ -3,6 +3,7 @@
 import hashlib
 import json
 import re
+from bisect import bisect_left
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
@@ -442,6 +443,7 @@ class TerminalLedger:
     def __init__(self) -> None:
         self._by_event_id: Dict[str, TerminalOutcome] = {}
         self._by_key: Dict[StreamKey, List[TerminalOutcome]] = {}
+        self._starts_by_key: Dict[StreamKey, List[int]] = {}
 
     def commit(self, outcome: TerminalOutcome) -> bool:
         if not isinstance(outcome, TerminalOutcome):
@@ -452,12 +454,18 @@ class TerminalLedger:
                 return False
             raise ProtocolViolation("terminal eventId was reused with different semantics")
 
-        for committed in self._by_key.get(outcome.key, []):
+        outcomes = self._by_key.setdefault(outcome.key, [])
+        starts = self._starts_by_key.setdefault(outcome.key, [])
+        start = outcome.coverage.first_sequence
+        index = bisect_left(starts, start)
+        neighbors = outcomes[max(0, index - 1) : min(len(outcomes), index + 1)]
+        for committed in neighbors:
             if self._coverage_conflicts(committed.coverage, outcome.coverage):
                 raise ProtocolViolation("terminal coverage overlaps an existing outcome")
 
         self._by_event_id[outcome.event_id] = outcome
-        self._by_key.setdefault(outcome.key, []).append(outcome)
+        starts.insert(index, start)
+        outcomes.insert(index, outcome)
         return True
 
     def outcomes(self, key: StreamKey) -> Tuple[TerminalOutcome, ...]:
