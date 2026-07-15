@@ -6,7 +6,7 @@ T.A.R.S. is an executive-search interview companion. The target product uses a n
 
 **Architecture direction:** accepted for planning.
 
-**Phase 1 implementation:** Phase 1A offline-only work is explicitly authorized. The guard-first slice is implemented at `f7c16f2` and locally verified; protocol/state-machine conformance is paused pending guard review. Phases 1B-1D remain blocked.
+**Phase 1 implementation:** Phase 1A offline-only work is explicitly authorized. The hardened guard tip `9ea9580` passed review; protocol/state-machine conformance may proceed inside the clean worktree. Phases 1B-1D remain blocked.
 
 **Documentation reconciliation:** complete for project-owned documents and conflicting active configuration comments; generated and third-party dependency documentation is classified but not rewritten.
 
@@ -46,7 +46,7 @@ When documents appear to disagree, use this order:
 8. **Normative privacy target:** [data-flow, retention, and deletion contract](docs/privacy/data-flow-retention-contract.md)
 9. **Normative product behavior:** [companion and web state contract](docs/product/companion-web-state-contract.md)
 10. **Phase-specific execution plans:** [Phase 1 native capture spike](docs/plans/2026-07-15-phase-1-native-capture-spike.md)
-11. **Review decisions:** [initial 2026-07-15 panel review](docs/reviews/2026-07-15-native-companion-panel-review.md) and [Phase 1 gate re-review](docs/reviews/2026-07-15-phase-1-gate-panel-review.md)
+11. **Review decisions:** [initial 2026-07-15 panel review](docs/reviews/2026-07-15-native-companion-panel-review.md), [Phase 1 gate re-review](docs/reviews/2026-07-15-phase-1-gate-panel-review.md), and [Phase 1A guard review](docs/reviews/2026-07-15-phase-1a-guard-review.md)
 12. **Historical records:** `DEPLOY-SETUP.md` and similar dated setup logs describe what was attempted at that time; they are not current authorization or target architecture.
 13. **Active configuration and source:** workflows, manifests, rules, Dockerfiles, and code describe current behavior. They do not override an explicit safety gate or authorize deployment.
 
@@ -54,9 +54,9 @@ When documents appear to disagree, use this order:
 
 ## Next gated activity
 
-Phase 0B containment is complete. The user explicitly authorized Phase 1A offline work, and the guard-first commit `f7c16f233a51766f0ea622fc2b9534689865d89e` passed its deterministic negative suite and artifact checks.
+Phase 0B containment is complete. The user explicitly authorized Phase 1A offline work, and hardened guard tip `9ea95803e92ae740e6078903b2665cf604e1db09` passed review after its deterministic negative suite and artifact checks.
 
-The next gated activity is a read-only guard review. Protocol/state-machine and Swift/Python conformance must wait for that review; no Phase 1B-1D permission is implied.
+The next activity is Python coverage and terminal-outcome conformance against deterministic vectors, followed by the offline provider/reconnect/fencing simulator and Swift validation. No Phase 1B-1D permission is implied.
 
 Phase 1B hosted fixtures still requires separate authorization, lower provider quotas, exact-project/runtime attestation, least privilege, reviewed authentication, protected approval, fresh containment readback, and a tested kill switch. Phase 1C offline native fixture capture and Phase 1D integrated synthetic testing also retain their separate gates.
 
