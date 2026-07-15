@@ -27,6 +27,8 @@ recordings/
 !package-lock.json
 !tsconfig.json
 !firestore.rules
+!companion/protocol/schema/protocol-v1.schema.json
+!companion/protocol/fixtures/phase1a-v1.manifest.json
 
 # IDE
 .vscode/
