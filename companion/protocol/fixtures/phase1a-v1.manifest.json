@@ -1,0 +1,34 @@
+{
+  "manifestVersion": "phase1a-bytes-v1",
+  "contentClass": "opaque-nonspeech",
+  "persistence": "memory-only",
+  "fixtures": [
+    {
+      "id": "zero-3200-v1",
+      "lengthBytes": 3200,
+      "generator": {
+        "kind": "zero"
+      },
+      "sha256": "5a312281df4bd8dfbb4d4a94ad0bf44d01bb8cfced1206b90e21b4ca0568cdb1"
+    },
+    {
+      "id": "counter-3200-v1",
+      "lengthBytes": 3200,
+      "generator": {
+        "kind": "counter-mod-256"
+      },
+      "sha256": "78ad7b2c3cf464e4e219f6044605741a65a8197287a6951d142870af42c3397d"
+    },
+    {
+      "id": "lcg-3200-v1",
+      "lengthBytes": 3200,
+      "generator": {
+        "kind": "lcg-31",
+        "seed": 324508639,
+        "multiplier": 1103515245,
+        "increment": 12345
+      },
+      "sha256": "0a93dffb664217df4f004a088bdbf71c1a44b2416af59def297cd3668ede05fd"
+    }
+  ]
+}

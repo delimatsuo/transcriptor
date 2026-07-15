@@ -1,0 +1,377 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tars.invalid/schema/companion-protocol/v1",
+  "title": "T.A.R.S. Companion Protocol v1 Metadata",
+  "description": "Canonical metadata schema. Audio payload bytes are transported separately.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/audioChunk"
+    },
+    {
+      "$ref": "#/$defs/terminalOutcome"
+    }
+  ],
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "source": {
+      "enum": [
+        "microphone",
+        "system_audio"
+      ]
+    },
+    "envelope": {
+      "type": "object",
+      "required": [
+        "protocolVersion",
+        "eventType",
+        "sessionId",
+        "streamId",
+        "deviceId",
+        "captureGeneration",
+        "eventId",
+        "capturedAtMonotonicNs",
+        "capturedAtWallClock"
+      ],
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "eventType": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "sessionId": {
+          "$ref": "#/$defs/identifier"
+        },
+        "streamId": {
+          "$ref": "#/$defs/identifier"
+        },
+        "deviceId": {
+          "$ref": "#/$defs/identifier"
+        },
+        "captureGeneration": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "eventId": {
+          "$ref": "#/$defs/identifier"
+        },
+        "capturedAtMonotonicNs": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "capturedAtWallClock": {
+          "type": "string",
+          "format": "date-time",
+          "maxLength": 40
+        }
+      }
+    },
+    "knownCoverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "boundaryStatus",
+        "coverageId",
+        "source",
+        "firstSequence",
+        "lastSequenceInclusive",
+        "firstSample",
+        "lastSampleExclusive"
+      ],
+      "properties": {
+        "boundaryStatus": {
+          "const": "known"
+        },
+        "coverageId": {
+          "type": "string",
+          "pattern": "^cov_[a-f0-9]{64}$"
+        },
+        "source": {
+          "$ref": "#/$defs/source"
+        },
+        "firstSequence": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "lastSequenceInclusive": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "firstSample": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "lastSampleExclusive": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "unknownEndCoverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "boundaryStatus",
+        "source",
+        "firstSequence",
+        "firstSample"
+      ],
+      "properties": {
+        "boundaryStatus": {
+          "const": "unknown_end"
+        },
+        "source": {
+          "$ref": "#/$defs/source"
+        },
+        "firstSequence": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "firstSample": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "audioChunk": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/envelope"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "protocolVersion",
+            "eventType",
+            "sessionId",
+            "streamId",
+            "deviceId",
+            "captureGeneration",
+            "eventId",
+            "capturedAtMonotonicNs",
+            "capturedAtWallClock",
+            "source",
+            "sequence",
+            "firstSample",
+            "lastSampleExclusive",
+            "sampleRateHertz",
+            "channelCount",
+            "encoding",
+            "durationMs",
+            "payloadBytes",
+            "payloadDigestSha256"
+          ],
+          "properties": {
+            "protocolVersion": {
+              "const": 1
+            },
+            "eventType": {
+              "const": "audio.chunk"
+            },
+            "sessionId": {
+              "$ref": "#/$defs/identifier"
+            },
+            "streamId": {
+              "$ref": "#/$defs/identifier"
+            },
+            "deviceId": {
+              "$ref": "#/$defs/identifier"
+            },
+            "captureGeneration": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "eventId": {
+              "$ref": "#/$defs/identifier"
+            },
+            "capturedAtMonotonicNs": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "capturedAtWallClock": {
+              "type": "string",
+              "format": "date-time",
+              "maxLength": 40
+            },
+            "source": {
+              "$ref": "#/$defs/source"
+            },
+            "sequence": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "firstSample": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "lastSampleExclusive": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "sampleRateHertz": {
+              "type": "integer",
+              "minimum": 8000,
+              "maximum": 48000
+            },
+            "channelCount": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 2
+            },
+            "encoding": {
+              "const": "pcm_s16le"
+            },
+            "durationMs": {
+              "type": "integer",
+              "minimum": 20,
+              "maximum": 1000
+            },
+            "payloadBytes": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 64000
+            },
+            "payloadDigestSha256": {
+              "$ref": "#/$defs/sha256"
+            }
+          }
+        }
+      ]
+    },
+    "terminalOutcome": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/envelope"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "protocolVersion",
+            "eventType",
+            "sessionId",
+            "streamId",
+            "deviceId",
+            "captureGeneration",
+            "eventId",
+            "capturedAtMonotonicNs",
+            "capturedAtWallClock",
+            "outcome",
+            "coverage",
+            "sttAttemptGeneration"
+          ],
+          "properties": {
+            "protocolVersion": {
+              "const": 1
+            },
+            "eventType": {
+              "enum": [
+                "transcript.final",
+                "capture.gap"
+              ]
+            },
+            "sessionId": {
+              "$ref": "#/$defs/identifier"
+            },
+            "streamId": {
+              "$ref": "#/$defs/identifier"
+            },
+            "deviceId": {
+              "$ref": "#/$defs/identifier"
+            },
+            "captureGeneration": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "eventId": {
+              "$ref": "#/$defs/identifier"
+            },
+            "capturedAtMonotonicNs": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "capturedAtWallClock": {
+              "type": "string",
+              "format": "date-time",
+              "maxLength": 40
+            },
+            "outcome": {
+              "enum": [
+                "transcript",
+                "gap"
+              ]
+            },
+            "coverage": {
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/knownCoverage"
+                },
+                {
+                  "$ref": "#/$defs/unknownEndCoverage"
+                }
+              ]
+            },
+            "sttAttemptGeneration": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "reasonCode": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            }
+          },
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "eventType": {
+                    "const": "transcript.final"
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "outcome": {
+                    "const": "transcript"
+                  },
+                  "coverage": {
+                    "$ref": "#/$defs/knownCoverage"
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "eventType": {
+                    "const": "capture.gap"
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "outcome": {
+                    "const": "gap"
+                  }
+                }
+              }
+            }
+          ]
+        }
+      ]
+    }
+  }
+}
