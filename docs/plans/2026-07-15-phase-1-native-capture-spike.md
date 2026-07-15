@@ -1,6 +1,6 @@
 # Phase 1 Plan: macOS Native Capture and Privacy Spike
 
-**Status:** Panel-approved with conditions for Phase 1A offline only; implementation still requires explicit user authorization. Phases 1B, 1C, and 1D remain blocked.
+**Status:** Phase 1A offline work is explicitly authorized. The guard-first slice is implemented at `f7c16f2` and awaiting review before protocol/state-machine conformance. Phases 1B, 1C, and 1D remain blocked.
 
 **Date:** 2026-07-15
 
@@ -42,7 +42,7 @@ This is a technical and privacy spike, not a production application.
 
 ## 4. Gate model and authorization boundary
 
-Phase 0B containment and the panel re-review are complete. The panel decision is **approve with conditions: Phase 1A offline only**. Panel clearance is not implementation authorization. The user must explicitly authorize the named gate before its allowed work begins.
+Phase 0B containment and the panel re-review are complete. The panel decision was **approve with conditions: Phase 1A offline only**, and the user explicitly authorized that gate. Guard-first implementation is complete and must pass review before the remaining 1A conformance work begins. Later gates still require their own explicit authorization.
 
 | Gate | Allowed work | Prohibited work | Entry evidence | Exit evidence | Authorization and stop behavior |
 | --- | --- | --- | --- | --- | --- |
@@ -310,4 +310,4 @@ Stop and review rather than expanding the spike if:
 
 ## 11. Approval boundary
 
-Phase 0B containment and the panel review are complete. The panel decision is **approve with conditions: Phase 1A offline only**. Phase 1A implementation begins only after the docs-only reconciliation commit is recorded as the clean baseline, its local preflight passes, and the user explicitly authorizes **Phase 1A**. Phases 1B, 1C, and 1D remain blocked behind their named evidence and separate authorization. No gate approval implicitly authorizes a push, merge, deployment beyond an explicitly approved 1B mutation set, external traffic, ambient/human audio, real candidate/customer data, or legacy-data mutation.
+Phase 0B containment and panel review are complete, and the user explicitly authorized Phase 1A offline work after its baseline preflight. The guard-first slice is implemented and awaiting review; protocol/state-machine conformance remains paused until that review passes. Phases 1B, 1C, and 1D remain blocked behind their named evidence and separate authorization. No gate approval implicitly authorizes a push, merge, deployment beyond an explicitly approved 1B mutation set, external traffic, ambient/human audio, real candidate/customer data, or legacy-data mutation.

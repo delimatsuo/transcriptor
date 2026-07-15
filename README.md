@@ -6,7 +6,7 @@ T.A.R.S. is an executive-search interview companion. The target product uses a n
 
 **Architecture direction:** accepted for planning.
 
-**Phase 1 implementation:** the panel approved Phase 1A offline only with conditions; implementation still requires explicit user authorization. Phases 1B-1D remain blocked.
+**Phase 1 implementation:** Phase 1A offline-only work is explicitly authorized. The guard-first slice is implemented at `f7c16f2` and locally verified; protocol/state-machine conformance is paused pending guard review. Phases 1B-1D remain blocked.
 
 **Documentation reconciliation:** complete for project-owned documents and conflicting active configuration comments; generated and third-party dependency documentation is classified but not rewritten.
 
@@ -39,23 +39,24 @@ When documents appear to disagree, use this order:
 1. **Execution status and document classification:** [documentation and configuration status](docs/current-state/documentation-and-config-status.md)
 2. **Live containment evidence:** [Phase 0B containment evidence](docs/current-state/phase-0b-containment-evidence.md)
 3. **Phase 1A baseline evidence:** [baseline and preflight readback](docs/current-state/phase-1a-baseline-preflight-evidence.md)
-4. **Governing product and architecture plan:** [native companion and note-first interviews](docs/plans/2026-07-15-native-companion-and-note-first-interviews.md)
-5. **Accepted architecture direction:** [ADR 0001](docs/architecture/0001-native-companion-cloud-stt.md)
-6. **Normative protocol target:** [companion streaming protocol](docs/architecture/0002-companion-stream-protocol.md)
-7. **Normative privacy target:** [data-flow, retention, and deletion contract](docs/privacy/data-flow-retention-contract.md)
-8. **Normative product behavior:** [companion and web state contract](docs/product/companion-web-state-contract.md)
-9. **Phase-specific execution plans:** [Phase 1 native capture spike](docs/plans/2026-07-15-phase-1-native-capture-spike.md)
-10. **Review decisions:** [initial 2026-07-15 panel review](docs/reviews/2026-07-15-native-companion-panel-review.md) and [Phase 1 gate re-review](docs/reviews/2026-07-15-phase-1-gate-panel-review.md)
-11. **Historical records:** `DEPLOY-SETUP.md` and similar dated setup logs describe what was attempted at that time; they are not current authorization or target architecture.
-12. **Active configuration and source:** workflows, manifests, rules, Dockerfiles, and code describe current behavior. They do not override an explicit safety gate or authorize deployment.
+4. **Phase 1A guard evidence:** [guard-first implementation readback](docs/current-state/phase-1a-guard-evidence.md)
+5. **Governing product and architecture plan:** [native companion and note-first interviews](docs/plans/2026-07-15-native-companion-and-note-first-interviews.md)
+6. **Accepted architecture direction:** [ADR 0001](docs/architecture/0001-native-companion-cloud-stt.md)
+7. **Normative protocol target:** [companion streaming protocol](docs/architecture/0002-companion-stream-protocol.md)
+8. **Normative privacy target:** [data-flow, retention, and deletion contract](docs/privacy/data-flow-retention-contract.md)
+9. **Normative product behavior:** [companion and web state contract](docs/product/companion-web-state-contract.md)
+10. **Phase-specific execution plans:** [Phase 1 native capture spike](docs/plans/2026-07-15-phase-1-native-capture-spike.md)
+11. **Review decisions:** [initial 2026-07-15 panel review](docs/reviews/2026-07-15-native-companion-panel-review.md) and [Phase 1 gate re-review](docs/reviews/2026-07-15-phase-1-gate-panel-review.md)
+12. **Historical records:** `DEPLOY-SETUP.md` and similar dated setup logs describe what was attempted at that time; they are not current authorization or target architecture.
+13. **Active configuration and source:** workflows, manifests, rules, Dockerfiles, and code describe current behavior. They do not override an explicit safety gate or authorize deployment.
 
 `AGENTS.md` is generated agent-memory context. It is non-normative and must not be used as product, privacy, security, deployment, or release documentation.
 
 ## Next gated activity
 
-Phase 0B containment is complete. The docs-only normative baseline is `f9877132e2c34980f12c8098e09bbd8134fd9bd6`, and its repository/fixture/live-containment preflight passed. No Phase 1A source exists yet, so no runtime harness test is claimed.
+Phase 0B containment is complete. The user explicitly authorized Phase 1A offline work, and the guard-first commit `f7c16f233a51766f0ea622fc2b9534689865d89e` passed its deterministic negative suite and artifact checks.
 
-The next decision is explicit user authorization for **Phase 1A offline protocol conformance only**. Its first source slice must establish the network-disabled, no-credential, fixture-only test boundary before running conformance cases.
+The next gated activity is a read-only guard review. Protocol/state-machine and Swift/Python conformance must wait for that review; no Phase 1B-1D permission is implied.
 
 Phase 1B hosted fixtures still requires separate authorization, lower provider quotas, exact-project/runtime attestation, least privilege, reviewed authentication, protected approval, fresh containment readback, and a tested kill switch. Phase 1C offline native fixture capture and Phase 1D integrated synthetic testing also retain their separate gates.
 

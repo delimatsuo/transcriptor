@@ -2,7 +2,7 @@
 
 **Recorded:** 2026-07-15T18:51:34Z
 
-**Status:** Baseline/repository/containment preflight passed. Phase 1A implementation is not yet authorized or started.
+**Status:** Historical pre-authorization baseline snapshot. Its conditions were later satisfied; Phase 1A was explicitly authorized and guard commit `f7c16f2` is recorded in `docs/current-state/phase-1a-guard-evidence.md`.
 
 **Normative baseline commit:** `f9877132e2c34980f12c8098e09bbd8134fd9bd6`
 
