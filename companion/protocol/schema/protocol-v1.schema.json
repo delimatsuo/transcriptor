@@ -87,7 +87,9 @@
         "firstSequence",
         "lastSequenceInclusive",
         "firstSample",
-        "lastSampleExclusive"
+        "lastSampleExclusive",
+        "firstCapturedAtMonotonicNs",
+        "lastCapturedAtMonotonicNs"
       ],
       "properties": {
         "boundaryStatus": {
@@ -115,6 +117,14 @@
         "lastSampleExclusive": {
           "type": "integer",
           "minimum": 1
+        },
+        "firstCapturedAtMonotonicNs": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "lastCapturedAtMonotonicNs": {
+          "type": "integer",
+          "minimum": 0
         }
       }
     },
@@ -125,7 +135,8 @@
         "boundaryStatus",
         "source",
         "firstSequence",
-        "firstSample"
+        "firstSample",
+        "firstCapturedAtMonotonicNs"
       ],
       "properties": {
         "boundaryStatus": {
@@ -139,6 +150,10 @@
           "minimum": 0
         },
         "firstSample": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "firstCapturedAtMonotonicNs": {
           "type": "integer",
           "minimum": 0
         }

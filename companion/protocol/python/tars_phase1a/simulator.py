@@ -300,6 +300,12 @@ class _StreamState:
             last_sequence_inclusive=last.last_sequence_inclusive,
             first_sample=first.first_sample,
             last_sample_exclusive=last.last_sample_exclusive,
+            first_captured_at_monotonic_ns=(
+                first.first_captured_at_monotonic_ns
+            ),
+            last_captured_at_monotonic_ns=(
+                last.last_captured_at_monotonic_ns
+            ),
         )
         self.pending_provider_write = _PendingProviderWrite(
             coverage, sequences, attempt_generation
@@ -382,6 +388,11 @@ class _StreamState:
                     last_sequence,
                     first_sample,
                     last_sample,
+                    self.capture_time_by_sequence[first_sequence],
+                    (
+                        self.capture_time_by_sequence[last_sequence]
+                        + self.client_chunks[last_sequence].duration_ms * 1_000_000
+                    ),
                 )
             )
             first_sequence = sequence
@@ -396,6 +407,11 @@ class _StreamState:
                 last_sequence,
                 first_sample,
                 last_sample,
+                self.capture_time_by_sequence[first_sequence],
+                (
+                    self.capture_time_by_sequence[last_sequence]
+                    + self.client_chunks[last_sequence].duration_ms * 1_000_000
+                ),
             )
         )
         return tuple(ranges)
@@ -688,7 +704,16 @@ class OfflineProtocolSimulator:
             expected_sample = state.last_captured_sample
         if first_sequence != expected_sequence or first_sample != expected_sample:
             raise ProtocolViolation("unknown-end gap must start at the first unresolved range")
-        coverage = UnknownEndCoverage(key, first_sequence, first_sample)
+        coverage = UnknownEndCoverage(
+            key,
+            first_sequence,
+            first_sample,
+            (
+                state.capture_time_by_sequence[first_sequence]
+                if first_sequence in state.capture_time_by_sequence
+                else 0
+            ),
+        )
         gap = TerminalOutcome(
             TerminalKind.GAP,
             coverage,

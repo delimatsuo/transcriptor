@@ -97,6 +97,8 @@ class KnownCoverage:
     last_sequence_inclusive: int
     first_sample: int
     last_sample_exclusive: int
+    first_captured_at_monotonic_ns: int = 0
+    last_captured_at_monotonic_ns: int = 0
 
     def __post_init__(self) -> None:
         if not isinstance(self.key, StreamKey):
@@ -111,6 +113,14 @@ class KnownCoverage:
         _validate_positive_integer("lastSampleExclusive", self.last_sample_exclusive)
         if self.last_sample_exclusive <= self.first_sample:
             raise ProtocolViolation("sample coverage must be non-empty and half-open")
+        _validate_non_negative_integer(
+            "firstCapturedAtMonotonicNs", self.first_captured_at_monotonic_ns
+        )
+        _validate_non_negative_integer(
+            "lastCapturedAtMonotonicNs", self.last_captured_at_monotonic_ns
+        )
+        if self.last_captured_at_monotonic_ns < self.first_captured_at_monotonic_ns:
+            raise ProtocolViolation("capture-time coverage must not be reversed")
 
     @property
     def coverage_id(self) -> str:
@@ -136,6 +146,8 @@ class KnownCoverage:
             "lastSequenceInclusive": self.last_sequence_inclusive,
             "firstSample": self.first_sample,
             "lastSampleExclusive": self.last_sample_exclusive,
+            "firstCapturedAtMonotonicNs": self.first_captured_at_monotonic_ns,
+            "lastCapturedAtMonotonicNs": self.last_captured_at_monotonic_ns,
         }
 
 
@@ -144,12 +156,16 @@ class UnknownEndCoverage:
     key: StreamKey
     first_sequence: int
     first_sample: int
+    first_captured_at_monotonic_ns: int = 0
 
     def __post_init__(self) -> None:
         if not isinstance(self.key, StreamKey):
             raise ProtocolViolation("coverage key must be a StreamKey")
         _validate_non_negative_integer("firstSequence", self.first_sequence)
         _validate_non_negative_integer("firstSample", self.first_sample)
+        _validate_non_negative_integer(
+            "firstCapturedAtMonotonicNs", self.first_captured_at_monotonic_ns
+        )
 
     @property
     def identity_token(self) -> str:
@@ -168,6 +184,7 @@ class UnknownEndCoverage:
             "source": self.key.source.value,
             "firstSequence": self.first_sequence,
             "firstSample": self.first_sample,
+            "firstCapturedAtMonotonicNs": self.first_captured_at_monotonic_ns,
         }
 
 
@@ -272,6 +289,10 @@ class AudioChunk:
             last_sequence_inclusive=self.sequence,
             first_sample=self.first_sample,
             last_sample_exclusive=self.last_sample_exclusive,
+            first_captured_at_monotonic_ns=self.captured_at_monotonic_ns,
+            last_captured_at_monotonic_ns=(
+                self.captured_at_monotonic_ns + self.duration_ms * 1_000_000
+            ),
         )
 
     def metadata_dict(self) -> Dict[str, object]:
