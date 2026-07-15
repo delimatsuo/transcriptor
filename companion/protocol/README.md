@@ -10,7 +10,7 @@ The guard-first slice establishes the execution boundary for all protocol state-
 - `fixtures/phase1a-v1.manifest.json` is the only byte-fixture input. Fixtures are generated and verified in memory.
 - `schema/protocol-v1.schema.json` is the tracked canonical v1 schema boundary. It contains metadata only; audio payload bytes are transported separately and never represented in JSON.
 
-The Python binding and terminal-coverage model is implemented in `python/tars_phase1a/model.py`; the deterministic in-memory provider, reconnect, fencing, and crash oracle is in `python/tars_phase1a/simulator.py`. Their vectors, bounds, retry, ordering, release, recovery, and terminal-uniqueness tests run only through the guarded wrapper. Swift validation and long-duration gates remain in progress.
+The Python binding and terminal-coverage model is implemented in `python/tars_phase1a/model.py`; the deterministic in-memory provider, reconnect, fencing, and crash oracle is in `python/tars_phase1a/simulator.py`. Swift bindings live in `swift/` and share `vectors/protocol-v1-vectors.json` with Python. All vectors, bounds, retry, ordering, release, recovery, schema-binding, and terminal-uniqueness tests run only through the guarded wrapper. Long-duration and final artifact gates remain in progress.
 
 ## Canonical coverage identity
 
