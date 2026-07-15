@@ -38,25 +38,24 @@ When documents appear to disagree, use this order:
 
 1. **Execution status and document classification:** [documentation and configuration status](docs/current-state/documentation-and-config-status.md)
 2. **Live containment evidence:** [Phase 0B containment evidence](docs/current-state/phase-0b-containment-evidence.md)
-3. **Governing product and architecture plan:** [native companion and note-first interviews](docs/plans/2026-07-15-native-companion-and-note-first-interviews.md)
-4. **Accepted architecture direction:** [ADR 0001](docs/architecture/0001-native-companion-cloud-stt.md)
-5. **Normative protocol target:** [companion streaming protocol](docs/architecture/0002-companion-stream-protocol.md)
-6. **Normative privacy target:** [data-flow, retention, and deletion contract](docs/privacy/data-flow-retention-contract.md)
-7. **Normative product behavior:** [companion and web state contract](docs/product/companion-web-state-contract.md)
-8. **Phase-specific execution plans:** [Phase 1 native capture spike](docs/plans/2026-07-15-phase-1-native-capture-spike.md)
-9. **Review decisions:** [initial 2026-07-15 panel review](docs/reviews/2026-07-15-native-companion-panel-review.md) and [Phase 1 gate re-review](docs/reviews/2026-07-15-phase-1-gate-panel-review.md)
-10. **Historical records:** `DEPLOY-SETUP.md` and similar dated setup logs describe what was attempted at that time; they are not current authorization or target architecture.
-11. **Active configuration and source:** workflows, manifests, rules, Dockerfiles, and code describe current behavior. They do not override an explicit safety gate or authorize deployment.
+3. **Phase 1A baseline evidence:** [baseline and preflight readback](docs/current-state/phase-1a-baseline-preflight-evidence.md)
+4. **Governing product and architecture plan:** [native companion and note-first interviews](docs/plans/2026-07-15-native-companion-and-note-first-interviews.md)
+5. **Accepted architecture direction:** [ADR 0001](docs/architecture/0001-native-companion-cloud-stt.md)
+6. **Normative protocol target:** [companion streaming protocol](docs/architecture/0002-companion-stream-protocol.md)
+7. **Normative privacy target:** [data-flow, retention, and deletion contract](docs/privacy/data-flow-retention-contract.md)
+8. **Normative product behavior:** [companion and web state contract](docs/product/companion-web-state-contract.md)
+9. **Phase-specific execution plans:** [Phase 1 native capture spike](docs/plans/2026-07-15-phase-1-native-capture-spike.md)
+10. **Review decisions:** [initial 2026-07-15 panel review](docs/reviews/2026-07-15-native-companion-panel-review.md) and [Phase 1 gate re-review](docs/reviews/2026-07-15-phase-1-gate-panel-review.md)
+11. **Historical records:** `DEPLOY-SETUP.md` and similar dated setup logs describe what was attempted at that time; they are not current authorization or target architecture.
+12. **Active configuration and source:** workflows, manifests, rules, Dockerfiles, and code describe current behavior. They do not override an explicit safety gate or authorize deployment.
 
 `AGENTS.md` is generated agent-memory context. It is non-normative and must not be used as product, privacy, security, deployment, or release documentation.
 
 ## Next gated activity
 
-Phase 0B containment and the inactive development boundary are established. The next possible activity is Phase 1A only:
+Phase 0B containment is complete. The docs-only normative baseline is `f9877132e2c34980f12c8098e09bbd8134fd9bd6`, and its repository/fixture/live-containment preflight passed. No Phase 1A source exists yet, so no runtime harness test is claimed.
 
-1. Commit this docs-only panel reconciliation on the clean Phase 1 branch and record the new baseline.
-2. Re-run the clean-head, preserved-WIP, credential/data, and network-disabled preflight.
-3. Present the reconciled panel decision and obtain explicit user authorization for **Phase 1A offline protocol conformance**.
+The next decision is explicit user authorization for **Phase 1A offline protocol conformance only**. Its first source slice must establish the network-disabled, no-credential, fixture-only test boundary before running conformance cases.
 
 Phase 1B hosted fixtures still requires separate authorization, lower provider quotas, exact-project/runtime attestation, least privilege, reviewed authentication, protected approval, fresh containment readback, and a tested kill switch. Phase 1C offline native fixture capture and Phase 1D integrated synthetic testing also retain their separate gates.
 

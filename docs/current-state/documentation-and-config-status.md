@@ -35,6 +35,7 @@ The 2026-07-15 reconciliation reviewed every project-owned Markdown document at 
 | `docs/reviews/2026-07-15-native-companion-panel-review.md` | Canonical review record | Panel decision and blockers | Update only through a new review record |
 | `docs/reviews/2026-07-15-phase-1-gate-panel-review.md` | Canonical review record | Re-review consensus and Phase 1A-only decision | Governs the current panel gate |
 | `docs/current-state/phase-0b-containment-evidence.md` | Current-state evidence | Live GitHub/GCP inventory, containment mutations, and remaining gates | Refresh after any relevant external-state change |
+| `docs/current-state/phase-1a-baseline-preflight-evidence.md` | Current-state evidence | Immutable Phase 1A baseline plus repository, fixture, and live-containment preflight | Refresh before implementation if relevant state drifts |
 | `docs/current-state/repository-preservation-inventory.md` | Current-state record | Dirty/untracked/ignored file boundary | Refresh before any branch/worktree operation |
 | `DEPLOY-SETUP.md` | Historical | March 2026 prototype deployment setup log | Retain with superseded/incomplete warning |
 | `.claude/deploy-config.yaml` | Contained prototype configuration | Release targets are safety sentinels and authentication is disabled | Do not replace sentinels before isolated-environment review |
