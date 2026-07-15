@@ -1,6 +1,6 @@
 # Companion and Web State Contract
 
-**Status:** Normative target; implementation blocked pending Phase 0 containment and panel re-review
+**Status:** Normative target; Phase 1A offline conformance implementation is panel-approved with conditions but requires explicit user authorization. Phases 1B-1D remain blocked.
 
 **Date:** 2026-07-15
 
@@ -12,36 +12,55 @@ The macOS companion is the sole authority for physical audio-capture state becau
 
 Every state update includes a session ID, capture generation, monotonically increasing state version, source health, origin, and time. Clients ignore stale versions.
 
-## 2. Capture state machine
+## 2. Composite state model
 
-The user-visible capture states are:
+Capture truth is not one flat state. Every authoritative update carries these independent axes:
 
-| State | Meaning | Allowed primary actions |
+| Axis | Minimum values | Authority |
 | --- | --- | --- |
-| `consent_required` | Required disclosure has not been acknowledged | Review and acknowledge; cancel |
-| `permissions_required` | Mic or system-audio permission is missing | Open permission guidance; cancel |
-| `ready` | Consent, permissions, devices, auth, and session lease are valid | Start |
-| `starting` | Companion is acquiring devices and opening streams; capture is not yet confirmed | Cancel |
-| `active` | Companion confirms physical capture is active | Pause; stop |
-| `pausing` | Pause was requested but the companion has not confirmed the boundary | Stop |
-| `paused_finishing` | New capture has stopped; previously captured audio is still being forwarded/finalized | Resume; stop |
-| `paused` | No new audio is captured and all pre-pause audio is represented by transcript coverage or gaps | Resume; stop |
-| `reconnecting` | Capture continues into bounded memory while transport reconnects | Pause; stop |
-| `buffering` | Capture continues but the queue is above its warning threshold | Pause; stop |
-| `companion_unreachable` | The web cannot confirm the companion's physical state; capture may still be active | Use the companion to verify, pause, or stop |
-| `degraded_gap` | Some audio coverage was lost or is untranscribed; capture may otherwise continue | Acknowledge; pause; stop |
-| `stopping` | Stop was requested; waiting for companion capture boundary | None beyond emergency quit guidance |
-| `finalizing` | Physical capture has stopped; pending text/gap events are becoming durable | Choose send or discard for unforwarded audio where applicable |
-| `completed` | Every captured range has durable transcript coverage or a durable gap | Review; export; delete |
-| `failed` | Capture or finalization cannot continue | Retry where safe; preserve text; delete |
-| `deletion_pending` | Session deletion is running and content access is blocked | View deletion status |
-| `deleted` | Required stores confirmed deletion; only content-free audit tombstone remains | None |
+| Physical capture | `not_started`, `starting`, `active`, `pausing`, `paused`, `stopping`, `stopped`, `unknown` | Companion |
+| Transport/connectivity | `offline`, `connecting`, `connected`, `reconnecting`, `unreachable` | Companion/server, mirrored by web |
+| Microphone health | `unknown`, `healthy`, `permission_missing`, `permission_revoked`, `device_unavailable`, `overflow`, `failed` | Companion |
+| System-audio health | Same values as microphone health | Companion |
+| Transcript coverage | `none`, `current`, `buffering`, `degraded_known_gap`, `degraded_unknown_boundary`, `complete` | Server from protocol coverage ledger |
+| Finalization | `not_started`, `pending_audio_choice`, `finalizing`, `completed`, `failed` | Companion for capture boundary; server for durable completion |
+| Deletion | `not_requested`, `pending`, `partial_failure`, `deleted` | Server |
 
-`active`, `reconnecting`, `buffering`, and `companion_unreachable` all mean physical capture may be occurring and use the same unmistakable recording indicator. `degraded_gap` never appears as a healthy state.
+Consent, permissions, authentication, device readiness, and lease validity are start/resume gates, not substitutes for these axes. UI labels such as `ready`, `reconnecting`, `companion_unreachable`, `degraded_gap`, `finalizing`, and `completed` are derived presentations only; they never overwrite or hide the component truths.
+
+Precedence rules:
+
+1. If physical capture is `active`, `pausing`, `stopping`, or `unknown` after a previously active state, both companion and web retain the same prominent recording treatment. `unreachable`, source failure, buffering, or a gap never downgrades that indicator.
+2. Each source failure is named independently. Total capture loss is distinct from one-source loss.
+3. A known gap shows its proved range. A forced-termination boundary that cannot be proved shows `unknown coverage` and never claims an exact end.
+4. Finalizing is visibly non-recording only after companion-confirmed `stopped` state. Server completion is separate from physical capture.
+5. Deletion state never implies capture, transcript, or assessment state and cannot be represented by the same control.
+
+Minimum derived presentations and actions:
+
+| Presentation | Required component truth | Allowed primary actions |
+| --- | --- | --- |
+| `consent_required` | Start/resume consent gate invalid | Review fixture-use or participant disclosure as applicable; cancel |
+| `permissions_required` | One or both required source permissions missing | Open permission guidance; cancel |
+| `ready` | All start gates valid; physical capture `not_started` or `paused` | Start or resume |
+| `starting` | Physical capture `starting` | Cancel |
+| `active` | Physical capture `active` | Pause; stop |
+| `reconnecting` / `buffering` | Physical capture may continue; transport or queue degraded | Pause; stop; inspect affected source/queue |
+| `companion_unreachable` | Transport `unreachable`; physical capture `unknown` | Use companion/local kill control to verify or stop |
+| `degraded_gap` | Coverage degraded while another axis may remain active | Inspect gap; pause; stop |
+| `stopping` | Physical capture `stopping` | Local emergency-stop guidance; retry status check |
+| `finalizing` | Physical capture `stopped`; finalization incomplete | Send/discard pending audio where available; retry |
+| `completed` | Finalization `completed`; full transcript-or-gap accounting | Review; export; delete |
+| `deletion_pending` / `deletion_failed` | Deletion `pending` or `partial_failure` | View scope/status; retry or contact support |
+| `deleted` | Deletion `deleted` | None |
 
 ## 3. Start and consent
 
 - Start is disabled until the applicable consent acknowledgement, permissions, authenticated ownership, device health, and session lease are valid.
+- Phase 1A has no capture UI or deletion control. Its deletion behavior is conformance-harness simulation only.
+- Phase 1C shows a persistent `Synthetic fixture test — no interview data` treatment in the companion and any test web surface. It provides no candidate, customer, participant, CV, JD, or recruiter identifier field.
+- The Phase 1C acknowledgement attests that the controlled fixture-routing setup is active. It is explicitly labeled as fixture-use attestation, not proof of participant consent.
+- Before fixture capture, the product warns that system capture can include unrelated application audio. The test starts only after the operator confirms the controlled route and immediate local kill control.
 - The disclosure says that microphone and system audio are captured on the device and sent transiently to T.A.R.S. and Google Cloud STT. It does not say transcription is entirely on-device.
 - The product reminds the recruiter that it does not replace their obligation to notify or obtain consent from interview participants.
 - Clicking Start changes the UI to `starting`, not `active`.
@@ -62,9 +81,11 @@ The user-visible capture states are:
 - Clicking Stop emits a request; it does not immediately claim capture stopped.
 - The companion stops acquiring new audio, records the final sequence ranges, and confirms `capture.stopped`.
 - After confirmation, the capture indicator changes to a clear non-recording finalization indicator.
-- If unforwarded audio remains in memory, the user is told exactly how much is pending and may send it or discard it. Discarding creates a permanent exact-range gap.
+- If unforwarded audio remains in memory, the user is shown the known pending duration/range, the action that will occur on timeout, and recovery guidance. `Send pending audio` explains that capture is already stopped but the pending bytes will leave the device. `Discard pending audio` requires destructive confirmation and says that the bytes are cleared immediately and the transcript will permanently show missing or unknown coverage.
+- There is no silent default. If the choice times out or transport cannot recover, the companion keeps the bounded choice visible while memory is available; before OS termination it uses the locally configured fail-safe, clears memory, and records either the proved discarded range or an unknown-end coverage event on recovery.
+- Discarding creates a permanent exact-range gap only when both boundaries are proven. Forced quit or process loss shows an honest unknown-coverage interval when the end boundary cannot be reconstructed.
 - Closing the web tab does not stop physical capture. Before closing an active tab, the browser warns that the native companion will continue and points to the companion's stop control.
-- Quitting the companion while active requires an explicit stop/discard decision where the OS permits. Forced termination is represented as a gap on recovery.
+- Quitting the companion while active requires an explicit stop/discard decision where the OS permits. Forced termination is represented as proved gap coverage or unknown-boundary coverage on recovery.
 - `completed` requires durable transcript-or-gap coverage for every captured range. It does not mean the assessment is approved.
 
 ## 6. Companion, browser, and multiple tabs
@@ -121,6 +142,8 @@ The user can retry, copy, or resolve failed/conflicted notes. A short undo windo
 - Export generation and download each require current authorization and produce content-free audit events.
 - Delete describes the scope before confirmation and immediately blocks new reads, exports, and AI jobs after acceptance.
 - `deleted` appears only after required storage and derived indexes confirm deletion. Partial failure remains `deletion_pending` with a retryable status.
+- A partial failure names the affected storage class without disclosing content, preserves the content-free audit tombstone, and offers retry plus support guidance. It never renders the terminal `deleted` treatment.
+- No real deletion control appears until its authorization, partial-failure, retry, and tombstone behavior is implemented. Phase 1A may exercise only state-machine simulation.
 - Assessment exclusion, transcript correction, retention expiry, and deletion are never represented as the same action.
 
 ## 12. Accessibility and language
@@ -143,5 +166,7 @@ Before internal human audio testing, automated and manual tests must prove:
 - pending, failed, and conflicted notes cannot disappear silently;
 - assessment provenance and human approval remain visible;
 - English and Brazilian Portuguese critical flows pass accessibility review.
+
+Before Phase 1C exits, task-based English and Brazilian Portuguese tests cover permission approval/denial/revocation, one-source and total loss, reconnect and overflow, stop while offline, pending send/discard, browser close, companion unreachable, forced quit/relaunch, and deletion partial failure. VoiceOver and keyboard-only tests verify focus restoration after permission dialogs, restrained live-region announcements, shortcut compatibility, and state communication without color. Multi-window tests cover browser closure, multiple tabs, foreground meeting applications, menu-bar visibility, lock/wake, and device changes. Participants must correctly answer whether capture is active, which source failed, what may be missing, whether closing the browser stops capture, what discard removes, and whether deletion is complete.
 
 Synthetic fixtures are the default. Consented human audio is permitted only after the isolated environment, STT settings, authentication/ownership, and protocol gates pass.

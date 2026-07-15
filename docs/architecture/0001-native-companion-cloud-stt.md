@@ -1,6 +1,6 @@
 # ADR 0001: Native Companion with Cloud Speech-to-Text
 
-**Status:** Architecture decision accepted for planning; implementation blocked pending Phase 0 containment and panel re-review
+**Status:** Architecture decision accepted. Phase 1A offline conformance is panel-approved with conditions but requires explicit user authorization; hosted, native-capture, and integrated work remains blocked.
 
 **Date:** 2026-07-15
 
@@ -144,4 +144,4 @@ Any reconsideration requires a benchmark against the same Portuguese interview f
 
 ## Approval boundary
 
-This ADR approves only the architecture direction for planning. Phase 1 implementation remains blocked by the 2026-07-15 panel review until separately authorized containment is executed, verified, and re-reviewed. It does not authorize source or active-configuration changes, branch manipulation, pushes, deployment, hosted audio, real candidate data, external pilot traffic, or migration of existing data.
+This ADR approves only the architecture direction. Phase 0B containment and panel re-review are complete. The panel conditionally cleared Phase 1A offline protocol conformance, which still requires explicit user authorization. Phase 1B hosted fixtures, Phase 1C offline native capture, and Phase 1D integrated synthetic testing remain blocked behind their named evidence and separate authorization. This ADR does not authorize source or active-configuration changes, branch manipulation, pushes, merge, deployment, hosted/native/integrated work outside its gate, ambient or human audio, real candidate/customer data, external pilot traffic, or migration of existing data.

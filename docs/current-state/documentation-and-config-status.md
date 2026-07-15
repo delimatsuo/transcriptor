@@ -25,13 +25,15 @@ The 2026-07-15 reconciliation reviewed every project-owned Markdown document at 
 | Surface | Classification | Current meaning | Required handling |
 | --- | --- | --- | --- |
 | `README.md` | Canonical | Entry point, status, and documentation hierarchy | Keep synchronized with review gates |
-| `docs/plans/2026-07-15-native-companion-and-note-first-interviews.md` | Canonical governing plan | Approved direction; Phase 1 blocked | Architecture changes require plan/ADR updates |
+| `docs/plans/2026-07-15-native-companion-and-note-first-interviews.md` | Canonical governing plan | Approved direction; Phase 1A conditionally cleared, 1B-1D blocked | Architecture changes require plan/ADR updates |
 | `docs/architecture/0001-native-companion-cloud-stt.md` | Normative target | Device capture plus cloud STT decision | Does not authorize implementation or deployment |
 | `docs/architecture/0002-companion-stream-protocol.md` | Normative target | Audio custody, acknowledgement, release, retry, and exact-gap semantics | Required before hosted audio; does not authorize implementation |
 | `docs/privacy/data-flow-retention-contract.md` | Normative target | Required privacy/data lifecycle | Explicitly not a claim about current prototype behavior |
 | `docs/product/companion-web-state-contract.md` | Normative target | Capture authority and user-visible state semantics | Required before protocol/UI implementation |
-| `docs/plans/2026-07-15-phase-1-native-capture-spike.md` | Phase plan | Blocked pending containment and re-review | Do not execute yet |
+| `docs/plans/2026-07-15-phase-1-native-capture-spike.md` | Phase plan | 1A offline panel-approved with conditions; 1B-1D blocked | 1A still requires clean preflight and explicit user authorization |
+| `docs/test-fixtures/phase-1a-synthetic-byte-manifest.md` | Normative test-input manifest | Fixed content-free byte recipes and checksums for 1A | Generated in memory only; reject unlisted input |
 | `docs/reviews/2026-07-15-native-companion-panel-review.md` | Canonical review record | Panel decision and blockers | Update only through a new review record |
+| `docs/reviews/2026-07-15-phase-1-gate-panel-review.md` | Canonical review record | Re-review consensus and Phase 1A-only decision | Governs the current panel gate |
 | `docs/current-state/phase-0b-containment-evidence.md` | Current-state evidence | Live GitHub/GCP inventory, containment mutations, and remaining gates | Refresh after any relevant external-state change |
 | `docs/current-state/repository-preservation-inventory.md` | Current-state record | Dirty/untracked/ignored file boundary | Refresh before any branch/worktree operation |
 | `DEPLOY-SETUP.md` | Historical | March 2026 prototype deployment setup log | Retain with superseded/incomplete warning |
@@ -100,4 +102,4 @@ The immediate P0 is contained with direct evidence:
 - Both legacy buckets enforce Public Access Prevention.
 - Vertex AI in-memory caching is disabled in the legacy project.
 
-Phase 0B is still incomplete, but billing, the inactive service/data/provider boundary, source preservation, clean worktree, protected branches, and approval-gated GitHub environments are now configured. The isolated project has private empty Firestore/GCS resources, an empty secret container, a disabled least-privilege runtime identity, verified-disabled STT data logging, verified-disabled Vertex cache, and a BRL 250 monthly project budget. Panel re-review is the only remaining Phase 0B gate. Phase 1 stays blocked until that decision. See `docs/current-state/phase-0b-containment-evidence.md`.
+Phase 0B is complete. Billing, the inactive service/data/provider boundary, source preservation, clean worktree, protected branches, and approval-gated GitHub environments are configured. The isolated project has private empty Firestore/GCS resources, an empty secret container, a disabled runtime identity, verified-disabled STT data logging, verified-disabled Vertex cache, and a BRL 250 monthly project budget. The panel re-review found no P0 objection and returned **approve with conditions: Phase 1A offline only**. Phase 1A still requires the docs-amendment baseline, fresh preflight, and explicit user authorization; Phases 1B-1D remain blocked. See `docs/current-state/phase-0b-containment-evidence.md` and `docs/reviews/2026-07-15-phase-1-gate-panel-review.md`.

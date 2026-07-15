@@ -4,9 +4,9 @@
 
 **Evidence timestamp:** 2026-07-15T18:29:50Z
 
-**Status:** Immediate deployment and anonymous-access paths contained; the isolated synthetic-only development boundary, repository boundary, and GitHub approval boundary are established; Phase 0B remains incomplete pending final panel review
+**Status:** Phase 0B complete. Immediate deployment and anonymous-access paths are contained; isolated development, repository, and GitHub approval boundaries are established; the final panel review conditionally cleared Phase 1A offline only.
 
-**Authorized scope:** Disable automatic/unauthenticated deployment, inventory live GitHub and Google Cloud state, preserve existing data, and establish an isolated development boundary. This record does not authorize Phase 1, a branch push, deletion, or use of real interview data.
+**Authorized scope:** Disable automatic/unauthenticated deployment, inventory live GitHub and Google Cloud state, preserve existing data, and establish an isolated development boundary. This record does not authorize Phase 1A implementation, a branch push, deletion, hosted/native capture, or use of real interview data.
 
 ## 1. Independent staff review
 
@@ -168,7 +168,7 @@ Reserved identity:
 - Project-scoped roles: `roles/datastore.user`, `roles/speech.client`, and `roles/aiplatform.user`.
 - Bucket-scoped role: `roles/storage.objectUser` on `gs://transcriptor-dev-20260715-tars` only.
 - Secret-scoped role: `roles/secretmanager.secretAccessor` on `tars-dev-runtime-config` only.
-- The account is disabled pending Phase 1 review.
+- The account remains disabled. Enabling it belongs only to a separately authorized Phase 1B mutation set after lower quotas, least-privilege review, exact-project/runtime attestation, hosted-authentication review, and kill-switch evidence pass.
 
 Billing status:
 
@@ -198,19 +198,28 @@ The isolated project is now a configured but deliberately inactive development b
 - Preserved the unfinished speaker-correlation and Meet-extension work on local branch `codex/preserve-speaker-correlation-wip-20260715`, commit `f5fc9f61cfddfc67de6bb2cf7af7c23f402c9840`.
 - The preservation commit intentionally includes ignored `extension/manifest.json` and excludes generated `frontend/tsconfig.tsbuildinfo`, agent memory, local secrets, documentation, and containment configuration.
 - Committed only the reviewed Phase 0 containment/configuration/documentation package to `staging` as `e8fb026f77be11fe43450f9727553520c42d9f94`.
-- Created clean worktree `/Volumes/Extreme Pro/myprojects/Transcriptor-worktrees/native-companion-phase1` on local branch `codex/native-companion-phase1` from that containment commit.
+- Recorded the preservation and GitHub approval-gate follow-up as docs-only commit `1d2ad13ad77bc317350a2464b851899c769b0d91`.
+- Created clean worktree `/Volumes/Extreme Pro/myprojects/Transcriptor-worktrees/native-companion-phase1` on local branch `codex/native-companion-phase1`, fast-forwarded to `1d2ad13ad77bc317350a2464b851899c769b0d91` before the final panel reconciliation.
 - No branch or commit was pushed.
 
-## 6. Remaining gates
+## 6. Final panel review
 
-Before Phase 0B can be marked complete:
+The staff, security/privacy, and UI/UX reviewers completed an initial review and one common debate round. All three returned **approve with conditions: Phase 1A offline only**. No P0 objection remains.
 
-1. Re-run the plan review and obtain an explicit Phase 1 proceed decision; any approval to enable the runtime identity must include lower provider quota overrides.
+The reconciled boundary is:
+
+- Phase 1A may be implemented only after the docs-only amendment baseline and fresh local preflight are recorded and the user explicitly authorizes 1A.
+- Phase 1A is fixed synthetic bytes, offline protocol/schema/conformance work only: no credentials, network, provider call, physical capture, cloud mutation, push, deploy, real data, or legacy mutation.
+- Phase 1B hosted allowlisted fixtures, Phase 1C offline native fixture capture, and Phase 1D integrated synthetic testing remain blocked behind their named evidence and separate authorization.
+- Lower provider quotas, exact-project/runtime attestation, least privilege, reviewed hosted authentication, and a tested kill switch are hard Phase 1B prerequisites.
+
+The reconciled review record is `docs/reviews/2026-07-15-phase-1-gate-panel-review.md`.
 
 ## 7. Current decision
 
 - **Immediate public/deployment exposure:** contained.
 - **Legacy data:** private in observed checks and preserved; retention/deletion unresolved.
 - **Isolated development environment:** billing and private resources configured; inactive, synthetic-only, no hosted endpoint, and runtime identity disabled.
-- **Phase 0B:** incomplete pending final panel review only.
-- **Phase 1:** blocked.
+- **Phase 0B:** complete.
+- **Phase 1A:** panel-approved with conditions; implementation still requires explicit user authorization after baseline/preflight readback.
+- **Phases 1B-1D:** blocked.

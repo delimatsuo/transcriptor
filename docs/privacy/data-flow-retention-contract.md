@@ -1,6 +1,6 @@
 # T.A.R.S. Data Flow, Retention, and Deletion Contract
 
-**Status:** Normative target draft; current prototype is non-compliant and Phase 1 is blocked pending containment and panel re-review
+**Status:** Normative target draft; current prototype is non-compliant. Phase 1A offline conformance is panel-approved with conditions but requires explicit user authorization; Phases 1B-1D remain blocked.
 
 **Date:** 2026-07-15
 
@@ -77,7 +77,7 @@ Initial spike limit: a maximum of 30 seconds of audio per source in memory. The 
 5. A provider-forwarding acknowledgement identifies the highest contiguous range written to the active STT stream with content-free forwarding metadata durably journaled.
 6. The companion releases raw audio from memory only through the highest contiguous provider-forwarding watermark for that source.
 7. A durable-transcript acknowledgement separately identifies final transcript events committed with stable IDs and coverage ranges.
-8. If a queue fills or a forwarded range cannot produce a durable transcript, the system persists and displays an exact source/sequence/sample/time gap; it does not silently lose content or spill raw audio to disk.
+8. If a queue fills or a forwarded range cannot produce a durable transcript, the system persists and displays the proved source/sequence/sample/time gap. If process loss prevents proof of the end boundary, it displays unknown coverage rather than fabricated precision. It does not silently lose content or spill raw audio to disk.
 
 The complete custody, retry, fencing, and gap semantics are normative in `docs/architecture/0002-companion-stream-protocol.md`.
 
@@ -106,7 +106,7 @@ The complete custody, retry, fencing, and gap semantics are normative in `docs/a
 ### Flow 9: Stop and completion
 
 1. A stop request does not claim success. The companion confirms the exact boundary at which new audio capture stopped.
-2. Remaining admitted or captured frames are forwarded and finalized, or explicitly discarded and marked as an exact gap.
+2. Remaining admitted or captured frames are forwarded and finalized, or explicitly discarded and marked as an exact proved gap or honest unknown-boundary coverage.
 3. In-memory raw audio is cleared.
 4. Every captured range is represented by a durable final-transcript coverage event or a durable gap.
 5. Final transcript state and assessment job state are durable.
@@ -194,6 +194,13 @@ Forbidden log fields:
 - Pass unauthenticated, revoked, stale-lease, and cross-tenant rejection tests.
 - Use synthetic fixtures until these controls and no-persistent-audio tests have direct evidence.
 
+The phased controls are stricter than the final hosted boundary:
+
+- Phase 1A uses only fixed/generated synthetic-byte manifests with a deterministic provider simulator, networking disabled, no credentials or implicit environment lookup, and no candidate/customer fields.
+- Phase 1B accepts only server-issued allowlisted fixture manifests and expected chunk digests/ranges in the exact isolated project. A client `synthetic` flag or mutable project label is not authority.
+- Phase 1C routes generated fixtures through native APIs into an in-memory/null sink with network/provider access disabled, persistent test-mode labeling, an immediate local kill control, and a stop/discard rule for possible ambient or unrelated-system-audio contamination.
+- Phase 1D integrates 1B and 1C only after both pass and after separate authorization. Ambient, consented, or other human speech remains out of scope for the spike.
+
 ## 8. Required controls before external beta
 
 - Authenticated REST and WebSocket endpoints.
@@ -212,7 +219,7 @@ Forbidden log fields:
 
 The privacy promise requires direct evidence, not code inspection alone.
 
-1. Filesystem snapshots before, during, and after success, stop, forced termination, logout, and deletion.
+1. Filesystem snapshots before, during, and after success, stop, forced termination, logout, and deletion, including application storage and OS temporary/cache locations.
 2. Process-memory and queue-limit instrumentation proving bounds without logging content.
 3. Network inspection matching documented destinations and payload classes.
 4. Queries of Firestore, GCS, indexes, exports, and logs after deletion.
@@ -221,6 +228,8 @@ The privacy promise requires direct evidence, not code inspection alone.
 7. Failure injection for interrupted deletion jobs.
 8. An inventory-driven account deletion test.
 9. A signed privacy verification report tied to the exact app build and cloud revision.
+10. Unique synthetic canary scans across unified logs, crash reports, core dumps, diagnostic uploads, CI artifacts, Firestore, GCS, and Cloud Logging after success, overflow, disconnect, stop, logout, and forced termination.
+11. Network evidence showing no traffic in Phase 1A/1C and only authenticated gateway plus approved gateway-to-STT traffic in Phase 1B/1D, with no credentials in URLs or content in logs.
 
 ## 10. Open policy decisions
 
@@ -232,4 +241,4 @@ The privacy promise requires direct evidence, not code inspection alone.
 - Backup strategy and deletion behavior.
 - Regional processing requirements.
 
-These policy values do not prevent documentation or synthetic local capture research. They do not override the Phase 1 block, hosted-audio preconditions, or the requirement for explicit approval before consented human audio. All must be resolved before external beta.
+These policy values do not prevent documentation or an explicitly authorized Phase 1A offline conformance implementation. They do not override the Phase 1B-1D blocks, hosted/native gate preconditions, or the prohibition on ambient or human audio in this spike. All must be resolved before external beta.

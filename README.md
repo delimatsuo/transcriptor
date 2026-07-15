@@ -6,7 +6,7 @@ T.A.R.S. is an executive-search interview companion. The target product uses a n
 
 **Architecture direction:** accepted for planning.
 
-**Phase 1 implementation:** blocked by the 2026-07-15 review panel.
+**Phase 1 implementation:** the panel approved Phase 1A offline only with conditions; implementation still requires explicit user authorization. Phases 1B-1D remain blocked.
 
 **Documentation reconciliation:** complete for project-owned documents and conflicting active configuration comments; generated and third-party dependency documentation is classified but not rewritten.
 
@@ -16,7 +16,7 @@ T.A.R.S. is an executive-search interview companion. The target product uses a n
 
 **Development environment:** `transcriptor-dev-20260715` is billed, labeled synthetic-only, and configured with an empty private Firestore database, private GCS bucket, empty secret container, disabled runtime identity, disabled STT data logging, and disabled Vertex cache. It has no hosted endpoint and is deliberately inactive.
 
-Immediate public/deployment exposure is contained. The repository and GitHub approval boundaries are established; Phase 0B awaits only panel re-review, and Phase 1 remains blocked until that decision. See the [containment evidence](</Volumes/Extreme Pro/myprojects/Transcriptor/docs/current-state/phase-0b-containment-evidence.md>).
+Immediate public/deployment exposure is contained. The repository and GitHub approval boundaries are established, and Phase 0B is complete. The re-review found no P0 blocker and cleared only offline protocol conformance after a fresh baseline/preflight and explicit user authorization. See the [containment evidence](docs/current-state/phase-0b-containment-evidence.md).
 
 ## Current prototype versus target product
 
@@ -36,15 +36,15 @@ Immediate public/deployment exposure is contained. The repository and GitHub app
 
 When documents appear to disagree, use this order:
 
-1. **Execution status and document classification:** [documentation and configuration status](</Volumes/Extreme Pro/myprojects/Transcriptor/docs/current-state/documentation-and-config-status.md>)
-2. **Live containment evidence:** [Phase 0B containment evidence](</Volumes/Extreme Pro/myprojects/Transcriptor/docs/current-state/phase-0b-containment-evidence.md>)
-3. **Governing product and architecture plan:** [native companion and note-first interviews](</Volumes/Extreme Pro/myprojects/Transcriptor/docs/plans/2026-07-15-native-companion-and-note-first-interviews.md>)
-4. **Accepted architecture direction:** [ADR 0001](</Volumes/Extreme Pro/myprojects/Transcriptor/docs/architecture/0001-native-companion-cloud-stt.md>)
-5. **Normative protocol target:** [companion streaming protocol](</Volumes/Extreme Pro/myprojects/Transcriptor/docs/architecture/0002-companion-stream-protocol.md>)
-6. **Normative privacy target:** [data-flow, retention, and deletion contract](</Volumes/Extreme Pro/myprojects/Transcriptor/docs/privacy/data-flow-retention-contract.md>)
-7. **Normative product behavior:** [companion and web state contract](</Volumes/Extreme Pro/myprojects/Transcriptor/docs/product/companion-web-state-contract.md>)
-8. **Phase-specific execution plans:** [Phase 1 native capture spike](</Volumes/Extreme Pro/myprojects/Transcriptor/docs/plans/2026-07-15-phase-1-native-capture-spike.md>)
-9. **Review decisions:** [2026-07-15 panel review](</Volumes/Extreme Pro/myprojects/Transcriptor/docs/reviews/2026-07-15-native-companion-panel-review.md>)
+1. **Execution status and document classification:** [documentation and configuration status](docs/current-state/documentation-and-config-status.md)
+2. **Live containment evidence:** [Phase 0B containment evidence](docs/current-state/phase-0b-containment-evidence.md)
+3. **Governing product and architecture plan:** [native companion and note-first interviews](docs/plans/2026-07-15-native-companion-and-note-first-interviews.md)
+4. **Accepted architecture direction:** [ADR 0001](docs/architecture/0001-native-companion-cloud-stt.md)
+5. **Normative protocol target:** [companion streaming protocol](docs/architecture/0002-companion-stream-protocol.md)
+6. **Normative privacy target:** [data-flow, retention, and deletion contract](docs/privacy/data-flow-retention-contract.md)
+7. **Normative product behavior:** [companion and web state contract](docs/product/companion-web-state-contract.md)
+8. **Phase-specific execution plans:** [Phase 1 native capture spike](docs/plans/2026-07-15-phase-1-native-capture-spike.md)
+9. **Review decisions:** [initial 2026-07-15 panel review](docs/reviews/2026-07-15-native-companion-panel-review.md) and [Phase 1 gate re-review](docs/reviews/2026-07-15-phase-1-gate-panel-review.md)
 10. **Historical records:** `DEPLOY-SETUP.md` and similar dated setup logs describe what was attempted at that time; they are not current authorization or target architecture.
 11. **Active configuration and source:** workflows, manifests, rules, Dockerfiles, and code describe current behavior. They do not override an explicit safety gate or authorize deployment.
 
@@ -52,10 +52,12 @@ When documents appear to disagree, use this order:
 
 ## Next gated activity
 
-Immediate containment and the inactive development boundary are established. Before Phase 1 can begin:
+Phase 0B containment and the inactive development boundary are established. The next possible activity is Phase 1A only:
 
-1. Re-run the plan gate with direct containment evidence.
-2. If approved, keep the BRL 250 monthly dev budget active and configure lower provider quota overrides in the same approved change that enables the runtime identity.
-3. Put minimal authentication, ownership, limits, and revocation before hosted audio.
+1. Commit this docs-only panel reconciliation on the clean Phase 1 branch and record the new baseline.
+2. Re-run the clean-head, preserved-WIP, credential/data, and network-disabled preflight.
+3. Present the reconciled panel decision and obtain explicit user authorization for **Phase 1A offline protocol conformance**.
 
-See the [repository preservation inventory](</Volumes/Extreme Pro/myprojects/Transcriptor/docs/current-state/repository-preservation-inventory.md>) for the dirty-work boundary.
+Phase 1B hosted fixtures still requires separate authorization, lower provider quotas, exact-project/runtime attestation, least privilege, reviewed authentication, protected approval, fresh containment readback, and a tested kill switch. Phase 1C offline native fixture capture and Phase 1D integrated synthetic testing also retain their separate gates.
+
+See the [repository preservation inventory](docs/current-state/repository-preservation-inventory.md) for the dirty-work boundary.
