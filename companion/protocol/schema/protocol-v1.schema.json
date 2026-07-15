@@ -268,9 +268,11 @@
             "eventId",
             "capturedAtMonotonicNs",
             "capturedAtWallClock",
+            "source",
             "outcome",
             "coverage",
-            "sttAttemptGeneration"
+            "sttAttemptGeneration",
+            "resultOrdinal"
           ],
           "properties": {
             "protocolVersion": {
@@ -307,6 +309,9 @@
               "format": "date-time",
               "maxLength": 40
             },
+            "source": {
+              "$ref": "#/$defs/source"
+            },
             "outcome": {
               "enum": [
                 "transcript",
@@ -327,6 +332,10 @@
               "type": "integer",
               "minimum": 0
             },
+            "resultOrdinal": {
+              "type": "integer",
+              "minimum": 0
+            },
             "reasonCode": {
               "type": "string",
               "minLength": 1,
@@ -343,6 +352,11 @@
                 }
               },
               "then": {
+                "not": {
+                  "required": [
+                    "reasonCode"
+                  ]
+                },
                 "properties": {
                   "outcome": {
                     "const": "transcript"
@@ -362,6 +376,9 @@
                 }
               },
               "then": {
+                "required": [
+                  "reasonCode"
+                ],
                 "properties": {
                   "outcome": {
                     "const": "gap"

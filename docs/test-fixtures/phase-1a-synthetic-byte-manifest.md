@@ -10,7 +10,7 @@
 
 Phase 1A validates framing, ordering, retries, fencing, bounds, coverage, and terminal outcomes. It does not measure transcription quality. Tests generate the byte sequences below in memory, verify the SHA-256 digest before use, and reject every unlisted fixture or digest.
 
-All fixtures are 3,200 bytes. When a test needs audio metadata, it labels the bytes as one second of 16 kHz, mono, signed 16-bit little-endian PCM; the deterministic provider simulator treats the bytes as opaque input and never interprets speech.
+All fixtures are 3,200 bytes. When a test needs audio metadata, it labels the bytes as 100 milliseconds of 16 kHz, mono, signed 16-bit little-endian PCM; the deterministic provider simulator treats the bytes as opaque input and never interprets speech.
 
 | Fixture ID | Language-independent generation rule | SHA-256 |
 | --- | --- | --- |
