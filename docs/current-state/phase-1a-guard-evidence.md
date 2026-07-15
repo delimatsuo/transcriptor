@@ -2,7 +2,7 @@
 
 **Recorded:** 2026-07-15T19:12:27Z
 
-**Status:** Guard-first slice implemented, hardened, verified, and approved for Phase 1A conformance. See `docs/reviews/2026-07-15-phase-1a-guard-review.md`.
+**Status:** Historical guard-first slice, implemented, hardened, verified, and approved for Phase 1A conformance. The later full Phase 1A gate passed at `9f3f3a0`; see `docs/current-state/phase-1a-conformance-evidence.md`.
 
 **Authorization:** The user explicitly approved the staff decision to begin Phase 1A under the guard-first conditions. This did not authorize Phase 1B-1D, push, merge, deployment, cloud mutation, native capture, ambient/human audio, real data, or legacy-data mutation.
 

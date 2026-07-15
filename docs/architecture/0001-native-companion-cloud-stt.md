@@ -1,6 +1,6 @@
 # ADR 0001: Native Companion with Cloud Speech-to-Text
 
-**Status:** Architecture decision accepted. Phase 1A offline work is authorized and guard review passed; conformance may proceed. Phases 1B-1D remain blocked.
+**Status:** Architecture decision accepted. Phase 1A offline conformance passed at `9f3f3a0`; Phases 1B-1D remain blocked.
 
 **Date:** 2026-07-15
 
@@ -144,4 +144,4 @@ Any reconsideration requires a benchmark against the same Portuguese interview f
 
 ## Approval boundary
 
-This ADR approves only the architecture direction. Phase 0B containment and panel re-review are complete, the user explicitly authorized Phase 1A offline work, and hardened guard tip `9ea9580` passed review. Protocol/state-machine conformance may proceed in the clean worktree. Phase 1B hosted fixtures, Phase 1C offline native capture, and Phase 1D integrated synthetic testing remain blocked behind their named evidence and separate authorization. This ADR does not authorize pushes, merge, deployment, hosted/native/integrated work outside its gate, ambient or human audio, real candidate/customer data, external pilot traffic, or migration of existing data.
+This ADR approves only the architecture direction. Phase 0B containment is complete, and the separately authorized Phase 1A offline protocol gate passed at `9f3f3a0`. Phase 1B hosted fixtures, Phase 1C offline native capture, and Phase 1D integrated synthetic testing remain blocked behind their named evidence and separate authorization. This ADR does not authorize pushes, merge, deployment, hosted/native/integrated work outside its gate, ambient or human audio, real candidate/customer data, external pilot traffic, or migration of existing data.

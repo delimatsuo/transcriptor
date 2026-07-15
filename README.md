@@ -6,7 +6,7 @@ T.A.R.S. is an executive-search interview companion. The target product uses a n
 
 **Architecture direction:** accepted for planning.
 
-**Phase 1 implementation:** Phase 1A offline-only work is explicitly authorized. The hardened guard tip `9ea9580` passed review; Python model/simulator and Swift binding work through `915f16c` passes 53 Python and 4 Swift guarded tests. Long-duration and final artifact conformance remain. Phases 1B-1D remain blocked.
+**Phase 1 implementation:** Phase 1A offline protocol conformance passed at implementation tip `9f3f3a0`: 54 Python and 4 Swift tests pass twice, including 60/90-minute bounded-memory runs, and the final artifact/scope scan is clean. Phases 1B-1D remain blocked.
 
 **Documentation reconciliation:** complete for project-owned documents and conflicting active configuration comments; generated and third-party dependency documentation is classified but not rewritten.
 
@@ -55,10 +55,8 @@ When documents appear to disagree, use this order:
 
 ## Next gated activity
 
-Phase 0B containment is complete. The user explicitly authorized Phase 1A offline work, and hardened guard tip `9ea95803e92ae740e6078903b2665cf604e1db09` passed review after its deterministic negative suite and artifact checks.
+Phase 0B containment and Phase 1A offline conformance are complete. The user explicitly authorized Phase 1A offline work, and the implementation passed its reviewed guard, deterministic Python/Swift, long-duration, and artifact/scope gates.
 
-Python coverage, terminal-outcome, provider, reconnect, fencing, crash, shared-vector, and Swift binding conformance is complete through commit `915f16c`, with 53 Python and 4 Swift tests passing twice. The next activity is 60/90-minute bounded-memory testing and final artifact/scope conformance. No Phase 1B-1D permission is implied.
-
-Phase 1B hosted fixtures still requires separate authorization, lower provider quotas, exact-project/runtime attestation, least privilege, reviewed authentication, protected approval, fresh containment readback, and a tested kill switch. Phase 1C offline native fixture capture and Phase 1D integrated synthetic testing also retain their separate gates.
+The next decision is whether to prepare and review the Phase 1B hosted-fixture threat model and activation checklist. No Phase 1B implementation or cloud mutation is authorized: it still requires exact-project/runtime attestation, lower quotas, least privilege, reviewed authentication/ownership, protected approval, fresh containment evidence, a tested kill switch, and separate user authorization. Phase 1C offline native fixture capture and Phase 1D integrated synthetic testing also retain their separate gates.
 
 See the [repository preservation inventory](docs/current-state/repository-preservation-inventory.md) for the dirty-work boundary.

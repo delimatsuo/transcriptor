@@ -1,6 +1,6 @@
 # Companion and Web State Contract
 
-**Status:** Normative target; Phase 1A offline guard review passed and non-UI conformance may proceed. User-facing/native work and Phases 1B-1D remain blocked.
+**Status:** Normative target; Phase 1A offline non-UI conformance passed at `9f3f3a0`. User-facing/native work and Phases 1B-1D remain blocked.
 
 **Date:** 2026-07-15
 
