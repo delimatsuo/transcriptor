@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { mergeTranscriptSegment } from "@/lib/transcript";
 import type {
   ConnectionHealth,
   Suggestion,
@@ -53,22 +54,7 @@ export function useWebSocket(): UseWebSocketReturn {
     switch (msg.type) {
       case "transcript_delta": {
         const segment = msg.payload.segment as unknown as TranscriptSegment;
-        setTranscript((prev) => {
-          // Replace interim results for the same speaker, append finals
-          if (segment.is_final) {
-            // Remove any non-final segments and add this final one
-            const filtered = prev.filter((s) => s.is_final);
-            return [...filtered, segment];
-          }
-          // Replace last interim segment
-          const lastIdx = prev.findLastIndex((s) => !s.is_final);
-          if (lastIdx >= 0) {
-            const updated = [...prev];
-            updated[lastIdx] = segment;
-            return updated;
-          }
-          return [...prev, segment];
-        });
+        setTranscript((prev) => mergeTranscriptSegment(prev, segment));
         break;
       }
       case "summary_update": {
