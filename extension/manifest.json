@@ -3,7 +3,7 @@
   "name": "T.A.R.S. Meeting Speaker Detector",
   "version": "1.0.0",
   "description": "Detects active speakers in Google Meet and sends events to T.A.R.S.",
-  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA0Z3VS5JJcds3xfn/ygWyF8PbnGy0AHB7MhgHcTz6sE2I2mOGBkNXoKRfJ5Qj2cv4mE7fGtNxAEpsCj5g3UIDQ3g5dCqO4VbeYyBBN9kzhvGPCH8FE2JlxFOFOHpE4V3bDO7UBeQ1QIWZ/Kz+PSXa8ILMqOEbJVMCE2MNPMfTajGHBUt0KHnFMq9GydejS5LFv5Tghj2g5Kx7IqHC0OAfYE0hJYG2Cp6l0r8PubGpJDBEMHjE+EG3Bv7fGvMHvRM5NTGnFSoTPC6eSvWFWMBvTH7elDJabc+oFKLMSFOEjfRFGzVAEaIEsWTLPOaXkGTiUv0QMvzsBOqWH0dPawIDAQAB",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAqjHV+SWw5nIai7GDVkqdz8urHxCkZlRzvs9KC+8AAdwD5yrHql/aq1abyHny+uXNdhSGz6YT/UB+DKbAwWqOLM5cheSVNcofNiRi8zqUjIWl2JBqM9S9SGiwMYk21UVfsWz7nvxqRvVALdftquR+y2ysw7vMITHGdLtKE3f+eTnV7lAFv4r0I4l+G2U3AlWZmU0rDNi0qrnR/z8HKfUbLJ9pAiC36163RQs3PLx4eayKCEAX6RwEIpuo5iXfV0IKcVZAv+P+YiTXWmPBgLaO9Ej8aOUpg4x803E9EZs3r6fntDwQBz3EyYM0ZkjE1uXMumQSyxCmykIFtZzMon/cNwIDAQAB",
   "permissions": [
     "activeTab",
     "storage",
@@ -11,7 +11,7 @@
   ],
   "host_permissions": [
     "https://meet.google.com/*",
-    "http://localhost:8000/api/*"
+    "http://localhost/*"
   ],
   "content_scripts": [
     {

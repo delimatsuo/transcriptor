@@ -120,7 +120,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:3000",
-        "chrome-extension://jmahpnfgbaklbkjhegcfpmlekhkamfmn",  # pinned extension ID
+        "chrome-extension://fhnadcdkfgdlkomjpilmgehhpgmkjnga",  # pinned extension ID (derived from manifest "key")
     ],
     allow_credentials=True,
     allow_methods=["*"],
