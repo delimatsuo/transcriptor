@@ -1,0 +1,39 @@
+{
+  "manifest_version": 3,
+  "name": "T.A.R.S. Meeting Speaker Detector",
+  "version": "1.0.0",
+  "description": "Detects active speakers in Google Meet and sends events to T.A.R.S.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA0Z3VS5JJcds3xfn/ygWyF8PbnGy0AHB7MhgHcTz6sE2I2mOGBkNXoKRfJ5Qj2cv4mE7fGtNxAEpsCj5g3UIDQ3g5dCqO4VbeYyBBN9kzhvGPCH8FE2JlxFOFOHpE4V3bDO7UBeQ1QIWZ/Kz+PSXa8ILMqOEbJVMCE2MNPMfTajGHBUt0KHnFMq9GydejS5LFv5Tghj2g5Kx7IqHC0OAfYE0hJYG2Cp6l0r8PubGpJDBEMHjE+EG3Bv7fGvMHvRM5NTGnFSoTPC6eSvWFWMBvTH7elDJabc+oFKLMSFOEjfRFGzVAEaIEsWTLPOaXkGTiUv0QMvzsBOqWH0dPawIDAQAB",
+  "permissions": [
+    "activeTab",
+    "storage",
+    "alarms"
+  ],
+  "host_permissions": [
+    "https://meet.google.com/*",
+    "http://localhost:8000/api/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": ["https://meet.google.com/*"],
+      "js": ["content/meet-selectors.js", "content/meet-observer.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}

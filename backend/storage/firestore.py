@@ -62,14 +62,17 @@ class FirestoreStorage:
             .document(segment.id)
         )
 
-        await doc_ref.set({
+        data = {
             "text": segment.text,
             "speaker": segment.speaker,
             "startTime": segment.start_time,
             "endTime": segment.end_time,
             "confidence": segment.confidence,
             "sequenceNumber": segment.sequence_number,
-        })
+        }
+        if segment.speaker_override:
+            data["speakerOverride"] = segment.speaker_override
+        await doc_ref.set(data)
 
     async def save_transcript_batch(
         self, session_id: str, segments: list[TranscriptSegment]
@@ -84,14 +87,17 @@ class FirestoreStorage:
 
         for segment in segments:
             doc_ref = session_ref.collection("transcript").document(segment.id)
-            batch.set(doc_ref, {
+            data = {
                 "text": segment.text,
                 "speaker": segment.speaker,
                 "startTime": segment.start_time,
                 "endTime": segment.end_time,
                 "confidence": segment.confidence,
                 "sequenceNumber": segment.sequence_number,
-            })
+            }
+            if segment.speaker_override:
+                data["speakerOverride"] = segment.speaker_override
+            batch.set(doc_ref, data)
 
         await batch.commit()
         logger.info(

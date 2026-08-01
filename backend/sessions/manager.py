@@ -68,7 +68,7 @@ class SessionManager:
         recent = segments[-max_segments:]
         lines = []
         for seg in recent:
-            speaker = seg.speaker
+            speaker = seg.speaker_override or seg.speaker
             lines.append(f"[{speaker}]: {seg.text}")
         return "\n".join(lines)
 
