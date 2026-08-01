@@ -32,3 +32,6 @@ structlog==24.4.0
 
 # Firebase Auth
 firebase-admin==6.6.0
+
+# Testing
+pytest==8.3.4

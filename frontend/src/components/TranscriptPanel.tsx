@@ -52,7 +52,10 @@ export default function TranscriptPanel({ segments, speakerMap = {}, readOnly = 
     }
   }, [segments.length, readOnly]);
 
-  const getSpeakerLabel = (speaker: string) => speakerMap[speaker] || speaker;
+  const getSpeakerLabel = (seg: TranscriptSegment) => {
+    const speaker = seg.speaker_override || seg.speaker;
+    return speakerMap[speaker] || speaker;
+  };
 
   return (
     <div
@@ -97,7 +100,8 @@ export default function TranscriptPanel({ segments, speakerMap = {}, readOnly = 
       )}
 
       {segments.map((seg) => {
-        const style = getSpeakerStyle(getSpeakerLabel(seg.speaker));
+        const speakerLabel = getSpeakerLabel(seg);
+        const style = getSpeakerStyle(speakerLabel);
         return (
           <div
             key={seg.id}
@@ -128,7 +132,7 @@ export default function TranscriptPanel({ segments, speakerMap = {}, readOnly = 
                   letterSpacing: "0.2px",
                 }}
               >
-                {getSpeakerLabel(seg.speaker)}
+                {speakerLabel}
               </span>
               {!seg.is_final && (
                 <span

@@ -8,7 +8,8 @@ export type WSMessageType =
   | "suggestion"
   | "session_state"
   | "connection_status"
-  | "error";
+  | "error"
+  | "speaker_relabel_batch";
 
 export type ConnectionHealth = "healthy" | "degraded" | "disconnected";
 export type ErrorSeverity = "warning" | "error" | "fatal";
@@ -19,6 +20,7 @@ export interface TranscriptSegment {
   id: string;
   text: string;
   speaker: string;
+  speaker_override?: string;
   start_time: number;
   end_time: number;
   confidence: number;

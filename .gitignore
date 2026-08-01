@@ -11,6 +11,7 @@ build/
 node_modules/
 .next/
 out/
+*.tsbuildinfo
 
 # Environment
 .env
@@ -30,6 +31,7 @@ recordings/
 !companion/protocol/schema/protocol-v1.schema.json
 !companion/protocol/fixtures/phase1a-v1.manifest.json
 !companion/protocol/vectors/protocol-v1-vectors.json
+!extension/manifest.json
 
 # IDE
 .vscode/

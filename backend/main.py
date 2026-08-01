@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import secrets
+import time
 from contextlib import asynccontextmanager
 
 import structlog
 import uvicorn
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, Form, HTTPException
+from fastapi import FastAPI, Header, WebSocket, WebSocketDisconnect, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse
 
@@ -26,13 +28,20 @@ from backend.llm.interview_prompts import (
 from backend.llm.meeting_prompts import FINAL_SUMMARY_PROMPT
 from backend.schemas.models import (
     ActionItem,
+    ActiveSpeakerBatch,
+    ClockSyncRequest,
+    ClockSyncResponse,
     ConnectionHealth,
     ConnectionStatusPayload,
     ErrorPayload,
     ErrorSeverity,
+    HeartbeatRequest,
+    ParticipantsList,
     SessionMode,
     SessionStatus,
     SetContextRequest,
+    SpeakerRelabelBatch,
+    SpeakerRelabelUpdate,
     Suggestion,
     SummaryUpdate,
     TranscriptDelta,
@@ -40,6 +49,8 @@ from backend.schemas.models import (
     WSMessage,
     WSMessageType,
 )
+from backend.speaker_correlation import SpeakerCorrelator
+from backend.utils.sanitize import sanitize_participant_name
 from backend.sessions.manager import SessionManager
 from backend.stt.stream_manager import StreamManager
 from backend.storage.firestore import FirestoreStorage
@@ -66,6 +77,11 @@ pipeline_tasks: dict[str, list[asyncio.Task]] = {}
 interview_documents: dict[str, dict[str, str]] = {}  # session_id -> {resume, jd}
 interview_suggestion_counters: dict[str, int] = {}  # session_id -> final segment count
 single_source_warned: set[str] = set()  # sessions already warned about single audio source
+
+# Speaker correlation (Chrome extension)
+speaker_correlators: dict[str, SpeakerCorrelator] = {}
+extension_tokens: dict[str, str] = {}  # session_id -> token
+_clock_sync_timestamps: dict[str, float] = {}  # session_id -> last sync time (rate limit)
 
 # Concurrency guard for pre-interview analysis
 _analyze_semaphore = asyncio.Semaphore(2)
@@ -102,7 +118,10 @@ app = FastAPI(title="T.A.R.S.", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=[
+        "http://localhost:3000",
+        "chrome-extension://jmahpnfgbaklbkjhegcfpmlekhkamfmn",  # pinned extension ID
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -216,15 +235,22 @@ async def _on_transcript(session_id: str, segment: TranscriptSegment) -> None:
     """Handle a new transcript segment."""
     assert session_mgr and firestore_storage and context_window
 
-    # Store in session manager
+    # 1. Store in session manager (in-memory, with original speaker)
     session_mgr.add_transcript_segment(session_id, segment)
 
-    # Broadcast via WebSocket
+    # 2. Correlate speaker (if extension is connected)
+    correlator = speaker_correlators.get(session_id)
+    if correlator and correlator.healthy and segment.is_final:
+        new_speaker, confidence = correlator.correlate(segment)
+        if new_speaker and confidence >= correlator.min_confidence:
+            segment.speaker_override = new_speaker
+
+    # 3. Broadcast via WebSocket (frontend sees override)
     seq = ws_manager.next_sequence(session_id)
     msg = WSMessage.transcript_delta(session_id, seq, segment)
     await ws_manager.broadcast(session_id, msg)
 
-    # Persist final segments to Firestore
+    # 4. Persist to Firestore (WITH override, after correlation)
     if segment.is_final:
         try:
             await firestore_storage.save_transcript_segment(session_id, segment)
@@ -423,6 +449,9 @@ async def _generate_final_summary(session_id: str) -> None:
         logger.exception("final_summary_error", session_id=session_id)
     finally:
         interview_documents.pop(session_id, None)
+        speaker_correlators.pop(session_id, None)
+        extension_tokens.pop(session_id, None)
+        _clock_sync_timestamps.pop(session_id, None)
 
 
 async def _stop_pipeline(session_id: str) -> None:
@@ -662,7 +691,7 @@ async def download_transcript(session_id: str):
         if not seg.is_final:
             continue
         ts = f"[{seg.start_time:.1f}s]" if seg.start_time is not None else ""
-        speaker = seg.speaker or "?"
+        speaker = seg.speaker_override or seg.speaker or "?"
         lines.append(f"{ts} {speaker}: {seg.text}")
 
     content = "\n".join(lines)
@@ -671,6 +700,214 @@ async def download_transcript(session_id: str):
         media_type="text/plain; charset=utf-8",
         headers={"Content-Disposition": f'attachment; filename="transcript-{session_id}.txt"'},
     )
+
+
+# --- Chrome Extension Endpoints ---
+
+def _validate_extension_token(session_id: str, authorization: str | None) -> None:
+    """Validate the extension session token."""
+    expected = extension_tokens.get(session_id)
+    if not expected:
+        raise HTTPException(status_code=403, detail="No extension linked to this session")
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing or invalid authorization header")
+    token = authorization[len("Bearer "):]
+    if token != expected:
+        raise HTTPException(status_code=403, detail="Invalid session token")
+
+
+@app.post("/api/sessions/{session_id}/extension-link")
+async def extension_link(session_id: str):
+    """Link Chrome extension to a session. Returns a session token."""
+    assert session_mgr
+    session = session_mgr.get_session(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if session.status != SessionStatus.ACTIVE:
+        raise HTTPException(status_code=400, detail="Session is not active")
+
+    token = secrets.token_urlsafe(32)
+    extension_tokens[session_id] = token
+
+    # Create correlator for this session
+    if session_id not in speaker_correlators:
+        speaker_correlators[session_id] = SpeakerCorrelator(session_id=session_id)
+
+    logger.info("extension_linked", session_id=session_id)
+    return {"token": token, "session_id": session_id}
+
+
+@app.post("/api/sessions/{session_id}/clock-sync")
+async def clock_sync(
+    session_id: str,
+    body: ClockSyncRequest,
+    authorization: str | None = Header(None),
+):
+    """NTP-style clock synchronization for Chrome extension."""
+    assert session_mgr
+    _validate_extension_token(session_id, authorization)
+
+    session = session_mgr.get_session(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    # Rate limit: max 1 req/5s per session (but allow burst of 5 for initial sync)
+    now = time.time()
+    last_sync = _clock_sync_timestamps.get(session_id, 0)
+    if now - last_sync < 0.5:  # Allow rapid sync during initial calibration
+        raise HTTPException(status_code=429, detail="Clock sync rate limited")
+    _clock_sync_timestamps[session_id] = now
+
+    server_time = time.time()
+
+    # Sanity check: reject if client/server clocks are wildly off
+    if abs(server_time - body.client_send_time) > 30:
+        raise HTTPException(
+            status_code=400,
+            detail="Client/server clock difference exceeds 30s sanity check",
+        )
+
+    session_start_wall = session.started_at.timestamp()
+
+    return ClockSyncResponse(
+        client_send_time=body.client_send_time,
+        server_time=server_time,
+        session_start_wall=session_start_wall,
+    )
+
+
+@app.post("/api/sessions/{session_id}/active-speaker")
+async def active_speaker(
+    session_id: str,
+    body: ActiveSpeakerBatch,
+    authorization: str | None = Header(None),
+):
+    """Receive active-speaker events from Chrome extension."""
+    assert session_mgr and firestore_storage
+    _validate_extension_token(session_id, authorization)
+
+    session = session_mgr.get_session(session_id)
+    if session is None or session.status != SessionStatus.ACTIVE:
+        raise HTTPException(status_code=404, detail="Session not found or inactive")
+
+    correlator = speaker_correlators.get(session_id)
+    if not correlator:
+        raise HTTPException(status_code=400, detail="No correlator for session")
+
+    # Sanitize participant names
+    sanitized_events = []
+    for event in body.events:
+        clean_name = sanitize_participant_name(event.participant_name)
+        if clean_name:
+            event.participant_name = clean_name
+            sanitized_events.append(event)
+
+    if not sanitized_events:
+        return {"ok": True, "relabeled_count": 0}
+
+    correlator.add_events(sanitized_events)
+
+    # Retroactive relabeling: scan recent unmatched final segments
+    segments = session_mgr.get_transcript(session_id)
+    relabel_updates = []
+
+    # Check last 20 final segments that don't have an override yet
+    final_segments = [s for s in segments if s.is_final and not s.speaker_override]
+    for seg in final_segments[-20:]:
+        new_speaker, confidence = correlator.correlate(seg)
+        if new_speaker and confidence >= correlator.min_confidence:
+            seg.speaker_override = new_speaker
+            relabel_updates.append(
+                SpeakerRelabelUpdate(segment_id=seg.id, new_speaker=new_speaker)
+            )
+
+    # Broadcast relabel batch if any
+    if relabel_updates:
+        batch = SpeakerRelabelBatch(updates=relabel_updates)
+        seq = ws_manager.next_sequence(session_id)
+        msg = WSMessage.speaker_relabel_batch_msg(session_id, seq, batch)
+        await ws_manager.broadcast(session_id, msg)
+
+        # Update Firestore for relabeled segments
+        for update in relabel_updates:
+            try:
+                seg = next(s for s in segments if s.id == update.segment_id)
+                await firestore_storage.save_transcript_segment(session_id, seg)
+            except (StopIteration, Exception):
+                logger.exception("firestore_relabel_error", segment_id=update.segment_id)
+
+    return {"ok": True, "relabeled_count": len(relabel_updates)}
+
+
+@app.post("/api/sessions/{session_id}/participants")
+async def update_participants(
+    session_id: str,
+    body: ParticipantsList,
+    authorization: str | None = Header(None),
+):
+    """Receive participant list from Chrome extension."""
+    assert session_mgr
+    _validate_extension_token(session_id, authorization)
+
+    correlator = speaker_correlators.get(session_id)
+    if not correlator:
+        raise HTTPException(status_code=400, detail="No correlator for session")
+
+    # Sanitize names
+    self_name = ""
+    clean_participants = []
+    for p in body.participants:
+        clean_name = sanitize_participant_name(p.name)
+        if clean_name:
+            clean_participants.append({"name": clean_name, "isSelf": p.isSelf})
+            if p.isSelf:
+                self_name = clean_name
+
+    correlator.set_participants(clean_participants, self_name)
+
+    # In interview mode: auto-set candidate_name from the non-self participant
+    session = session_mgr.get_session(session_id)
+    if session and session.mode == SessionMode.INTERVIEW:
+        non_self = [p for p in clean_participants if not p["isSelf"]]
+        if non_self and session_id in interview_documents:
+            interview_documents[session_id]["candidate_name"] = non_self[0]["name"]
+
+    logger.info(
+        "participants_updated",
+        session_id=session_id,
+        count=len(clean_participants),
+        self_name=self_name,
+    )
+    return {"ok": True, "count": len(clean_participants)}
+
+
+@app.post("/api/sessions/{session_id}/heartbeat")
+async def extension_heartbeat(
+    session_id: str,
+    body: HeartbeatRequest,
+    authorization: str | None = Header(None),
+):
+    """Receive health heartbeat from Chrome extension."""
+    _validate_extension_token(session_id, authorization)
+
+    correlator = speaker_correlators.get(session_id)
+    if not correlator:
+        return {"ok": True}
+
+    correlator.update_heartbeat(body.can_detect_speaker)
+
+    # Check if heartbeat was stale — warn frontend
+    if not body.can_detect_speaker:
+        seq = ws_manager.next_sequence(session_id)
+        error = ErrorPayload(
+            severity=ErrorSeverity.WARNING,
+            message="Extensão Chrome não consegue detectar o speaker ativo. Verifique se a aba do Google Meet está aberta.",
+            code="extension_speaker_detection_failed",
+        )
+        msg = WSMessage.error_msg(session_id, seq, error)
+        await ws_manager.broadcast(session_id, msg)
+
+    return {"ok": True}
 
 
 # --- WebSocket ---

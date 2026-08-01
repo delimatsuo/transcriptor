@@ -138,6 +138,22 @@ export function useWebSocket(): UseWebSocketReturn {
         setLastError(payload.message);
         break;
       }
+      case "speaker_relabel_batch": {
+        const { updates } = msg.payload as unknown as {
+          updates: Array<{ segment_id: string; new_speaker: string }>;
+        };
+        setTranscript((prev) => {
+          const updateMap = new Map(
+            updates.map((u) => [u.segment_id, u.new_speaker]),
+          );
+          return prev.map((seg) =>
+            updateMap.has(seg.id)
+              ? { ...seg, speaker_override: updateMap.get(seg.id)! }
+              : seg,
+          );
+        });
+        break;
+      }
     }
   }, []);
 
