@@ -130,6 +130,7 @@
         lastActiveSpeaker = activeSpeaker;
 
         if (activeSpeaker) {
+          console.log("[T.A.R.S.] active speaker detected:", activeSpeaker);
           sendToBackground({
             type: "active_speaker_change",
             participantName: activeSpeaker,
