@@ -1,9 +1,15 @@
 "use client";
 
+import ReactMarkdown from "react-markdown";
+
 import Chip from "@/components/ui/Chip";
 import Label from "@/components/ui/Label";
 import { tokens } from "@/lib/tokens";
 import type { SuggestionEntry } from "@/types/ws";
+
+const HERO_MARKDOWN_ELEMENTS = [
+  "p", "strong", "em", "h3", "h4", "ul", "ol", "li", "code", "br", "hr",
+];
 
 interface Props {
   hero: SuggestionEntry | null;
@@ -41,7 +47,7 @@ export default function HeroQuestion({
     );
   }
 
-  const question = hero.questions[0] ?? "";
+  const question = hero.questions[0]?.trim() ?? "";
 
   return (
     <div
@@ -59,18 +65,32 @@ export default function HeroQuestion({
         {isStale && <Chip tone="warn">conversa avançou</Chip>}
       </div>
 
-      <p
-        style={{
-          fontSize: tokens.text.hero,
-          lineHeight: 1.45,
-          fontWeight: 500,
-          letterSpacing: "-0.2px",
-          color: tokens.color.text.primary,
-          margin: 0,
-        }}
-      >
-        {question}
-      </p>
+      {question ? (
+        <p
+          style={{
+            fontSize: tokens.text.hero,
+            lineHeight: 1.45,
+            fontWeight: 500,
+            letterSpacing: "-0.2px",
+            color: tokens.color.text.primary,
+            margin: 0,
+          }}
+        >
+          {question}
+        </p>
+      ) : (
+        <div
+          style={{
+            fontSize: tokens.text.title,
+            lineHeight: 1.5,
+            color: tokens.color.text.primary,
+          }}
+        >
+          <ReactMarkdown allowedElements={HERO_MARKDOWN_ELEMENTS}>
+            {hero.markdown ?? ""}
+          </ReactMarkdown>
+        </div>
+      )}
 
       <div style={{ display: "flex", alignItems: "center", gap: tokens.space.md }}>
         <button
