@@ -3,10 +3,9 @@
 import { useCallback, useRef, useState } from "react";
 import { useWebSocket } from "@/hooks/useWebSocket";
 import ConnectionStatus from "@/components/ConnectionStatus";
-import TranscriptPanel from "@/components/TranscriptPanel";
-import SuggestionsPanel from "@/components/SuggestionsPanel";
 import SessionControls from "@/components/SessionControls";
 import PreSessionView from "@/components/views/PreSessionView";
+import InterviewLiveView from "@/components/views/InterviewLiveView";
 import MeetingLiveView from "@/components/views/MeetingLiveView";
 import PostSessionView from "@/components/views/PostSessionView";
 import type { SessionMode } from "@/types/ws";
@@ -140,43 +139,11 @@ export default function Home() {
 
       {/* Active interview: two-column layout */}
       {isActive && isInterview && (
-        <div
-          style={{
-            flex: 1,
-            display: "flex",
-            overflow: "hidden",
-          }}
-        >
-          {/* Left: Transcript (60%) */}
-          <div
-            style={{
-              flex: "0 0 60%",
-              overflow: "hidden",
-              borderRight: "1px solid #f5f5f7",
-              display: "flex",
-              flexDirection: "column",
-            }}
-          >
-            <TranscriptPanel segments={transcript} />
-          </div>
-
-          {/* Right: Interview Assistant (40%) */}
-          <div
-            style={{
-              flex: "0 0 40%",
-              overflow: "hidden",
-              display: "flex",
-              flexDirection: "column",
-              backgroundColor: "#fafafa",
-            }}
-          >
-            <SuggestionsPanel
-              suggestionHistory={suggestionHistory}
-              briefing={preInterviewBriefing}
-              isInterview
-            />
-          </div>
-        </div>
+        <InterviewLiveView
+          transcript={transcript}
+          suggestionHistory={suggestionHistory}
+          preInterviewBriefing={preInterviewBriefing}
+        />
       )}
 
       {/* Active meeting: single column */}
