@@ -53,7 +53,7 @@ export default function PostSessionView({
                 margin: "0 0 2px 0",
               }}
             >
-              Session Complete
+              Sessão concluída
             </h2>
             <p
               style={{
@@ -62,7 +62,7 @@ export default function PostSessionView({
                 margin: 0,
               }}
             >
-              Review your {isInterview ? "interview" : "meeting"} below
+              Revise sua {isInterview ? "entrevista" : "reunião"} abaixo
             </p>
           </div>
           <button
@@ -79,7 +79,7 @@ export default function PostSessionView({
               transition: "all 0.2s ease",
             }}
           >
-            New Session
+            Nova sessão
           </button>
         </div>
       </div>
@@ -101,7 +101,7 @@ export default function PostSessionView({
             margin: "0 0 16px 0",
           }}
         >
-          Full Transcript
+          Transcrição completa
         </h3>
         <div
           style={{

@@ -6,7 +6,7 @@ test("meeting mode renders transcript segments from the socket", async ({ page }
   const server = await mockSession(page, "meeting");
 
   await page.goto("/");
-  await page.getByRole("button", { name: /start session|iniciar/i }).click();
+  await page.getByRole("button", { name: /iniciar sessão/i }).click();
 
   await server.transcript("boa tarde a todos", "Entrevistador", true);
 
