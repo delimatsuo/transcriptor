@@ -1589,7 +1589,18 @@ whole redesign exists to fix.
 There's no existing unit-test seam for `TranscriptPanel`'s scroll effect (it depends on DOM
 layout, which `node:test` can't exercise), so this is verified via manual/e2e reasoning
 rather than a new unit test — do not invent a DOM-mocking test harness for one effect.
-Instead, extend the existing Playwright coverage:
+Instead, extend the existing Playwright coverage.
+
+**Use `toBeInViewport()`, not `toBeVisible()`, for the final assertion.** Playwright's
+`toBeVisible()` only checks that an element has a non-empty bounding box and isn't
+`visibility:hidden` — it does not check whether the element is scrolled outside its
+container's visible area. An element clipped by `overflow: hidden`/`auto` with
+`scrollTop: 0` still reports as "visible" to that assertion even though a human looking at
+the screen couldn't see it. `toBeInViewport()` uses the Intersection Observer API and
+correctly fails when the element is scrolled out of view — confirmed against
+https://playwright.dev/docs/api/class-locatorassertions#locator-assertions-to-be-in-viewport.
+A `toBeVisible()` version of this test would pass identically whether the scroll bug is
+present or fixed, defeating the point of writing it.
 
 Add to `frontend/e2e/interview-hero.spec.ts` (import already present):
 
@@ -1609,7 +1620,7 @@ test("opening the transcript sheet jumps to the latest speech, not the oldest", 
 
   await page.getByRole("button", { name: /transcrição/i }).click();
 
-  await expect(page.getByText("linha número 40")).toBeVisible();
+  await expect(page.getByText("linha número 40")).toBeInViewport();
 });
 ```
 
