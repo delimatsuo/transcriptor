@@ -4,11 +4,11 @@ import { useCallback, useRef, useState } from "react";
 import { useWebSocket } from "@/hooks/useWebSocket";
 import ConnectionStatus from "@/components/ConnectionStatus";
 import TranscriptPanel from "@/components/TranscriptPanel";
-import SummaryPanel from "@/components/SummaryPanel";
 import SuggestionsPanel from "@/components/SuggestionsPanel";
 import SessionControls from "@/components/SessionControls";
 import PreSessionView from "@/components/views/PreSessionView";
 import MeetingLiveView from "@/components/views/MeetingLiveView";
+import PostSessionView from "@/components/views/PostSessionView";
 import type { SessionMode } from "@/types/ws";
 
 const API_BASE = "http://localhost:8000";
@@ -191,113 +191,16 @@ export default function Home() {
 
       {/* Post-session review */}
       {isPostSession && (
-        <div
-          style={{
-            flex: 1,
-            display: "flex",
-            flexDirection: "column",
-            overflow: "auto",
+        <PostSessionView
+          transcript={transcript}
+          summary={summary}
+          isSummaryFinal={isSummaryFinal}
+          isInterview={isInterview}
+          onNewSession={() => {
+            setSessionId(null);
+            setIsActive(false);
           }}
-        >
-          {/* Session ended banner */}
-          <div
-            style={{
-              padding: "16px 28px",
-              backgroundColor: "#f5f5f7",
-              borderBottom: "1px solid #e8e8ed",
-              flexShrink: 0,
-            }}
-          >
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-              }}
-            >
-              <div>
-                <h2
-                  style={{
-                    fontSize: 17,
-                    fontWeight: 600,
-                    color: "#1d1d1f",
-                    margin: "0 0 2px 0",
-                  }}
-                >
-                  Session Complete
-                </h2>
-                <p
-                  style={{
-                    fontSize: 13,
-                    color: "#86868b",
-                    margin: 0,
-                  }}
-                >
-                  Review your {isInterview ? "interview" : "meeting"} below
-                </p>
-              </div>
-              <button
-                onClick={() => {
-                  setSessionId(null);
-                  setIsActive(false);
-                }}
-                style={{
-                  padding: "8px 18px",
-                  backgroundColor: "white",
-                  color: "#007aff",
-                  border: "1px solid #d2d2d7",
-                  borderRadius: 100,
-                  fontWeight: 500,
-                  cursor: "pointer",
-                  fontSize: 13,
-                  transition: "all 0.2s ease",
-                }}
-              >
-                New Session
-              </button>
-            </div>
-          </div>
-
-          {/* Transcript (read-only) */}
-          <div
-            style={{
-              padding: "24px 28px",
-              borderBottom: "1px solid #f5f5f7",
-            }}
-          >
-            <h3
-              style={{
-                fontSize: 13,
-                fontWeight: 600,
-                color: "#86868b",
-                textTransform: "uppercase",
-                letterSpacing: "0.5px",
-                margin: "0 0 16px 0",
-              }}
-            >
-              Full Transcript
-            </h3>
-            <div
-              style={{
-                maxHeight: 400,
-                overflowY: "auto",
-                borderRadius: 12,
-                border: "1px solid #f0f0f0",
-                backgroundColor: "#fafafa",
-              }}
-            >
-              <TranscriptPanel segments={transcript} readOnly />
-            </div>
-          </div>
-
-          {/* Summary / Assessment */}
-          <SummaryPanel
-            summary={summary}
-            isFinal={isSummaryFinal}
-            transcript={transcript}
-            isInterview={isInterview}
-          />
-        </div>
+        />
       )}
     </div>
   );
