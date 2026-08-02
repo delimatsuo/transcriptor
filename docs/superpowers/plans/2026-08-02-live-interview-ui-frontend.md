@@ -1366,8 +1366,11 @@ Translate every user-visible string in the three redesigned surfaces. Exact repl
 | `SummaryPanel.tsx:89` | `Session Summary` (source is Title Case; a parent `<h2>` applies `textTransform: "uppercase"`, so it renders as `SESSION SUMMARY` — translate the source string, not the rendered casing) | `Resumo da sessão` |
 | `SummaryPanel.tsx:88` | `Interview Assessment` (sibling branch of the same three-way ternary as the row above — `isFinal && isInterview`) | `Avaliação da entrevista` |
 | `SummaryPanel.tsx:90` | `Rolling Summary` (third branch of the same ternary — `!isFinal`) | `Resumo em andamento` |
+| `SummaryPanel.tsx:103` | `updating` (small badge shown next to the heading above whenever `!isFinal`) | `atualizando` |
+| `TranscriptPanel.tsx:83` | `Transcript` (`<h2>` heading, shown whenever `readOnly` is false — i.e. inside `TranscriptSheet` during a live interview, and inside the unmodified `MeetingLiveView`; translating this shared component's own copy is in scope even though one of its call sites is out of scope for behavior changes) | `Transcrição` (matches the toggle button's own label in `TranscriptSheet.tsx`) |
 | `TranscriptPanel.tsx` | `Waiting for speech...` | `Aguardando fala...` |
 | `TranscriptPanel.tsx` | `transcribing...` | `transcrevendo...` |
+| `SessionControls.tsx:316` | `Upload CV and paste JD, then analyze before starting` | `Envie o currículo, cole a descrição da vaga e analise antes de começar` |
 
 Also translate the remaining `Start Session` / `Stop Session` button labels in
 `SessionControls.tsx` to `Iniciar sessão` / `Encerrar sessão`, and the downloaded filenames
@@ -1388,29 +1391,42 @@ is gone.
 
 - [ ] **Step 3: Verify nothing English remains in the redesigned surfaces**
 
-Run both commands:
-```bash
-cd frontend && grep -rnE '"(Ready to begin|Session Complete|New Session|Full Transcript|Download Report|Download Transcript|Waiting for speech|Start Session|Stop Session|Starting\.\.\.|Interview Assessment|Rolling Summary|Analysis failed|Upload CV / Resume)"' src/components src/app
-cd frontend && grep -rnE '^\s*(Recording|Retry|Interview Preparation)\s*$' src/components src/app
-```
-Expected: no output from either command.
+**The primary check is reading, not grepping.** Read the full current content of all six
+files this task touches — `PreSessionView.tsx`, `PostSessionView.tsx`,
+`SessionControls.tsx`, `SummaryPanel.tsx`, `TranscriptPanel.tsx`,
+`e2e/meeting-mode.spec.ts` — end to end, and confirm every user-visible string (JSX text,
+string literals passed to a component or rendered directly, `placeholder`/`aria-label`
+attributes, error-message strings that reach the UI) is Portuguese. Do this even if you
+believe the replacement table above is complete — it has been wrong twice already (see
+history below), each time in a way no grep pattern anticipated in advance.
 
-**Why two commands, and why this replaced the original single `>(...)`-prefixed grep:** the
-first pass through this task shipped with eight strings still in English — six missing from
-the original replacement table entirely (`Recording`, `Interview Preparation`,
-`Upload CV / Resume`, `Retry`, `Starting...`, `Analysis failed` ×2), plus two more
-(`Interview Assessment`, `Rolling Summary`) found only by directly reading the files rather
-than trusting a grep. The original verification command, `grep -rnE ">(...)"`, required the
-`>` and the target text to be **on the same source line** — which fails for the multi-line
-JSX this codebase actually uses (e.g. a closing `>` on one line and the text node on the
-next). It returned "no output" against a file that still had English in it, and that false
-"clean" result was the thing that let a plan-mandated gap slip through review undetected.
-The two commands above split by how each string actually appears: quoted string literals
-(command 1) and bare JSX text nodes on their own line (command 2, anchored on the whole
-line so it can't match a same-named identifier elsewhere in the file). If you are re-running
-this task from scratch rather than fixing a specific gap, don't trust either grep alone as a
-substitute for reading the six files yourself — they cover the strings known to be missing
-as of this amendment, not a general guarantee.
+As a secondary, defense-in-depth sanity check (not a substitute for reading), also run:
+```bash
+cd frontend && grep -rnE '"(Ready to begin|Session Complete|New Session|Full Transcript|Download Report|Download Transcript|Waiting for speech|Start Session|Stop Session|Starting\.\.\.|Interview Assessment|Rolling Summary|Analysis failed|Upload CV / Resume|Transcript$)"' src/components src/app
+cd frontend && grep -rnE '^\s*(Recording|Retry|Interview Preparation|Transcript|updating)\s*$' src/components src/app
+cd frontend && grep -rn "Upload CV and paste JD" src/components
+```
+Expected: no output from any of the three commands. A clean result here is *supporting* evidence, not
+proof — it only checks strings already known to have been missed before.
+
+**History, so the next person doesn't repeat the pattern:** this task went through three
+review rounds. Round 1 shipped with 8 strings missing from the original table entirely
+(`Recording`, `Interview Preparation`, `Upload CV / Resume`, `Retry`, `Starting...`,
+`Analysis failed` ×2, plus `Interview Assessment`/`Rolling Summary` found during that same
+round's audit). Round 2's fix was verified only against a grep — and that grep,
+`grep -rnE ">(...)"`, was itself broken: it required the `>` and target text on the **same
+source line**, which fails for this codebase's actual multi-line JSX formatting, so it
+reported "no output" (clean) against files that still had English in them. A reviewer doing
+a genuine fresh read of all six files (not trusting either the table or the grep) then found
+3 more: `TranscriptPanel.tsx:83`'s `Transcript` heading (rendered inside the flagship
+redesigned interview surface, directly under the correctly-translated `Transcrição` toggle
+button — visibly two languages stacked one line apart), `SummaryPanel.tsx:103`'s `updating`
+badge, and `SessionControls.tsx:316`'s full English subtitle sentence (which the round-1
+implementer had actually flagged as a concern in their own report, but which fell out of
+scope during the round-2 audit anyway). Every miss came from trusting an enumerated
+list — a table or a grep — as if it were a complete specification, when its only actual
+guarantee is "covers the strings someone happened to notice." Reading the files fully is
+the only check in this task's history that has caught everything.
 
 - [ ] **Step 4: Verify typecheck, tests, and e2e**
 
