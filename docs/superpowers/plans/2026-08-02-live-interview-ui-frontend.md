@@ -1553,6 +1553,155 @@ git commit -m "test(frontend): cover the hero question WebSocket seam end to end
 
 ---
 
+### Task 11: Fix two regressions found by the final whole-branch review
+
+**Files:**
+- Modify: `frontend/src/components/TranscriptPanel.tsx`
+- Modify: `frontend/src/components/ConnectionStatus.tsx`
+
+**Interfaces:**
+- Consumes: nothing new.
+- Produces: no API change.
+
+The final whole-branch review (after Task 10) found two defects that only became visible at
+the level of the complete change — neither existed at the boundary of any single task's own
+review.
+
+**1. The transcript sheet opens on the oldest visible text instead of the latest, and never
+follows new speech while open.** `TranscriptSheet` mounts `TranscriptPanel` fresh every time
+it opens (`{open && <TranscriptPanel .../>}`), so `TranscriptPanel`'s auto-scroll effect runs
+against a just-mounted container with `scrollTop === 0`. Once the transcript is longer than
+the 320px box, that reads as "not near the bottom," so it never scrolls down — and stays that
+way for every later segment while the sheet remains open, because the heuristic keeps
+measuring `scrollTop === 0` as "far from the bottom." In the pre-redesign layout
+`TranscriptPanel` was permanently mounted and correctly stayed pinned near the bottom; this
+is a regression introduced by making it remount on every sheet toggle, and it defeats the
+sheet's whole purpose (glancing at recent speech).
+
+**2. `ConnectionStatus.tsx` was missed by the pt-BR pass across all three of its rounds** —
+it's a small, separately-imported component, not one of the six files any round's table or
+grep ever enumerated. It renders on the live interview screen for the entire session
+(`page.tsx:107`, `hasContent`), so English is permanently visible on the one surface this
+whole redesign exists to fix.
+
+- [ ] **Step 1: Write the failing test for the scroll fix**
+
+There's no existing unit-test seam for `TranscriptPanel`'s scroll effect (it depends on DOM
+layout, which `node:test` can't exercise), so this is verified via manual/e2e reasoning
+rather than a new unit test — do not invent a DOM-mocking test harness for one effect.
+Instead, extend the existing Playwright coverage:
+
+Add to `frontend/e2e/interview-hero.spec.ts` (import already present):
+
+```ts
+test("opening the transcript sheet jumps to the latest speech, not the oldest", async ({
+  page,
+}) => {
+  const server = await mockSession(page, "interview");
+
+  await page.goto("/");
+  await page.getByRole("combobox").selectOption("interview");
+  await page.getByRole("button", { name: /iniciar sessão/i }).click();
+
+  for (let i = 1; i <= 40; i += 1) {
+    await server.transcript(`linha número ${i}`, "Entrevistador", true);
+  }
+
+  await page.getByRole("button", { name: /transcrição/i }).click();
+
+  await expect(page.getByText("linha número 40")).toBeVisible();
+});
+```
+
+- [ ] **Step 2: Run it to see it fail against current code**
+
+Run: `cd frontend && npm run e2e`
+Expected: the new test fails — the last line is off-screen because the sheet opens scrolled
+to the top.
+
+- [ ] **Step 3: Fix `TranscriptPanel.tsx`**
+
+Change the auto-scroll effect to jump to the bottom unconditionally on first mount (when the
+container may already be full of history, e.g. right after the sheet opens), and keep the
+existing "only if already near the bottom" behavior for every later update so a user who has
+scrolled up to read isn't yanked back down:
+
+```tsx
+import { useEffect, useRef } from "react";
+```
+
+(already imported — no change to the import line, shown for context)
+
+Replace the effect:
+
+```tsx
+  const hasMountedRef = useRef(false);
+
+  useEffect(() => {
+    if (readOnly) return;
+    const container = containerRef.current;
+    if (!container) return;
+
+    if (!hasMountedRef.current) {
+      // First render after mount may already contain a full transcript (e.g. the
+      // sheet just opened) — jump straight to the latest speech, not the top.
+      hasMountedRef.current = true;
+      bottomRef.current?.scrollIntoView({ behavior: "auto" });
+      return;
+    }
+
+    // On every later update, only auto-scroll if the user is already near the bottom.
+    const isNearBottom =
+      container.scrollHeight - container.scrollTop - container.clientHeight < 120;
+    if (isNearBottom) {
+      bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    }
+  }, [segments.length, readOnly]);
+```
+
+Add `const hasMountedRef = useRef(false);` alongside the existing `bottomRef`/`containerRef`
+declarations.
+
+- [ ] **Step 4: Run it to see it pass**
+
+Run: `cd frontend && npm run e2e`
+Expected: 6 passed (1 meeting baseline + 5 interview, including the new one).
+
+- [ ] **Step 5: Fix `ConnectionStatus.tsx`**
+
+In `frontend/src/components/ConnectionStatus.tsx`, translate the three labels:
+
+```tsx
+  healthy: { color: "#34c759", bg: "rgba(52, 199, 89, 0.1)", label: "Conectado" },
+  degraded: { color: "#ff9500", bg: "rgba(255, 149, 0, 0.1)", label: "Instável" },
+  disconnected: { color: "#ff3b30", bg: "rgba(255, 59, 48, 0.1)", label: "Desconectado" },
+```
+
+- [ ] **Step 6: Verify everything**
+
+```bash
+cd frontend && npx tsc --noEmit && npm test && npm run e2e && npm run build
+```
+Expected: typecheck exit 0; 18 unit tests pass; 6 e2e pass; build succeeds.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add frontend/src/components/TranscriptPanel.tsx frontend/src/components/ConnectionStatus.tsx frontend/e2e/interview-hero.spec.ts
+git commit -m "fix(frontend): jump transcript sheet to latest speech on open, translate connection status"
+```
+
+**Explicitly not in scope for this task:** a third finding from the same review —
+`HeroQuestion` renders only `hero.questions[0]`, discarding `hero.markdown` entirely, where
+the old `SuggestionsPanel` used `markdown` as its primary content and `questions` only as a
+fallback. If the backend's line-based question extraction (`backend/main.py`) ever produces
+zero items for a given suggestion, the hero would render as a visually blank card with no
+recovery. This is real but larger than a same-task fix: it touches what content the hero
+should show when the primary path yields nothing, which is a product question, not a pure
+bug fix — surfaced to the project owner rather than resolved unilaterally here.
+
+---
+
 ## Self-review notes
 
 **Spec coverage.** Tokens and primitives → Tasks 1-2. `page.tsx` decomposition with verbatim
