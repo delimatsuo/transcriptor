@@ -86,3 +86,17 @@ test("opening the transcript sheet jumps to the latest speech, not the oldest", 
 
   await expect(page.getByText("linha número 40")).toBeInViewport();
 });
+
+test("a suggestion with no extracted question falls back to its markdown", async ({
+  page,
+}) => {
+  const server = await mockSession(page, "interview");
+
+  await page.goto("/");
+  await page.getByRole("combobox").selectOption("interview");
+  await page.getByRole("button", { name: /iniciar sessão/i }).click();
+
+  await server.suggestion([], "### Notas\nPergunte sobre a experiência com fusões.");
+
+  await expect(page.getByText("Pergunte sobre a experiência com fusões.")).toBeVisible();
+});

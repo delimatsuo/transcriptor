@@ -16,13 +16,20 @@ function bySequence(a: SuggestionEntry, b: SuggestionEntry): number {
   return a.sequenceNumber - b.sequenceNumber;
 }
 
+/** Does this batch have anything worth showing — an extracted question or raw markdown? */
+export function entryHasContent(entry: SuggestionEntry): boolean {
+  const question = entry.questions[0]?.trim() ?? "";
+  const markdown = entry.markdown?.trim() ?? "";
+  return question.length > 0 || markdown.length > 0;
+}
+
 /** The oldest batch the interviewer has not yet dismissed. */
 export function selectHero(
   history: SuggestionEntry[],
   state: HeroState,
 ): SuggestionEntry | null {
   const pending = history
-    .filter((e) => e.sequenceNumber > state.dismissedThroughSeq)
+    .filter((e) => e.sequenceNumber > state.dismissedThroughSeq && entryHasContent(e))
     .sort(bySequence);
   return pending[0] ?? null;
 }
@@ -42,7 +49,9 @@ export function queueCount(
   hero: SuggestionEntry | null,
 ): number {
   if (!hero) return 0;
-  return history.filter((e) => e.sequenceNumber > hero.sequenceNumber).length;
+  return history.filter(
+    (e) => e.sequenceNumber > hero.sequenceNumber && entryHasContent(e),
+  ).length;
 }
 
 export function dismissHero(

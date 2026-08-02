@@ -67,7 +67,7 @@ export async function mockSession(page: Page, mode: "meeting" | "interview") {
         }),
       );
     },
-    async suggestion(questions: string[]) {
+    async suggestion(questions: string[], markdown = "") {
       await socketReady;
       seq += 1;
       sendFrame?.(
@@ -76,7 +76,7 @@ export async function mockSession(page: Page, mode: "meeting" | "interview") {
           session_id: SESSION_ID,
           sequence_number: seq,
           timestamp: new Date(0).toISOString(),
-          payload: { questions, markdown: "", context: "" },
+          payload: { questions, markdown, context: "" },
         }),
       );
     },
