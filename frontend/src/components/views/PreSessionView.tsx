@@ -34,7 +34,7 @@ export default function PreSessionView({ preInterviewBriefing }: Props) {
               letterSpacing: "-0.5px",
             }}
           >
-            Ready to begin
+            Tudo pronto
           </h2>
           <p
             style={{
@@ -46,8 +46,8 @@ export default function PreSessionView({ preInterviewBriefing }: Props) {
               lineHeight: 1.5,
             }}
           >
-            Configure your session above and start recording. T.A.R.S. will
-            transcribe and assist in real time.
+            Configure a sessão acima e comece a gravar. O T.A.R.S. transcreve
+            e ajuda em tempo real.
           </p>
         </>
       )}

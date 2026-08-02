@@ -35,7 +35,7 @@ export default function SummaryPanel({
   if (!summary) return null;
 
   const handleDownloadReport = () => {
-    downloadText(summary, "interview-assessment-report.txt");
+    downloadText(summary, "relatorio-entrevista.txt");
   };
 
   const handleDownloadTranscript = () => {
@@ -43,7 +43,7 @@ export default function SummaryPanel({
       .filter((s) => s.is_final)
       .map((s) => `[${s.speaker}] ${s.text}`)
       .join("\n\n");
-    downloadText(text, "interview-transcript.txt");
+    downloadText(text, "transcricao-entrevista.txt");
   };
 
   return (
@@ -86,7 +86,7 @@ export default function SummaryPanel({
               {isFinal
                 ? isInterview
                   ? "Interview Assessment"
-                  : "Session Summary"
+                  : "Resumo da sessão"
                 : "Rolling Summary"}
             </h2>
             {!isFinal && (
@@ -121,7 +121,7 @@ export default function SummaryPanel({
                   transition: "all 0.2s ease",
                 }}
               >
-                Download Report
+                Baixar relatório
               </button>
               {transcript.length > 0 && (
                 <button
@@ -138,7 +138,7 @@ export default function SummaryPanel({
                     transition: "all 0.2s ease",
                   }}
                 >
-                  Download Transcript
+                  Baixar transcrição
                 </button>
               )}
             </div>

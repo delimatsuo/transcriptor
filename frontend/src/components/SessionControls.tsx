@@ -208,7 +208,7 @@ export default function SessionControls({
             opacity: loading ? 0.6 : 1,
           }}
         >
-          Stop Session
+          Encerrar sessão
         </button>
       </div>
     );
@@ -222,7 +222,7 @@ export default function SessionControls({
       <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
         <input
           type="text"
-          placeholder="Session title (optional)"
+          placeholder="Título da sessão (opcional)"
           value={title}
           onChange={(e) => setTitle(e.target.value)}
           style={{
@@ -260,8 +260,8 @@ export default function SessionControls({
             cursor: "pointer",
           }}
         >
-          <option value="meeting">Meeting</option>
-          <option value="interview">Interview</option>
+          <option value="meeting">Reunião</option>
+          <option value="interview">Entrevista</option>
         </select>
         <button
           onClick={handleStart}
@@ -280,7 +280,7 @@ export default function SessionControls({
             opacity: loading ? 0.6 : 1,
           }}
         >
-          {loading ? "Starting..." : "Start Session"}
+          {loading ? "Starting..." : "Iniciar sessão"}
         </button>
       </div>
 
@@ -320,7 +320,7 @@ export default function SessionControls({
           <div style={{ marginBottom: 12 }}>
             <input
               type="text"
-              placeholder="Candidate name"
+              placeholder="Nome do candidato"
               value={candidateName}
               onChange={(e) => setCandidateName(e.target.value)}
               style={{
@@ -383,7 +383,7 @@ export default function SessionControls({
 
             <div style={{ flex: 1 }}>
               <textarea
-                placeholder="Paste job description here"
+                placeholder="Cole a descrição da vaga aqui"
                 value={jdText}
                 onChange={(e) => handleJdChange(e.target.value)}
                 rows={3}

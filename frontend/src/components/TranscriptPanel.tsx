@@ -94,7 +94,7 @@ export default function TranscriptPanel({ segments, speakerMap = {}, readOnly = 
           }}
         >
           <p style={{ color: "#86868b", fontSize: 15 }}>
-            Waiting for speech...
+            Aguardando fala...
           </p>
         </div>
       )}
@@ -142,7 +142,7 @@ export default function TranscriptPanel({ segments, speakerMap = {}, readOnly = 
                     fontStyle: "italic",
                   }}
                 >
-                  transcribing...
+                  transcrevendo...
                 </span>
               )}
             </div>
