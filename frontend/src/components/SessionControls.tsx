@@ -71,7 +71,7 @@ export default function SessionControls({
 
       if (!res.ok) {
         const err = await res.json();
-        throw new Error(err.detail || "Analysis failed");
+        throw new Error(err.detail || "Falha na análise");
       }
 
       const data = await res.json();
@@ -80,7 +80,7 @@ export default function SessionControls({
       onBriefingReady?.(data.briefing_markdown);
     } catch (err) {
       setAnalyzeError(
-        err instanceof Error ? err.message : "Analysis failed",
+        err instanceof Error ? err.message : "Falha na análise",
       );
     } finally {
       setAnalyzing(false);
@@ -189,7 +189,7 @@ export default function SessionControls({
               animation: "pulse 1.5s infinite",
             }}
           />
-          Recording
+          Gravando
         </span>
         <button
           onClick={handleStop}
@@ -280,7 +280,7 @@ export default function SessionControls({
             opacity: loading ? 0.6 : 1,
           }}
         >
-          {loading ? "Starting..." : "Iniciar sessão"}
+          {loading ? "Iniciando..." : "Iniciar sessão"}
         </button>
       </div>
 
@@ -304,7 +304,7 @@ export default function SessionControls({
               margin: "0 0 4px 0",
             }}
           >
-            Interview Preparation
+            Preparação da entrevista
           </h3>
           <p
             style={{
@@ -377,7 +377,7 @@ export default function SessionControls({
                   boxShadow: "0 1px 2px rgba(0, 0, 0, 0.04)",
                 }}
               >
-                {resumeFile ? `CV: ${resumeFile.name}` : "Upload CV / Resume"}
+                {resumeFile ? `CV: ${resumeFile.name}` : "Enviar currículo"}
               </button>
             </div>
 
@@ -458,7 +458,7 @@ export default function SessionControls({
                     cursor: "pointer",
                   }}
                 >
-                  Retry
+                  Tentar novamente
                 </button>
               </div>
             )}

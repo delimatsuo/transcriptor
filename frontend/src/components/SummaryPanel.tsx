@@ -85,9 +85,9 @@ export default function SummaryPanel({
             >
               {isFinal
                 ? isInterview
-                  ? "Interview Assessment"
+                  ? "Avaliação da entrevista"
                   : "Resumo da sessão"
-                : "Rolling Summary"}
+                : "Resumo em andamento"}
             </h2>
             {!isFinal && (
               <span
