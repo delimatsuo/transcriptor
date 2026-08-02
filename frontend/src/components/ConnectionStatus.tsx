@@ -6,9 +6,9 @@ const STATUS_CONFIG: Record<
   ConnectionHealth,
   { color: string; bg: string; label: string }
 > = {
-  healthy: { color: "#34c759", bg: "rgba(52, 199, 89, 0.1)", label: "Connected" },
-  degraded: { color: "#ff9500", bg: "rgba(255, 149, 0, 0.1)", label: "Degraded" },
-  disconnected: { color: "#ff3b30", bg: "rgba(255, 59, 48, 0.1)", label: "Disconnected" },
+  healthy: { color: "#34c759", bg: "rgba(52, 199, 89, 0.1)", label: "Conectado" },
+  degraded: { color: "#ff9500", bg: "rgba(255, 149, 0, 0.1)", label: "Instável" },
+  disconnected: { color: "#ff3b30", bg: "rgba(255, 59, 48, 0.1)", label: "Desconectado" },
 };
 
 interface Props {

@@ -38,17 +38,26 @@ function getSpeakerStyle(speaker: string) {
 export default function TranscriptPanel({ segments, speakerMap = {}, readOnly = false }: Props) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const hasMountedRef = useRef(false);
 
   useEffect(() => {
     if (readOnly) return;
-    // Only auto-scroll if user is near the bottom
     const container = containerRef.current;
-    if (container) {
-      const isNearBottom =
-        container.scrollHeight - container.scrollTop - container.clientHeight < 120;
-      if (isNearBottom) {
-        bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-      }
+    if (!container) return;
+
+    if (!hasMountedRef.current) {
+      // First render after mount may already contain a full transcript (e.g. the
+      // sheet just opened) — jump straight to the latest speech, not the top.
+      hasMountedRef.current = true;
+      bottomRef.current?.scrollIntoView({ behavior: "auto" });
+      return;
+    }
+
+    // On every later update, only auto-scroll if the user is already near the bottom.
+    const isNearBottom =
+      container.scrollHeight - container.scrollTop - container.clientHeight < 120;
+    if (isNearBottom) {
+      bottomRef.current?.scrollIntoView({ behavior: "smooth" });
     }
   }, [segments.length, readOnly]);
 

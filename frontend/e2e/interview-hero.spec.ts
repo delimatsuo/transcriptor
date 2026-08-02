@@ -68,3 +68,21 @@ test("the transcript sheet opens over the hero", async ({ page }) => {
 
   await expect(page.getByText("eu liderei essa transformação")).toBeVisible();
 });
+
+test("opening the transcript sheet jumps to the latest speech, not the oldest", async ({
+  page,
+}) => {
+  const server = await mockSession(page, "interview");
+
+  await page.goto("/");
+  await page.getByRole("combobox").selectOption("interview");
+  await page.getByRole("button", { name: /iniciar sessão/i }).click();
+
+  for (let i = 1; i <= 40; i += 1) {
+    await server.transcript(`linha número ${i}`, "Entrevistador", true);
+  }
+
+  await page.getByRole("button", { name: /transcrição/i }).click();
+
+  await expect(page.getByText("linha número 40")).toBeInViewport();
+});
