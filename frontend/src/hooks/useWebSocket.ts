@@ -72,6 +72,7 @@ export function useWebSocket(): UseWebSocketReturn {
           questions: payload.questions,
           markdown: payload.markdown,
           timestamp: Date.now(),
+          sequenceNumber: msg.sequence_number,
         };
         setSuggestionHistory((prev) => [...prev, entry]);
         break;
@@ -90,6 +91,7 @@ export function useWebSocket(): UseWebSocketReturn {
             {
               questions: state.pending_suggestions,
               timestamp: Date.now(),
+              sequenceNumber: msg.sequence_number,
             },
           ]);
         }

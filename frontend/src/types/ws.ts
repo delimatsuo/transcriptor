@@ -38,6 +38,7 @@ export interface SuggestionEntry {
   questions: string[];
   markdown?: string;
   timestamp: number;
+  sequenceNumber: number;
 }
 
 export interface Session {
