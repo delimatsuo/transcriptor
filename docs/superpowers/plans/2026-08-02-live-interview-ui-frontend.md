@@ -1707,9 +1707,278 @@ git commit -m "fix(frontend): jump transcript sheet to latest speech on open, tr
 the old `SuggestionsPanel` used `markdown` as its primary content and `questions` only as a
 fallback. If the backend's line-based question extraction (`backend/main.py`) ever produces
 zero items for a given suggestion, the hero would render as a visually blank card with no
-recovery. This is real but larger than a same-task fix: it touches what content the hero
-should show when the primary path yields nothing, which is a product question, not a pure
-bug fix — surfaced to the project owner rather than resolved unilaterally here.
+recovery. This was surfaced to the project owner as a product decision rather than resolved
+unilaterally; the owner chose to fall back to `markdown`. See Task 12.
+
+---
+
+### Task 12: Fall back to markdown when the hero has no extracted question
+
+**Files:**
+- Modify: `frontend/src/lib/interviewQueue.ts`
+- Modify: `frontend/src/lib/interviewQueue.test.ts`
+- Modify: `frontend/src/components/HeroQuestion.tsx`
+- Modify: `frontend/e2e/fixtures.ts`
+- Modify: `frontend/e2e/interview-hero.spec.ts`
+
+**Interfaces:**
+- Consumes: `SuggestionEntry` (`markdown?: string`, already present since before this plan).
+- Produces: `entryHasContent(entry: SuggestionEntry): boolean`, exported from
+  `interviewQueue.ts`, consumed by `HeroQuestion.tsx`.
+- Changes `selectHero`/`queueCount`'s existing contract: an entry with no extractable
+  question AND no markdown can never become the hero and is never counted in the queue.
+  Every other exported signature is unchanged.
+
+The project owner decided: when the backend's line-based question parser
+(`backend/main.py:368-374`) finds nothing in a suggestion's response, the hero should fall
+back to the full markdown response rather than showing a blank card or silently discarding
+that turn.
+
+- [ ] **Step 1: Write the failing unit tests**
+
+Add to `frontend/src/lib/interviewQueue.test.ts` (keep all existing tests and imports;
+`entryHasContent` joins the existing named import from `"./interviewQueue.ts"`):
+
+```ts
+import {
+  dismissHero,
+  entryHasContent,
+  initialHeroState,
+  isHeroStale,
+  queueCount,
+  selectHero,
+} from "./interviewQueue.ts";
+```
+
+```ts
+function entryWithMarkdown(
+  sequenceNumber: number,
+  questions: string[],
+  markdown: string,
+): SuggestionEntry {
+  return { questions, markdown, timestamp: sequenceNumber * 1000, sequenceNumber };
+}
+
+test("an entry with a question has content", () => {
+  assert.equal(entryHasContent(entry(1, "pergunta")), true);
+});
+
+test("an entry with no question but real markdown has content", () => {
+  assert.equal(entryHasContent(entryWithMarkdown(1, [], "### Notas\nAlgum texto.")), true);
+});
+
+test("an entry with no question and no markdown has no content", () => {
+  assert.equal(entryHasContent(entryWithMarkdown(1, [], "")), false);
+});
+
+test("an entry with only whitespace in both fields has no content", () => {
+  assert.equal(entryHasContent(entryWithMarkdown(1, ["   "], "   \n  ")), false);
+});
+
+test("selectHero skips a content-less entry and picks the next real one", () => {
+  const history = [
+    entryWithMarkdown(5, [], ""),
+    entry(9, "pergunta real"),
+  ];
+  assert.equal(selectHero(history, initialHeroState)?.questions[0], "pergunta real");
+});
+
+test("selectHero returns an entry with only markdown content", () => {
+  const history = [entryWithMarkdown(5, [], "### Só markdown")];
+  const hero = selectHero(history, initialHeroState);
+  assert.equal(hero?.markdown, "### Só markdown");
+});
+
+test("queueCount does not count content-less entries", () => {
+  const history = [
+    entry(5, "primeira"),
+    entryWithMarkdown(7, [], ""),
+    entry(9, "segunda"),
+  ];
+  const hero = selectHero(history, initialHeroState);
+  assert.equal(queueCount(history, hero), 1);
+});
+```
+
+`SuggestionEntry` is already imported in this file (Task 5). `entry()` (the existing test
+helper) constructs entries with `markdown` left `undefined` — leave it as-is; add
+`entryWithMarkdown` alongside it rather than changing `entry()`'s signature, so every
+existing test keeps passing unmodified.
+
+- [ ] **Step 2: Run the tests to see the new ones fail**
+
+Run: `cd frontend && npm test`
+Expected: FAIL — `entryHasContent` is not exported.
+
+- [ ] **Step 3: Implement `entryHasContent` and wire it into `selectHero`/`queueCount`**
+
+In `frontend/src/lib/interviewQueue.ts`, add the helper and use it in both existing
+filters:
+
+```ts
+/** Does this batch have anything worth showing — an extracted question or raw markdown? */
+export function entryHasContent(entry: SuggestionEntry): boolean {
+  const question = entry.questions[0]?.trim() ?? "";
+  const markdown = entry.markdown?.trim() ?? "";
+  return question.length > 0 || markdown.length > 0;
+}
+```
+
+Update `selectHero`:
+
+```ts
+export function selectHero(
+  history: SuggestionEntry[],
+  state: HeroState,
+): SuggestionEntry | null {
+  const pending = history
+    .filter((e) => e.sequenceNumber > state.dismissedThroughSeq && entryHasContent(e))
+    .sort(bySequence);
+  return pending[0] ?? null;
+}
+```
+
+Update `queueCount`:
+
+```ts
+export function queueCount(
+  history: SuggestionEntry[],
+  hero: SuggestionEntry | null,
+): number {
+  if (!hero) return 0;
+  return history.filter(
+    (e) => e.sequenceNumber > hero.sequenceNumber && entryHasContent(e),
+  ).length;
+}
+```
+
+`isHeroStale` and `dismissHero` are unchanged — staleness and dismissal only ever operate on
+`hero`, which `selectHero` now guarantees has content whenever it's non-null.
+
+- [ ] **Step 4: Run the tests to see them pass**
+
+Run: `cd frontend && npm test`
+Expected: PASS — 25 tests total (18 existing + 7 new).
+
+- [ ] **Step 5: Render the fallback in `HeroQuestion.tsx`**
+
+Add the import and a local allowlist, matching the existing pattern in `SummaryPanel.tsx`
+and `SuggestionsPanel.tsx`:
+
+```tsx
+import ReactMarkdown from "react-markdown";
+```
+
+```ts
+const HERO_MARKDOWN_ELEMENTS = [
+  "p", "strong", "em", "h3", "h4", "ul", "ol", "li", "code", "br", "hr",
+];
+```
+
+Replace the question line and its render:
+
+```tsx
+  const question = hero.questions[0]?.trim() ?? "";
+```
+
+```tsx
+      {question ? (
+        <p
+          style={{
+            fontSize: tokens.text.hero,
+            lineHeight: 1.45,
+            fontWeight: 500,
+            letterSpacing: "-0.2px",
+            color: tokens.color.text.primary,
+            margin: 0,
+          }}
+        >
+          {question}
+        </p>
+      ) : (
+        <div
+          style={{
+            fontSize: tokens.text.title,
+            lineHeight: 1.5,
+            color: tokens.color.text.primary,
+          }}
+        >
+          <ReactMarkdown allowedElements={HERO_MARKDOWN_ELEMENTS}>
+            {hero.markdown ?? ""}
+          </ReactMarkdown>
+        </div>
+      )}
+```
+
+The fallback renders at `tokens.text.title` (17px), one step down from the primary
+question's `tokens.text.hero` (22px) — the fallback is typically multi-paragraph, unlike the
+single-line primary case, so a smaller size keeps it from overwhelming the layout.
+`react-markdown` is already a project dependency (used by `SummaryPanel.tsx` and
+`SuggestionsPanel.tsx`) — this does not add a new one.
+
+- [ ] **Step 6: Verify typecheck**
+
+Run: `cd frontend && npx tsc --noEmit`
+Expected: exit code 0.
+
+- [ ] **Step 7: Extend the mock fixture to carry markdown**
+
+In `frontend/e2e/fixtures.ts`, give `suggestion` an optional second parameter, defaulting to
+`""` so every existing call site (Tasks 10 and 11) keeps compiling and behaving identically:
+
+```ts
+    async suggestion(questions: string[], markdown = "") {
+      await socketReady;
+      seq += 1;
+      sendFrame?.(
+        JSON.stringify({
+          type: "suggestion",
+          session_id: SESSION_ID,
+          sequence_number: seq,
+          timestamp: new Date(0).toISOString(),
+          payload: { questions, markdown, context: "" },
+        }),
+      );
+    },
+```
+
+- [ ] **Step 8: Add the e2e test for the fallback**
+
+Append to `frontend/e2e/interview-hero.spec.ts`:
+
+```ts
+test("a suggestion with no extracted question falls back to its markdown", async ({
+  page,
+}) => {
+  const server = await mockSession(page, "interview");
+
+  await page.goto("/");
+  await page.getByRole("combobox").selectOption("interview");
+  await page.getByRole("button", { name: /iniciar sessão/i }).click();
+
+  await server.suggestion([], "### Notas\nPergunte sobre a experiência com fusões.");
+
+  await expect(page.getByText("Pergunte sobre a experiência com fusões.")).toBeVisible();
+});
+```
+
+- [ ] **Step 9: Run the full verification**
+
+```bash
+cd frontend && npx tsc --noEmit && npm test && npm run e2e && npm run build
+```
+Expected: typecheck exit 0; 25 unit tests pass; 7 e2e pass (1 meeting baseline + 6
+interview); build succeeds.
+
+Then run `npm run e2e` 2 more times in a row to confirm the new test is stable, consistent
+with every other e2e addition in this plan.
+
+- [ ] **Step 10: Commit**
+
+```bash
+git add frontend/src/lib/interviewQueue.ts frontend/src/lib/interviewQueue.test.ts frontend/src/components/HeroQuestion.tsx frontend/e2e/fixtures.ts frontend/e2e/interview-hero.spec.ts
+git commit -m "feat(frontend): fall back to markdown when a suggestion has no extracted question"
+```
 
 ---
 
