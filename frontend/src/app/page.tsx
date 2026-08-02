@@ -8,6 +8,7 @@ import SummaryPanel from "@/components/SummaryPanel";
 import SuggestionsPanel from "@/components/SuggestionsPanel";
 import SessionControls from "@/components/SessionControls";
 import PreSessionView from "@/components/views/PreSessionView";
+import MeetingLiveView from "@/components/views/MeetingLiveView";
 import type { SessionMode } from "@/types/ws";
 
 const API_BASE = "http://localhost:8000";
@@ -180,22 +181,12 @@ export default function Home() {
 
       {/* Active meeting: single column */}
       {isActive && !isInterview && (
-        <div
-          style={{
-            flex: 1,
-            display: "flex",
-            flexDirection: "column",
-            overflow: "hidden",
-          }}
-        >
-          <TranscriptPanel segments={transcript} />
-          {suggestionHistory.length > 0 && (
-            <div style={{ borderTop: "1px solid #f5f5f7", maxHeight: 200, overflow: "auto" }}>
-              <SuggestionsPanel suggestionHistory={suggestionHistory} />
-            </div>
-          )}
-          <SummaryPanel summary={summary} isFinal={isSummaryFinal} />
-        </div>
+        <MeetingLiveView
+          transcript={transcript}
+          suggestionHistory={suggestionHistory}
+          summary={summary}
+          isSummaryFinal={isSummaryFinal}
+        />
       )}
 
       {/* Post-session review */}
