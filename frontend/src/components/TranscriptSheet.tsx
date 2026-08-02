@@ -40,7 +40,14 @@ export default function TranscriptSheet({ segments, open, onToggle }: Props) {
       </button>
 
       {open && (
-        <div style={{ maxHeight: 320, overflowY: "auto" }}>
+        <div
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            maxHeight: 320,
+            overflow: "hidden",
+          }}
+        >
           <TranscriptPanel segments={segments} />
         </div>
       )}
