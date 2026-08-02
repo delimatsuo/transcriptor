@@ -329,13 +329,29 @@ git commit -m "feat(frontend): add Panel, Label and Chip primitives"
 
 **Interfaces:**
 - Consumes: nothing from earlier tasks.
-- Produces: `mockSession(page)` helper used by Task 10; `npm run e2e`.
+- Produces: `mockSession(page)` helper used by Task 10, returning
+  `{ transcript(text, speaker, isFinal): Promise<void>, suggestion(questions): Promise<void> }`
+  — both methods are `async` and must be `await`ed by callers (see the race-condition note
+  below); `npm run e2e`.
 
 This task exists **before** the extraction so the meeting-mode smoke test passes against
 the *current* code, proving the later verbatim move changed nothing. Do not reorder it.
 
 All backend traffic is mocked. `page.routeWebSocket()` (Playwright 1.48+) does not connect
 to a real server by default, so no backend and no microphone are involved.
+
+**Race condition, and why the fixture below awaits a readiness signal.** Playwright's own
+docs (`https://playwright.dev/docs/mock#modify-websockets`) document no synchronization
+guarantee between `page.routeWebSocket()` registering a handler and the page's own
+`new WebSocket()` call actually reaching that handler — it happens over an async CDP
+round-trip. Calling `server.transcript(...)` synchronously right after a UI action that
+triggers `new WebSocket()` is a real, reproducible race: on a cold dev-server compile the
+app is slow enough that it usually resolves in the test's favor, but once the dev server is
+warm (the state every subsequent Task 4 re-run will be in) the frame is silently dropped
+most of the time, because `sendFrame` is still `null` when `transcript()` fires. The fixture
+below closes over a `socketReady` promise that resolves inside the `routeWebSocket` handler,
+and `transcript()`/`suggestion()` `await` it before sending — making the two-party
+synchronization explicit rather than hoping the race resolves favorably.
 
 - [ ] **Step 1: Install Playwright as a devDependency**
 
@@ -404,9 +420,14 @@ export async function mockSession(page: Page, mode: "meeting" | "interview") {
   });
 
   let sendFrame: ((data: string) => void) | null = null;
+  let markSocketReady: () => void;
+  const socketReady = new Promise<void>((resolve) => {
+    markSocketReady = resolve;
+  });
 
   await page.routeWebSocket(/\/ws\//, (ws) => {
     sendFrame = (data: string) => ws.send(data);
+    markSocketReady();
     ws.onMessage(() => {
       // client keepalives — ignore
     });
@@ -415,7 +436,8 @@ export async function mockSession(page: Page, mode: "meeting" | "interview") {
   let seq = 0;
 
   return {
-    transcript(text: string, speaker: string, isFinal: boolean) {
+    async transcript(text: string, speaker: string, isFinal: boolean) {
+      await socketReady;
       seq += 1;
       sendFrame?.(
         JSON.stringify({
@@ -438,7 +460,8 @@ export async function mockSession(page: Page, mode: "meeting" | "interview") {
         }),
       );
     },
-    suggestion(questions: string[]) {
+    async suggestion(questions: string[]) {
+      await socketReady;
       seq += 1;
       sendFrame?.(
         JSON.stringify({
@@ -469,7 +492,7 @@ test("meeting mode renders transcript segments from the socket", async ({ page }
   await page.goto("/");
   await page.getByRole("button", { name: /start session|iniciar/i }).click();
 
-  server.transcript("boa tarde a todos", "Entrevistador", true);
+  await server.transcript("boa tarde a todos", "Entrevistador", true);
 
   await expect(page.getByText("boa tarde a todos")).toBeVisible();
   await expect(page.getByText("Entrevistador")).toBeVisible();
@@ -492,10 +515,16 @@ Append to `frontend/.gitignore` (create the file if absent):
 /blob-report/
 ```
 
-- [ ] **Step 6: Run against the CURRENT code and verify it PASSES**
+- [ ] **Step 6: Run against the CURRENT code and verify it PASSES, repeatedly**
 
 Run: `cd frontend && npm run e2e`
-Expected: 1 passed. This is the baseline — it must pass **before** any extraction.
+Expected: 1 passed.
+
+Then run it **three more times in a row** (`for i in 1 2 3; do npm run e2e; done`), all
+against the already-warm dev server started by the first run. Expected: 1 passed on every
+run. A single green run is not sufficient evidence — the race this fixture guards against
+(see above) is exactly the kind of failure that a cold-start run can mask and a warm rerun
+exposes. This is the baseline test; it must pass reliably **before** any extraction.
 
 - [ ] **Step 7: Commit**
 
@@ -1382,7 +1411,7 @@ test("a suggestion from the socket becomes the hero question", async ({ page }) 
 
   await expect(page.getByText(/ouvindo a conversa/i)).toBeVisible();
 
-  server.suggestion(["Como você estruturou essa equipe?"]);
+  await server.suggestion(["Como você estruturou essa equipe?"]);
 
   await expect(page.getByText("Como você estruturou essa equipe?")).toBeVisible();
   await expect(page.getByText(/próxima pergunta/i)).toBeVisible();
@@ -1395,10 +1424,10 @@ test("a newer batch marks the hero stale and fills the queue", async ({ page }) 
   await page.getByRole("combobox").selectOption("interview");
   await page.getByRole("button", { name: /iniciar sessão/i }).click();
 
-  server.suggestion(["Primeira pergunta"]);
+  await server.suggestion(["Primeira pergunta"]);
   await expect(page.getByText("Primeira pergunta")).toBeVisible();
 
-  server.suggestion(["Segunda pergunta"]);
+  await server.suggestion(["Segunda pergunta"]);
 
   await expect(page.getByText(/conversa avançou/i)).toBeVisible();
   await expect(page.getByText(/1 na fila/i)).toBeVisible();
@@ -1413,8 +1442,8 @@ test("dismissing advances to the queued question", async ({ page }) => {
   await page.getByRole("combobox").selectOption("interview");
   await page.getByRole("button", { name: /iniciar sessão/i }).click();
 
-  server.suggestion(["Primeira pergunta"]);
-  server.suggestion(["Segunda pergunta"]);
+  await server.suggestion(["Primeira pergunta"]);
+  await server.suggestion(["Segunda pergunta"]);
   await expect(page.getByText("Primeira pergunta")).toBeVisible();
 
   await page.getByRole("button", { name: /^próxima$/i }).click();
@@ -1430,7 +1459,7 @@ test("the transcript sheet opens over the hero", async ({ page }) => {
   await page.getByRole("combobox").selectOption("interview");
   await page.getByRole("button", { name: /iniciar sessão/i }).click();
 
-  server.transcript("eu liderei essa transformação", "Candidato", true);
+  await server.transcript("eu liderei essa transformação", "Candidato", true);
 
   // Collapsed by default — transcript text is not on screen.
   await expect(page.getByText("eu liderei essa transformação")).toHaveCount(0);
