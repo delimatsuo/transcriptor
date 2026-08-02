@@ -142,7 +142,6 @@ export default function Home() {
         <InterviewLiveView
           transcript={transcript}
           suggestionHistory={suggestionHistory}
-          preInterviewBriefing={preInterviewBriefing}
         />
       )}
 

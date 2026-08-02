@@ -1,57 +1,56 @@
 "use client";
 
-import TranscriptPanel from "@/components/TranscriptPanel";
-import SuggestionsPanel from "@/components/SuggestionsPanel";
+import { useState } from "react";
+
+import HeroQuestion from "@/components/HeroQuestion";
+import TranscriptSheet from "@/components/TranscriptSheet";
+import {
+  dismissHero,
+  initialHeroState,
+  isHeroStale,
+  queueCount,
+  selectHero,
+} from "@/lib/interviewQueue";
+import { tokens } from "@/lib/tokens";
 import type { SuggestionEntry, TranscriptSegment } from "@/types/ws";
 
 interface Props {
   transcript: TranscriptSegment[];
   suggestionHistory: SuggestionEntry[];
-  preInterviewBriefing: string;
 }
 
 export default function InterviewLiveView({
   transcript,
   suggestionHistory,
-  preInterviewBriefing,
 }: Props) {
+  const [heroState, setHeroState] = useState(initialHeroState);
+  const [sheetOpen, setSheetOpen] = useState(false);
+
+  const hero = selectHero(suggestionHistory, heroState);
+  const stale = isHeroStale(hero, suggestionHistory);
+  const queued = queueCount(suggestionHistory, hero);
+
   return (
     <div
       style={{
         flex: 1,
         display: "flex",
+        flexDirection: "column",
         overflow: "hidden",
+        backgroundColor: tokens.color.surface.base,
       }}
     >
-      {/* Left: Transcript (60%) */}
-      <div
-        style={{
-          flex: "0 0 60%",
-          overflow: "hidden",
-          borderRight: "1px solid #f5f5f7",
-          display: "flex",
-          flexDirection: "column",
-        }}
-      >
-        <TranscriptPanel segments={transcript} />
-      </div>
-
-      {/* Right: Interview Assistant (40%) */}
-      <div
-        style={{
-          flex: "0 0 40%",
-          overflow: "hidden",
-          display: "flex",
-          flexDirection: "column",
-          backgroundColor: "#fafafa",
-        }}
-      >
-        <SuggestionsPanel
-          suggestionHistory={suggestionHistory}
-          briefing={preInterviewBriefing}
-          isInterview
-        />
-      </div>
+      <HeroQuestion
+        hero={hero}
+        isStale={stale}
+        queueCount={queued}
+        onDismiss={() => setHeroState((s) => dismissHero(hero, s))}
+      />
+      <TranscriptSheet
+        segments={transcript}
+        open={sheetOpen}
+        onToggle={() => setSheetOpen((o) => !o)}
+      />
     </div>
   );
 }
