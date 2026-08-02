@@ -1136,8 +1136,17 @@ git commit -m "feat(frontend): add HeroQuestion component"
 - Consumes: `tokens` (Task 1), existing `TranscriptPanel`.
 - Produces: `<TranscriptSheet segments open onToggle />` used by Task 8.
 
-`TranscriptPanel` assumes it owns its scroll region, so the sheet gives it a bounded height
-with its own `overflowY`.
+`TranscriptPanel`'s root div is styled `flex: 1, overflowY: "auto"` and measures its own
+scroll position (`containerRef`) to decide whether to auto-scroll on new segments — but
+`flex: 1` only takes effect inside a `display: flex` parent. The wrapper below is therefore
+`display: "flex", flexDirection: "column"` with `overflow: "hidden"` (not `"auto"`), bounded
+by `maxHeight`, so `TranscriptPanel`'s own div — not the wrapper — becomes the actual
+scrolling element, exactly as it already does in `MeetingLiveView`. A plain block wrapper
+with its own `overflowY: "auto"` would make the *wrapper* the scrolling element instead,
+leaving `TranscriptPanel`'s scroll-position math measuring a box that never overflows —
+so its "stay near the bottom unless the user scrolled up" heuristic would always read "at
+the bottom" and yank the view down on every new segment regardless of where the user
+actually scrolled.
 
 - [ ] **Step 1: Create the component**
 
@@ -1184,7 +1193,14 @@ export default function TranscriptSheet({ segments, open, onToggle }: Props) {
       </button>
 
       {open && (
-        <div style={{ maxHeight: 320, overflowY: "auto" }}>
+        <div
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            maxHeight: 320,
+            overflow: "hidden",
+          }}
+        >
           <TranscriptPanel segments={segments} />
         </div>
       )}
