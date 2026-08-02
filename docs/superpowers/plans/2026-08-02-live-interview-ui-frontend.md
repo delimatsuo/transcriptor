@@ -1353,11 +1353,19 @@ Translate every user-visible string in the three redesigned surfaces. Exact repl
 | `SessionControls.tsx:225` | `Session title (optional)` | `Título da sessão (opcional)` |
 | `SessionControls.tsx:263` | `Meeting` | `Reunião` |
 | `SessionControls.tsx:264` | `Interview` | `Entrevista` |
+| `SessionControls.tsx:192` | `Recording` | `Gravando` |
+| `SessionControls.tsx:283` | `Starting...` (the `loading` branch of the button-label ternary) | `Iniciando...` |
+| `SessionControls.tsx:307` | `Interview Preparation` | `Preparação da entrevista` |
 | `SessionControls.tsx:323` | `Candidate name` | `Nome do candidato` |
+| `SessionControls.tsx:380` | `Upload CV / Resume` | `Enviar currículo` |
 | `SessionControls.tsx:386` | `Paste job description here` | `Cole a descrição da vaga aqui` |
+| `SessionControls.tsx:74,83` | `Analysis failed` (both occurrences — a thrown-error fallback and a caught-error fallback for the same failure) | `Falha na análise` |
+| `SessionControls.tsx:461` | `Retry` | `Tentar novamente` |
 | `SummaryPanel.tsx` | `Download Report` | `Baixar relatório` |
 | `SummaryPanel.tsx` | `Download Transcript` | `Baixar transcrição` |
-| `SummaryPanel.tsx` | `SESSION SUMMARY` | `RESUMO DA SESSÃO` |
+| `SummaryPanel.tsx:89` | `Session Summary` (source is Title Case; a parent `<h2>` applies `textTransform: "uppercase"`, so it renders as `SESSION SUMMARY` — translate the source string, not the rendered casing) | `Resumo da sessão` |
+| `SummaryPanel.tsx:88` | `Interview Assessment` (sibling branch of the same three-way ternary as the row above — `isFinal && isInterview`) | `Avaliação da entrevista` |
+| `SummaryPanel.tsx:90` | `Rolling Summary` (third branch of the same ternary — `!isFinal`) | `Resumo em andamento` |
 | `TranscriptPanel.tsx` | `Waiting for speech...` | `Aguardando fala...` |
 | `TranscriptPanel.tsx` | `transcribing...` | `transcrevendo...` |
 
@@ -1365,6 +1373,10 @@ Also translate the remaining `Start Session` / `Stop Session` button labels in
 `SessionControls.tsx` to `Iniciar sessão` / `Encerrar sessão`, and the downloaded filenames
 in `SummaryPanel.tsx` from `interview-assessment-report.txt` / `interview-transcript.txt` to
 `relatorio-entrevista.txt` / `transcricao-entrevista.txt`.
+
+Line numbers above are as of commit `20c4af4` (after Task 8) — verify each string is still
+at the stated location before editing, since earlier tasks may have shifted lines slightly;
+if a string has moved, find it by content, not by trusting the line number blindly.
 
 - [ ] **Step 1: Apply every replacement in the table**
 
@@ -1376,11 +1388,29 @@ is gone.
 
 - [ ] **Step 3: Verify nothing English remains in the redesigned surfaces**
 
-Run:
+Run both commands:
 ```bash
-cd frontend && grep -rnE ">(Ready|Session Complete|New Session|Full Transcript|Download|Waiting|Start Session|Stop Session)" src/components src/app
+cd frontend && grep -rnE '"(Ready to begin|Session Complete|New Session|Full Transcript|Download Report|Download Transcript|Waiting for speech|Start Session|Stop Session|Starting\.\.\.|Interview Assessment|Rolling Summary|Analysis failed|Upload CV / Resume)"' src/components src/app
+cd frontend && grep -rnE '^\s*(Recording|Retry|Interview Preparation)\s*$' src/components src/app
 ```
-Expected: no output.
+Expected: no output from either command.
+
+**Why two commands, and why this replaced the original single `>(...)`-prefixed grep:** the
+first pass through this task shipped with eight strings still in English — six missing from
+the original replacement table entirely (`Recording`, `Interview Preparation`,
+`Upload CV / Resume`, `Retry`, `Starting...`, `Analysis failed` ×2), plus two more
+(`Interview Assessment`, `Rolling Summary`) found only by directly reading the files rather
+than trusting a grep. The original verification command, `grep -rnE ">(...)"`, required the
+`>` and the target text to be **on the same source line** — which fails for the multi-line
+JSX this codebase actually uses (e.g. a closing `>` on one line and the text node on the
+next). It returned "no output" against a file that still had English in it, and that false
+"clean" result was the thing that let a plan-mandated gap slip through review undetected.
+The two commands above split by how each string actually appears: quoted string literals
+(command 1) and bare JSX text nodes on their own line (command 2, anchored on the whole
+line so it can't match a same-named identifier elsewhere in the file). If you are re-running
+this task from scratch rather than fixing a specific gap, don't trust either grep alone as a
+substitute for reading the six files yourself — they cover the strings known to be missing
+as of this amendment, not a general guarantee.
 
 - [ ] **Step 4: Verify typecheck, tests, and e2e**
 
