@@ -80,7 +80,7 @@ export default function TranscriptPanel({ segments, speakerMap = {}, readOnly = 
             marginBottom: 16,
           }}
         >
-          Transcript
+          Transcrição
         </h2>
       )}
 

@@ -313,7 +313,7 @@ export default function SessionControls({
               margin: "0 0 16px 0",
             }}
           >
-            Upload CV and paste JD, then analyze before starting
+            Envie o currículo, cole a descrição da vaga e analise antes de começar
           </p>
 
           {/* Candidate name */}

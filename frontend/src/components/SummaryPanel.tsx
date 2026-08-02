@@ -100,7 +100,7 @@ export default function SummaryPanel({
                   fontWeight: 500,
                 }}
               >
-                updating
+                atualizando
               </span>
             )}
           </div>
