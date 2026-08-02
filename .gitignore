@@ -41,3 +41,6 @@ recordings/
 # OS
 .DS_Store
 Thumbs.db
+
+# Superpowers brainstorming scratch (mockups, session state)
+.superpowers/
