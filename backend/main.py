@@ -514,6 +514,16 @@ async def stop_session(session_id: str):
     return {"session_id": session_id, "status": "completed"}
 
 
+@app.delete("/api/sessions/{session_id}")
+async def delete_session(session_id: str):
+    """Delete a session everywhere: Firestore, GCS documents, and tombstone."""
+    assert firestore_storage
+    from backend.storage.deletion import delete_session_everywhere
+
+    db = await firestore_storage._get_db()
+    return await delete_session_everywhere(session_id, db, gcs_storage)
+
+
 @app.post("/api/sessions/{session_id}/speakers")
 async def update_speakers(session_id: str, speaker_map: dict[str, str]):
     """Update speaker label mapping."""
