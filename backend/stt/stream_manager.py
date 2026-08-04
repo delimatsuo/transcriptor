@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections import deque
 from typing import AsyncIterator, Callable
 
 import structlog
@@ -45,6 +46,12 @@ class StreamManager:
 
         # Track last emitted end_time to avoid duplicate segments during overlap
         self._last_emitted_end_time: float = 0.0
+
+        # Audio arriving while no stream is active (rotation/recovery window)
+        # is buffered here and flushed, in order, on the next active send.
+        self._pending_audio: deque[bytes] = deque(
+            maxlen=settings.buffer_max_chunks
+        )
 
         # Tasks
         self._response_task: asyncio.Task | None = None
@@ -95,9 +102,19 @@ class StreamManager:
         logger.info("stream_manager_stopped")
 
     async def send_audio(self, audio_bytes: bytes) -> None:
-        """Send audio to the current stream."""
+        """Send audio to the current stream, buffering across rotation gaps."""
         if self._current_stream and self._current_stream.is_active:
+            while self._pending_audio:
+                await self._current_stream.send_audio(self._pending_audio.popleft())
             await self._current_stream.send_audio(audio_bytes)
+        elif self._running:
+            self._pending_audio.append(audio_bytes)
+            if len(self._pending_audio) == self._pending_audio.maxlen:
+                logger.warning(
+                    "rotation_pending_buffer_full",
+                    source=self.source_label,
+                    buffered=len(self._pending_audio),
+                )
 
     async def _rotation_loop(self) -> None:
         """Monitor stream age and trigger rotation before the 5-min limit."""
