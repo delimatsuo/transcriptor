@@ -42,6 +42,7 @@ class FirestoreStorage:
             "endedAt": session.ended_at,
             "lastActive": session.last_active,
             "status": session.status.value,
+            "noticeGiven": session.notice_given,
             "speakerMap": session.speaker_map,
             "summary": session.summary,
             "actionItems": [item.model_dump() for item in session.action_items],

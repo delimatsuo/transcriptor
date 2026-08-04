@@ -477,12 +477,14 @@ async def _stop_pipeline(session_id: str) -> None:
 async def create_session(
     mode: str = "meeting",
     title: str = "",
+    notice_given: bool = False,
 ):
     """Create a new session and start the audio pipeline."""
     assert settings and session_mgr and firestore_storage
 
     session_mode = SessionMode(mode)
     session = session_mgr.create_session(mode=session_mode, title=title)
+    session.notice_given = notice_given
 
     # Save to Firestore
     await firestore_storage.save_session(session)

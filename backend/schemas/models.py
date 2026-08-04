@@ -76,6 +76,7 @@ class Session(BaseModel):
     ended_at: datetime | None = None
     last_active: datetime = Field(default_factory=datetime.utcnow)
     status: SessionStatus = SessionStatus.ACTIVE
+    notice_given: bool = False  # candidate informed of transcription (LGPD notice)
     speaker_map: dict[str, str] = Field(default_factory=dict)
     summary: str | None = None
     action_items: list[ActionItem] = Field(default_factory=list)

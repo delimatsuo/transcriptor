@@ -22,6 +22,7 @@ export default function SessionControls({
 }: Props) {
   const [mode, setMode] = useState<SessionMode>("meeting");
   const [title, setTitle] = useState("");
+  const [noticeGiven, setNoticeGiven] = useState(false);
   const [loading, setLoading] = useState(false);
   const [showInterviewPrep, setShowInterviewPrep] = useState(false);
   const [candidateName, setCandidateName] = useState("");
@@ -102,7 +103,7 @@ export default function SessionControls({
   const handleStart = async () => {
     setLoading(true);
     try {
-      const params = new URLSearchParams({ mode, title });
+      const params = new URLSearchParams({ mode, title, notice_given: String(noticeGiven) });
       const res = await fetch(`${API_BASE}/api/sessions?${params}`, {
         method: "POST",
       });
@@ -215,6 +216,7 @@ export default function SessionControls({
   }
 
   const canAnalyze = jdText.trim().length > 0 && !analyzing && !briefing;
+  const canStart = !loading && (mode !== "interview" || noticeGiven);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
@@ -265,7 +267,7 @@ export default function SessionControls({
         </select>
         <button
           onClick={handleStart}
-          disabled={loading}
+          disabled={!canStart}
           style={{
             padding: "8px 22px",
             backgroundColor: "#007aff",
@@ -273,11 +275,11 @@ export default function SessionControls({
             border: "none",
             borderRadius: 100,
             fontWeight: 500,
-            cursor: loading ? "default" : "pointer",
+            cursor: canStart ? "pointer" : "default",
             fontSize: 13,
             boxShadow: "0 1px 3px rgba(0, 122, 255, 0.3)",
             transition: "all 0.2s ease",
-            opacity: loading ? 0.6 : 1,
+            opacity: canStart ? 1 : 0.6,
           }}
         >
           {loading ? "Iniciando..." : "Iniciar sessão"}
@@ -315,6 +317,29 @@ export default function SessionControls({
           >
             Envie o currículo, cole a descrição da vaga e analise antes de começar
           </p>
+
+          <label
+            style={{
+              display: "flex",
+              alignItems: "flex-start",
+              gap: 8,
+              fontSize: 13,
+              color: "#1d1d1f",
+              marginBottom: 16,
+              cursor: "pointer",
+            }}
+          >
+            <input
+              type="checkbox"
+              checked={noticeGiven}
+              onChange={(e) => setNoticeGiven(e.target.checked)}
+              style={{ marginTop: 2 }}
+            />
+            <span>
+              Confirmo que o candidato foi avisado sobre a transcrição desta
+              entrevista (roteiro de aviso da Ella).
+            </span>
+          </label>
 
           {/* Candidate name */}
           <div style={{ marginBottom: 12 }}>
