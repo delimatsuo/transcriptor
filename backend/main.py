@@ -120,6 +120,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:3000",
+        "http://localhost:3003",  # standing dev port per .claude/launch.json (3000-3002 host an unrelated app on the dev machine)
         "chrome-extension://fhnadcdkfgdlkomjpilmgehhpgmkjnga",  # pinned extension ID (derived from manifest "key")
     ],
     allow_credentials=True,
