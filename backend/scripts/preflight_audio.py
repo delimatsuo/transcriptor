@@ -1,14 +1,15 @@
 """Pre-interview audio routing check: are BOTH capture channels alive?
 
-Usage: play any audio (YouTube) at normal volume, speak into the mic, then:
+Usage: wear a headset, follow docs/launch/preflight-checklist.md, then run:
   .venv/bin/python3 -m backend.scripts.preflight_audio
-PASS requires signal on BOTH devices within 10 seconds.
+PASS here requires signal on BOTH devices within 10 seconds. The checklist's
+source-isolation gate is also mandatory before a real interview.
 """
 
 import numpy as np
 import sounddevice as sd
 
-from backend.audio.capture import find_input_device
+from backend.audio.capture import find_input_device, get_default_input_device
 from backend.config import get_settings
 
 THRESHOLD = 0.001  # RMS floor ≈ silence
@@ -17,7 +18,9 @@ SECONDS = 10
 
 def rms_meter(device_name: str, label: str, samplerate: int) -> bool:
     """Report whether an input device produces an audible signal."""
-    idx = find_input_device(device_name) if device_name else None
+    idx = find_input_device(device_name) if device_name else get_default_input_device()
+    device = sd.query_devices(idx)
+    actual_device_name = str(device["name"])
     peak = 0.0
     with sd.InputStream(device=idx, channels=1, samplerate=samplerate) as stream:
         for _ in range(int(SECONDS * 10)):
@@ -26,7 +29,7 @@ def rms_meter(device_name: str, label: str, samplerate: int) -> bool:
     ok = peak > THRESHOLD
     print(
         f"{'PASS' if ok else 'FAIL'}  {label:<14} peak RMS={peak:.5f}  "
-        f"(device={device_name or 'system default'})"
+        f"(device=[{idx}] {actual_device_name})"
     )
     return ok
 
