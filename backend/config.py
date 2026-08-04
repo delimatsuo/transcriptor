@@ -32,17 +32,6 @@ class Settings(BaseSettings):
         default=30, description="Max seconds of audio to buffer before dropping"
     )
 
-    # VAD
-    vad_threshold: float = Field(
-        default=0.5, description="Silero VAD speech probability threshold"
-    )
-    vad_min_speech_duration_ms: int = Field(
-        default=250, description="Minimum speech duration to trigger forwarding"
-    )
-    vad_silence_timeout_ms: int = Field(
-        default=1000, description="Silence duration before closing a speech segment"
-    )
-
     # STT
     stt_language_code: str = Field(
         default="pt-BR", description="BCP-47 language code for STT"

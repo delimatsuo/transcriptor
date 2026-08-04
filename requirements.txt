@@ -10,11 +10,6 @@ sounddevice==0.5.1
 soundfile==0.12.1
 numpy==1.26.4
 
-# VAD
-silero-vad==5.1.2
-torch==2.5.1
-torchaudio==2.5.1
-
 # Google Cloud
 google-cloud-speech==2.28.1
 google-cloud-firestore==2.19.0
