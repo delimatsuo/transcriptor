@@ -74,6 +74,13 @@ class Settings(BaseSettings):
     audio_backup_dir: str = Field(
         default="recordings", description="Directory for local audio backup files"
     )
+    audio_backup_enabled: bool = Field(
+        default=False,
+        description=(
+            "Opt-in local FLAC crash-insurance recording. MUST stay False by "
+            "default: spec 2026-08-03 §6 — no persistent raw audio."
+        ),
+    )
 
     @property
     def chunk_size(self) -> int:

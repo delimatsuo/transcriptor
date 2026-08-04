@@ -18,7 +18,7 @@ logger = structlog.get_logger()
 
 
 class AudioBuffer:
-    """Async buffer between audio capture and STT sender, with FLAC backup."""
+    """Async buffer between audio capture and STT sender, with optional FLAC backup."""
 
     def __init__(self, settings: Settings, input_queue: asyncio.Queue) -> None:
         self.settings = settings
@@ -49,8 +49,9 @@ class AudioBuffer:
             logger.info("audio_backup_closed", path=str(self._backup_path))
 
     async def start(self) -> None:
-        """Open the backup file."""
-        self._open_backup_file()
+        """Open the backup file only when explicitly enabled (dev opt-in)."""
+        if self.settings.audio_backup_enabled:
+            self._open_backup_file()
         self._running = True
 
     async def stop(self) -> None:
@@ -65,7 +66,7 @@ class AudioBuffer:
     async def chunks(self) -> AsyncIterator[np.ndarray]:
         """Yield audio chunks from the input queue.
 
-        Each chunk is also written to the local backup file.
+        Each chunk is also written to the local backup file when enabled.
         """
         while self._running:
             try:
