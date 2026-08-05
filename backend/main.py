@@ -50,6 +50,7 @@ from backend.schemas.models import (
     WSMessageType,
 )
 from backend.speaker_correlation import SpeakerCorrelator
+from backend.startup_credentials import probe_application_default_credentials
 from backend.utils.sanitize import sanitize_participant_name
 from backend.sessions.manager import SessionManager
 from backend.stt.stream_manager import StreamManager
@@ -93,6 +94,7 @@ async def lifespan(app: FastAPI):
     global settings, session_mgr, firestore_storage, gcs_storage, gemini_client, context_window
 
     settings = get_settings()
+    await probe_application_default_credentials()
     session_mgr = SessionManager(settings)
     firestore_storage = FirestoreStorage(settings)
     gcs_storage = GCSStorage(settings)

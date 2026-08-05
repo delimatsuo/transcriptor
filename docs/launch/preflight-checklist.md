@@ -14,8 +14,9 @@ canais de captura estiverem ativos **e isolados entre si**.
    sintoma da credencial expirada NÃO é um erro: o backend simplesmente
    **trava em silêncio** em qualquer chamada ao Firestore/STT. Se qualquer
    endpoint demorar mais de ~10 s, suspeite de ADC expirado antes de qualquer
-   outra hipótese. (Correção definitiva planejada: sonda de credencial na
-   inicialização do backend, que falha alto com esta instrução.)
+   outra hipótese. O backend agora valida e atualiza a ADC na inicialização,
+   antes de ficar pronto; se a operação falhar ou exceder ~10 s, ele encerra
+   com `ADC expirado — rode: gcloud auth application-default login`.
 
 1. No macOS, abra **Ajuste de Áudio e MIDI**. Em **Dispositivo de Saída**,
    selecione o **Dispositivo de Saída Múltipla** e confirme que ele contém
