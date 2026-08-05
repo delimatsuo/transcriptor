@@ -61,3 +61,33 @@ export function dismissHero(
   if (!hero) return state;
   return { dismissedThroughSeq: Math.max(state.dismissedThroughSeq, hero.sequenceNumber) };
 }
+
+/**
+ * Every question of the session, grouped for the questions sheet.
+ *
+ * `anteriores` is newest-first (the interviewer browses backwards from now);
+ * `fila` is oldest-first (the order the queue will surface them).
+ */
+export interface QuestionLog {
+  atual: SuggestionEntry | null;
+  fila: SuggestionEntry[];
+  anteriores: SuggestionEntry[];
+}
+
+export function questionLog(
+  history: SuggestionEntry[],
+  state: HeroState,
+): QuestionLog {
+  const atual = selectHero(history, state);
+  const withContent = history.filter(entryHasContent);
+  const fila = atual
+    ? withContent
+        .filter((e) => e.sequenceNumber > atual.sequenceNumber)
+        .sort(bySequence)
+    : [];
+  const anteriores = withContent
+    .filter((e) => e.sequenceNumber <= state.dismissedThroughSeq)
+    .sort(bySequence)
+    .reverse();
+  return { atual, fila, anteriores };
+}

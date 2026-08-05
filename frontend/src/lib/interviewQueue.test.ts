@@ -7,6 +7,7 @@ import {
   initialHeroState,
   isHeroStale,
   queueCount,
+  questionLog,
   selectHero,
 } from "./interviewQueue.ts";
 import type { SuggestionEntry } from "@/types/ws";
@@ -116,4 +117,53 @@ test("queueCount does not count content-less entries", () => {
   ];
   const hero = selectHero(history, initialHeroState);
   assert.equal(queueCount(history, hero), 1);
+});
+
+test("questionLog on empty history is empty", () => {
+  const log = questionLog([], initialHeroState);
+  assert.equal(log.atual, null);
+  assert.deepEqual(log.fila, []);
+  assert.deepEqual(log.anteriores, []);
+});
+
+test("questionLog with fresh state: oldest is atual, rest queue in order", () => {
+  const history = [entry(9, "segunda"), entry(5, "primeira"), entry(12, "terceira")];
+  const log = questionLog(history, initialHeroState);
+  assert.equal(log.atual?.questions[0], "primeira");
+  assert.deepEqual(log.fila.map((e) => e.questions[0]), ["segunda", "terceira"]);
+  assert.deepEqual(log.anteriores, []);
+});
+
+test("questionLog moves dismissed batches to anteriores, newest first", () => {
+  const history = [entry(5, "primeira"), entry(9, "segunda"), entry(12, "terceira")];
+  let state = dismissHero(selectHero(history, initialHeroState), initialHeroState);
+  state = dismissHero(selectHero(history, state), state);
+  const log = questionLog(history, state);
+  assert.deepEqual(log.anteriores.map((e) => e.questions[0]), ["segunda", "primeira"]);
+  assert.equal(log.atual?.questions[0], "terceira");
+  assert.deepEqual(log.fila, []);
+});
+
+test("questionLog excludes content-less entries from every group", () => {
+  const history = [
+    entry(5, "primeira"),
+    entryWithMarkdown(7, [], ""),
+    entry(9, "segunda"),
+    entryWithMarkdown(10, [], "   "),
+  ];
+  const state = dismissHero(selectHero(history, initialHeroState), initialHeroState);
+  const log = questionLog(history, state);
+  assert.deepEqual(log.anteriores.map((e) => e.sequenceNumber), [5]);
+  assert.equal(log.atual?.sequenceNumber, 9);
+  assert.deepEqual(log.fila, []);
+});
+
+test("questionLog with everything dismissed keeps full history browsable", () => {
+  const history = [entry(5, "primeira"), entry(9, "segunda")];
+  let state = dismissHero(selectHero(history, initialHeroState), initialHeroState);
+  state = dismissHero(selectHero(history, state), state);
+  const log = questionLog(history, state);
+  assert.equal(log.atual, null);
+  assert.deepEqual(log.fila, []);
+  assert.deepEqual(log.anteriores.map((e) => e.questions[0]), ["segunda", "primeira"]);
 });
