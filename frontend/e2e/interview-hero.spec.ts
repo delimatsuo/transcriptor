@@ -7,6 +7,7 @@ test("a suggestion from the socket becomes the hero question", async ({ page }) 
 
   await page.goto("/");
   await page.getByRole("combobox").selectOption("interview");
+  await page.getByRole("checkbox", { name: /candidato foi avisado/i }).check();
   await page.getByRole("button", { name: /iniciar sessão/i }).click();
 
   await expect(page.getByText(/ouvindo a conversa/i)).toBeVisible();
@@ -22,6 +23,7 @@ test("a newer batch marks the hero stale and fills the queue", async ({ page }) 
 
   await page.goto("/");
   await page.getByRole("combobox").selectOption("interview");
+  await page.getByRole("checkbox", { name: /candidato foi avisado/i }).check();
   await page.getByRole("button", { name: /iniciar sessão/i }).click();
 
   await server.suggestion(["Primeira pergunta"]);
@@ -40,6 +42,7 @@ test("dismissing advances to the queued question", async ({ page }) => {
 
   await page.goto("/");
   await page.getByRole("combobox").selectOption("interview");
+  await page.getByRole("checkbox", { name: /candidato foi avisado/i }).check();
   await page.getByRole("button", { name: /iniciar sessão/i }).click();
 
   await server.suggestion(["Primeira pergunta"]);
@@ -57,6 +60,7 @@ test("the transcript sheet opens over the hero", async ({ page }) => {
 
   await page.goto("/");
   await page.getByRole("combobox").selectOption("interview");
+  await page.getByRole("checkbox", { name: /candidato foi avisado/i }).check();
   await page.getByRole("button", { name: /iniciar sessão/i }).click();
 
   await server.transcript("eu liderei essa transformação", "Candidato", true);
@@ -76,6 +80,7 @@ test("opening the transcript sheet jumps to the latest speech, not the oldest", 
 
   await page.goto("/");
   await page.getByRole("combobox").selectOption("interview");
+  await page.getByRole("checkbox", { name: /candidato foi avisado/i }).check();
   await page.getByRole("button", { name: /iniciar sessão/i }).click();
 
   for (let i = 1; i <= 40; i += 1) {
@@ -94,6 +99,7 @@ test("a suggestion with no extracted question falls back to its markdown", async
 
   await page.goto("/");
   await page.getByRole("combobox").selectOption("interview");
+  await page.getByRole("checkbox", { name: /candidato foi avisado/i }).check();
   await page.getByRole("button", { name: /iniciar sessão/i }).click();
 
   await server.suggestion([], "### Notas\nPergunte sobre a experiência com fusões.");

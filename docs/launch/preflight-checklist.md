@@ -64,8 +64,11 @@ canais de captura estiverem ativos **e isolados entre si**.
 6. No início da entrevista, apresente o aviso de transcrição, obtenha a
    confirmação verbal e registre a caixa de ciência antes de iniciar a sessão.
    Se a pessoa não concordar, siga sem transcrição.
-7. Inicie backend e frontend. Confirme que o frontend está em
-   `http://localhost:3003` antes de criar a sessão.
+7. Inicie backend e frontend. Use `npm run dev -- -p 3003` durante o
+   desenvolvimento ou `npm run start -- -p 3003` após o build. Ambos fixam o
+   servidor Next em `127.0.0.1`; rejeite o pré-voo se ele escutar em `0.0.0.0`
+   ou em qualquer interface de rede. Abra `http://localhost:3003` antes de criar
+   a sessão (o processo continua escutando somente em `127.0.0.1`).
 8. Ao encerrar, pare de falar e encerre a sessão. O backend para a captura,
    envia o áudio que ainda estiver na fila, fecha a entrada do STT e aguarda
    por até ~10 s os resultados finais e sua persistência. Confirme que o último
