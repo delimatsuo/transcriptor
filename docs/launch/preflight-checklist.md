@@ -3,6 +3,20 @@
 Use esta lista antes de toda entrevista real. O pré-voo só passa quando os dois
 canais de captura estiverem ativos **e isolados entre si**.
 
+0. **Reautentique o Google Cloud no dia da entrevista, antes de tudo:**
+
+   ```bash
+   gcloud auth application-default login
+   ```
+
+   A política da organização expira a credencial ADC **diariamente**
+   (`invalid_grant: invalid_rapt`, confirmado em 2026-08-04 e 2026-08-05). O
+   sintoma da credencial expirada NÃO é um erro: o backend simplesmente
+   **trava em silêncio** em qualquer chamada ao Firestore/STT. Se qualquer
+   endpoint demorar mais de ~10 s, suspeite de ADC expirado antes de qualquer
+   outra hipótese. (Correção definitiva planejada: sonda de credencial na
+   inicialização do backend, que falha alto com esta instrução.)
+
 1. No macOS, abra **Ajuste de Áudio e MIDI**. Em **Dispositivo de Saída**,
    selecione o **Dispositivo de Saída Múltipla** e confirme que ele contém
    **BlackHole 2ch** e os fones de ouvido reais. Não deixe a saída em fones
@@ -35,6 +49,17 @@ canais de captura estiverem ativos **e isolados entre si**.
    O ensaio de 4 de agosto, feito com áudio do YouTube nos alto-falantes do
    ambiente, apresentou conteúdo duplicado em **Candidato** e
    **Entrevistador**; ele não qualifica a atribuição de falantes.
+
+   **Evidência de que o procedimento funciona (2026-08-05):** o reteste com
+   headset (vídeo audível apenas nos fones, saída = Dispositivo de Saída
+   Múltipla) produziu isolamento perfeito — conteúdo do vídeo somente como
+   **Candidato**, fala do entrevistador somente como **Entrevistador**, zero
+   vazamento nos dois sentidos (sessão `9060cd3c`). A atribuição por fonte
+   dupla está verificada de ponta a ponta nesta configuração. Armadilha
+   confirmada no mesmo teste: ao trocar de dispositivo de áudio (ex.: colocar
+   fones), o macOS pode mover a saída do sistema para fora do Dispositivo de
+   Saída Múltipla — o passo 1 deve ser reconferido SEMPRE que o hardware de
+   áudio mudar (log do backend acusa `audio_device_silent label=Candidato`).
 6. No início da entrevista, apresente o aviso de transcrição, obtenha a
    confirmação verbal e registre a caixa de ciência antes de iniciar a sessão.
    Se a pessoa não concordar, siga sem transcrição.
