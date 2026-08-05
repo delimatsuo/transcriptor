@@ -8,6 +8,7 @@ import PreSessionView from "@/components/views/PreSessionView";
 import InterviewLiveView from "@/components/views/InterviewLiveView";
 import MeetingLiveView from "@/components/views/MeetingLiveView";
 import PostSessionView from "@/components/views/PostSessionView";
+import { requestSessionStop } from "@/lib/sessionStop";
 import type { SessionMode } from "@/types/ws";
 
 const API_BASE = "http://localhost:8000";
@@ -17,6 +18,7 @@ export default function Home() {
   const [sessionMode, setSessionMode] = useState<SessionMode>("meeting");
   const [isActive, setIsActive] = useState(false);
   const [preInterviewBriefing, setPreInterviewBriefing] = useState("");
+  const [stopError, setStopError] = useState<string | null>(null);
   const disconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const {
@@ -41,21 +43,31 @@ export default function Home() {
       setSessionId(id);
       setSessionMode(mode);
       setIsActive(true);
+      setStopError(null);
       connect(id);
     },
     [connect, disconnect],
   );
 
   const handleSessionStop = useCallback(async () => {
-    if (sessionId) {
-      try {
-        await fetch(`${API_BASE}/api/sessions/${sessionId}/stop`, {
-          method: "POST",
-        });
-      } catch (err) {
-        console.error("Failed to stop session:", err);
-      }
+    if (!sessionId) {
+      return;
     }
+
+    try {
+      const outcome = await requestSessionStop(
+        fetch,
+        `${API_BASE}/api/sessions/${sessionId}/stop`,
+      );
+      setStopError(outcome.warning);
+    } catch (err) {
+      console.error("Failed to stop session:", err);
+      setStopError(
+        "Encerramento não confirmado: a captura pode continuar ativa. Tente encerrar novamente.",
+      );
+      return;
+    }
+
     setIsActive(false);
     disconnectTimerRef.current = setTimeout(() => {
       disconnect();
@@ -116,7 +128,7 @@ export default function Home() {
       </header>
 
       {/* Error banner */}
-      {lastError && (
+      {(stopError || lastError) && (
         <div
           style={{
             padding: "10px 28px",
@@ -128,7 +140,7 @@ export default function Home() {
             fontWeight: 500,
           }}
         >
-          {lastError}
+          {stopError || lastError}
         </div>
       )}
 
@@ -165,6 +177,7 @@ export default function Home() {
           onNewSession={() => {
             setSessionId(null);
             setIsActive(false);
+            setStopError(null);
           }}
         />
       )}

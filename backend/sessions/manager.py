@@ -96,13 +96,24 @@ class SessionManager:
         task = asyncio.create_task(_heartbeat())
         self._heartbeat_tasks[session_id] = task
 
-    async def stop_session(self, session_id: str) -> Session | None:
-        """Stop a session and mark it as completed."""
+    async def stop_session(
+        self,
+        session_id: str,
+        *,
+        transcription_complete: bool = True,
+    ) -> Session | None:
+        """Stop a session and preserve whether transcription finalized."""
         session = self._sessions.get(session_id)
         if session is None:
             return None
+        if session.status != SessionStatus.ACTIVE:
+            return session
 
-        session.status = SessionStatus.COMPLETED
+        session.status = (
+            SessionStatus.COMPLETED
+            if transcription_complete
+            else SessionStatus.INCOMPLETE
+        )
         session.ended_at = datetime.utcnow()
 
         # Cancel heartbeat
@@ -117,6 +128,7 @@ class SessionManager:
         logger.info(
             "session_stopped",
             session_id=session_id,
+            transcription_complete=transcription_complete,
             duration_seconds=(session.ended_at - session.started_at).total_seconds(),
             transcript_segments=len(self._transcripts.get(session_id, [])),
         )

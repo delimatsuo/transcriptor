@@ -73,6 +73,8 @@ audio_captures: dict[str, list[AudioCapture]] = {}
 audio_buffers: dict[str, list[AudioBuffer]] = {}
 stream_managers: dict[str, list[StreamManager]] = {}
 pipeline_tasks: dict[str, list[asyncio.Task]] = {}
+session_stop_locks: dict[str, asyncio.Lock] = {}
+final_summary_scheduled: set[str] = set()
 
 # Interview context
 interview_documents: dict[str, dict[str, str]] = {}  # session_id -> {resume, jd}
@@ -156,7 +158,7 @@ async def _run_single_audio_stream(
 
     sm = StreamManager(
         settings=settings,
-        on_transcript=lambda seg: _on_transcript_sync(session_id, seg),
+        on_transcript=lambda seg: _on_transcript(session_id, seg),
         source_label=source_label,
     )
 
@@ -181,13 +183,32 @@ async def _run_single_audio_stream(
     except asyncio.CancelledError:
         pass
     except Exception:
+        sm.mark_failed("audio_pipeline_error")
         logger.exception(
             "audio_pipeline_error", session_id=session_id, source=source_label,
         )
     finally:
-        await sm.stop()
-        await buffer.stop()
-        await capture.stop()
+        try:
+            # Stop capture first so no callback can enqueue behind the drain.
+            await capture.stop()
+            # A PortAudio callback may already have queued _enqueue onto this
+            # event loop. Give that callback one turn before emptying the tail.
+            await asyncio.sleep(0)
+            pending_chunks = buffer.drain_pending_chunks()
+            if pending_chunks:
+                logger.info(
+                    "audio_pipeline_draining_pending_chunks",
+                    session_id=session_id,
+                    source=source_label,
+                    count=len(pending_chunks),
+                )
+            for chunk in pending_chunks:
+                await sm.send_audio(buffer.float32_to_int16(chunk))
+        finally:
+            try:
+                await sm.stop()
+            finally:
+                await buffer.stop()
 
 
 async def _run_audio_pipeline(session_id: str) -> None:
@@ -228,12 +249,6 @@ async def _run_audio_pipeline(session_id: str) -> None:
         stream_managers.pop(session_id, None)
 
 
-def _on_transcript_sync(session_id: str, segment: TranscriptSegment) -> None:
-    """Called from the stream manager (sync context) — schedules async work."""
-    loop = asyncio.get_event_loop()
-    loop.create_task(_on_transcript(session_id, segment))
-
-
 async def _on_transcript(session_id: str, segment: TranscriptSegment) -> None:
     """Handle a new transcript segment."""
     assert session_mgr and firestore_storage and context_window
@@ -259,6 +274,9 @@ async def _on_transcript(session_id: str, segment: TranscriptSegment) -> None:
             await firestore_storage.save_transcript_segment(session_id, segment)
         except Exception:
             logger.exception("firestore_save_error", session_id=session_id)
+            # A final is not complete until its durable write succeeds. Let the
+            # stream manager make this failure sticky and suppress the report.
+            raise
 
     # Check if we should generate a rolling summary
     if segment.is_final:
@@ -394,6 +412,7 @@ async def _generate_final_summary(session_id: str) -> None:
 
     transcript_text = session_mgr.get_recent_transcript_text(session_id, max_segments=9999)
     if not transcript_text:
+        _cleanup_session_context(session_id)
         return
 
     session = session_mgr.get_session(session_id)
@@ -451,14 +470,32 @@ async def _generate_final_summary(session_id: str) -> None:
     except Exception:
         logger.exception("final_summary_error", session_id=session_id)
     finally:
-        interview_documents.pop(session_id, None)
-        speaker_correlators.pop(session_id, None)
-        extension_tokens.pop(session_id, None)
-        _clock_sync_timestamps.pop(session_id, None)
+        _cleanup_session_context(session_id)
 
 
-async def _stop_pipeline(session_id: str) -> None:
-    """Stop the audio pipeline for a session."""
+def _cleanup_session_context(session_id: str) -> None:
+    """Remove sensitive per-interview context after terminal handling."""
+    interview_documents.pop(session_id, None)
+    speaker_correlators.pop(session_id, None)
+    extension_tokens.pop(session_id, None)
+    _clock_sync_timestamps.pop(session_id, None)
+
+
+def _schedule_final_summary_once(session_id: str) -> None:
+    """Schedule at most one final report for a session in this process."""
+    if session_id in final_summary_scheduled:
+        return
+    final_summary_scheduled.add(session_id)
+    try:
+        asyncio.create_task(_generate_final_summary(session_id))
+    except Exception:
+        final_summary_scheduled.discard(session_id)
+        raise
+
+
+async def _stop_pipeline(session_id: str) -> bool:
+    """Stop the audio pipeline and report whether every STT stream drained."""
+    managers = list(stream_managers.get(session_id, []))
     tasks = pipeline_tasks.pop(session_id, None)
     if tasks:
         for task in tasks:
@@ -472,6 +509,13 @@ async def _stop_pipeline(session_id: str) -> None:
     # Clean up interview runtime state (documents cleaned after final summary)
     interview_suggestion_counters.pop(session_id, None)
     single_source_warned.discard(session_id)
+    if not managers:
+        logger.error(
+            "audio_pipeline_missing_stream_manager",
+            session_id=session_id,
+        )
+        return False
+    return all(manager.drain_completed is True for manager in managers)
 
 
 # --- REST Endpoints ---
@@ -505,18 +549,55 @@ async def create_session(
 @app.post("/api/sessions/{session_id}/stop")
 async def stop_session(session_id: str):
     """Stop a session and generate final summary."""
-    assert session_mgr
+    assert session_mgr and firestore_storage
 
-    await _stop_pipeline(session_id)
-    session = await session_mgr.stop_session(session_id)
+    stop_lock = session_stop_locks.setdefault(session_id, asyncio.Lock())
+    async with stop_lock:
+        session = session_mgr.get_session(session_id)
+        if session is None:
+            raise HTTPException(status_code=404, detail="Session not found")
 
-    if session is None:
-        raise HTTPException(status_code=404, detail="Session not found")
+        newly_stopped = session.status == SessionStatus.ACTIVE
+        if newly_stopped:
+            drain_completed = await _stop_pipeline(session_id)
+            session = await session_mgr.stop_session(
+                session_id,
+                transcription_complete=drain_completed,
+            )
+            if session is None:  # It existed immediately before shutdown.
+                raise HTTPException(status_code=404, detail="Session not found")
 
-    # Generate final summary async
-    asyncio.create_task(_generate_final_summary(session_id))
+        transcription_complete = session.status == SessionStatus.COMPLETED
+        if not transcription_complete:
+            _cleanup_session_context(session_id)
 
-    return {"session_id": session_id, "status": "completed"}
+        # A terminal retry replays this durable write. This covers a lost HTTP
+        # response or a first write that failed after the in-memory transition.
+        await firestore_storage.save_session(session)
+
+        if transcription_complete:
+            _schedule_final_summary_once(session_id)
+        elif newly_stopped:
+            seq = ws_manager.next_sequence(session_id)
+            error = ErrorPayload(
+                severity=ErrorSeverity.FATAL,
+                message=(
+                    "Transcrição incompleta: o STT não confirmou todos os "
+                    "resultados finais dentro do limite. Revise o final da "
+                    "entrevista; nenhum relatório final foi gerado."
+                ),
+                code="stt_graceful_drain_incomplete",
+            )
+            await ws_manager.broadcast(
+                session_id,
+                WSMessage.error_msg(session_id, seq, error),
+            )
+
+        return {
+            "session_id": session_id,
+            "status": session.status.value,
+            "transcription_complete": transcription_complete,
+        }
 
 
 @app.delete("/api/sessions/{session_id}")

@@ -7,7 +7,7 @@ const API_BASE = "http://localhost:8000";
 
 interface Props {
   onSessionStart: (sessionId: string, mode: SessionMode) => void;
-  onSessionStop: () => void;
+  onSessionStop: () => Promise<void>;
   onBriefingReady?: (briefing: string) => void;
   isActive: boolean;
   sessionId: string | null;
@@ -157,7 +157,7 @@ export default function SessionControls({
   const handleStop = async () => {
     setLoading(true);
     try {
-      onSessionStop();
+      await onSessionStop();
     } finally {
       setLoading(false);
     }

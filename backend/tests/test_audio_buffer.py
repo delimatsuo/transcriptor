@@ -3,6 +3,7 @@
 import asyncio
 
 import numpy as np
+import soundfile as sf
 
 from backend.audio.buffer import AudioBuffer
 from backend.config import Settings
@@ -48,3 +49,48 @@ def test_backup_opt_in_still_works(tmp_path):
 
     path = asyncio.run(run())
     assert path is not None and path.exists()
+
+
+def test_drain_pending_chunks_preserves_order(tmp_path):
+    settings = make_settings(tmp_path)
+
+    async def run():
+        queue: asyncio.Queue = asyncio.Queue()
+        first = np.full(4, 0.1, dtype=np.float32)
+        second = np.full(4, 0.2, dtype=np.float32)
+        await queue.put(first)
+        await queue.put(second)
+        buf = AudioBuffer(settings, queue)
+        await buf.start()
+        drained = buf.drain_pending_chunks()
+        await buf.stop()
+        return drained, queue
+
+    drained, queue = asyncio.run(run())
+
+    assert len(drained) == 2
+    np.testing.assert_array_equal(drained[0], np.full(4, 0.1, dtype=np.float32))
+    np.testing.assert_array_equal(drained[1], np.full(4, 0.2, dtype=np.float32))
+    assert queue.empty()
+
+
+def test_drain_pending_chunks_keeps_opt_in_backup_complete(tmp_path):
+    settings = make_settings(tmp_path, audio_backup_enabled=True)
+    pending = np.full(160, 0.25, dtype=np.float32)
+
+    async def run():
+        queue: asyncio.Queue = asyncio.Queue()
+        await queue.put(pending)
+        buf = AudioBuffer(settings, queue)
+        await buf.start()
+        drained = buf.drain_pending_chunks()
+        await buf.stop()
+        return drained, buf.backup_path
+
+    drained, path = asyncio.run(run())
+
+    assert len(drained) == 1
+    assert path is not None
+    recorded, sample_rate = sf.read(path, dtype="float32")
+    assert sample_rate == settings.sample_rate
+    np.testing.assert_allclose(recorded, pending, atol=1e-4)

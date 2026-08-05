@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import time
 from collections import deque
-from typing import AsyncIterator, Callable
+from collections.abc import Awaitable, Callable
 
 import structlog
 from google.cloud.speech_v2.types import cloud_speech
@@ -31,7 +32,9 @@ class StreamManager:
     def __init__(
         self,
         settings: Settings,
-        on_transcript: Callable[[TranscriptSegment], None] | None = None,
+        on_transcript: (
+            Callable[[TranscriptSegment], None | Awaitable[None]] | None
+        ) = None,
         source_label: str = "",
     ) -> None:
         self.settings = settings
@@ -43,6 +46,11 @@ class StreamManager:
         self._sequence_number = 0
         self._session_start_time: float = 0.0
         self._running = False
+        self._start_requested = False
+        self._ever_stream_opened = False
+        self._audio_dropped = False
+        self._drain_completed: bool | None = None
+        self._drain_failure_reason: str | None = None
 
         # Track last emitted end_time to avoid duplicate segments during overlap
         self._last_emitted_end_time: float = 0.0
@@ -65,8 +73,13 @@ class StreamManager:
         """Start the stream manager with auto-recovering response loop."""
         self._session_start_time = time.monotonic()
         self._running = True
+        self._start_requested = True
+        self._ever_stream_opened = False
+        self._audio_dropped = False
         self._sequence_number = 0
         self._last_emitted_end_time = 0.0
+        self._drain_completed = None
+        self._drain_failure_reason = None
 
         # Start the auto-recovering response loop
         self._response_task = asyncio.create_task(
@@ -78,9 +91,22 @@ class StreamManager:
 
         logger.info("stream_manager_started")
 
-    async def stop(self) -> None:
-        """Stop all streams and tasks."""
+    def mark_failed(self, reason: str) -> None:
+        """Make the session's incomplete state sticky after audio risk."""
+        if self._drain_failure_reason is None:
+            self._drain_failure_reason = reason
+            logger.error(
+                "stream_manager_marked_incomplete",
+                source=self.source_label,
+                reason=reason,
+            )
+
+    async def stop(self) -> bool:
+        """Half-close input and await final responses within a bounded deadline."""
         self._running = False
+
+        if not self._start_requested:
+            self.mark_failed("not_started")
 
         if self._rotation_task:
             self._rotation_task.cancel()
@@ -90,24 +116,102 @@ class StreamManager:
                 pass
 
         if self._current_stream:
+            self._ever_stream_opened = (
+                self._ever_stream_opened
+                or getattr(self._current_stream, "request_opened", False)
+            )
             await self._current_stream.stop()
 
         if self._response_task:
-            self._response_task.cancel()
             try:
-                await self._response_task
+                await asyncio.wait_for(
+                    asyncio.shield(self._response_task),
+                    timeout=self.settings.stt_graceful_drain_timeout_seconds,
+                )
+            except TimeoutError:
+                self.mark_failed("timeout")
+                logger.error(
+                    "stt_graceful_drain_timeout",
+                    source=self.source_label,
+                    timeout_seconds=(
+                        self.settings.stt_graceful_drain_timeout_seconds
+                    ),
+                    pending_audio=len(self._pending_audio),
+                )
+                self._response_task.cancel()
+                done, _ = await asyncio.wait(
+                    {self._response_task},
+                    timeout=min(
+                        0.5,
+                        self.settings.stt_graceful_drain_timeout_seconds,
+                    ),
+                )
+                if not done:
+                    logger.error(
+                        "stt_graceful_drain_cancellation_stuck",
+                        source=self.source_label,
+                    )
             except asyncio.CancelledError:
-                pass
+                if self._response_task.cancelled():
+                    self.mark_failed("response_task_cancelled")
+                else:
+                    raise
 
-        logger.info("stream_manager_stopped")
+        if self._current_stream:
+            self._ever_stream_opened = (
+                self._ever_stream_opened
+                or getattr(self._current_stream, "request_opened", False)
+            )
+
+        if self._start_requested and not self._ever_stream_opened:
+            self.mark_failed("stream_not_opened")
+
+        if self._audio_dropped:
+            self.mark_failed("pending_audio_dropped")
+
+        if self._pending_audio and self._drain_failure_reason is None:
+            self.mark_failed("pending_audio_not_sent")
+            logger.error(
+                "stt_graceful_drain_pending_audio",
+                source=self.source_label,
+                pending_audio=len(self._pending_audio),
+            )
+
+        self._drain_completed = self._drain_failure_reason is None
+
+        logger.info(
+            "stream_manager_stopped",
+            drain_completed=self._drain_completed,
+            drain_failure_reason=self._drain_failure_reason,
+        )
+        return self._drain_completed
+
+    @property
+    def drain_completed(self) -> bool | None:
+        return self._drain_completed
+
+    @property
+    def drain_failure_reason(self) -> str | None:
+        return self._drain_failure_reason
 
     async def send_audio(self, audio_bytes: bytes) -> None:
         """Send audio to the current stream, buffering across rotation gaps."""
         if self._current_stream and self._current_stream.is_active:
+            self._ever_stream_opened = (
+                self._ever_stream_opened
+                or getattr(self._current_stream, "request_opened", False)
+            )
             while self._pending_audio:
                 await self._current_stream.send_audio(self._pending_audio.popleft())
             await self._current_stream.send_audio(audio_bytes)
         elif self._running:
+            if len(self._pending_audio) == self._pending_audio.maxlen:
+                self._audio_dropped = True
+                logger.error(
+                    "rotation_pending_audio_dropped",
+                    source=self.source_label,
+                    buffered=len(self._pending_audio),
+                )
             self._pending_audio.append(audio_bytes)
             if len(self._pending_audio) == self._pending_audio.maxlen:
                 logger.warning(
@@ -152,9 +256,10 @@ class StreamManager:
 
             try:
                 async for response in stream.start():
-                    if not self._running:
-                        return
-
+                    self._ever_stream_opened = (
+                        self._ever_stream_opened
+                        or getattr(stream, "request_opened", False)
+                    )
                     for result in response.results:
                         if not result.alternatives:
                             continue
@@ -210,11 +315,23 @@ class StreamManager:
                             self._last_emitted_end_time = end_time
 
                         if self.on_transcript:
-                            self.on_transcript(segment)
+                            callback_result = self.on_transcript(segment)
+                            if inspect.isawaitable(callback_result):
+                                await callback_result
+
+                self._ever_stream_opened = (
+                    self._ever_stream_opened
+                    or getattr(stream, "request_opened", False)
+                )
 
             except asyncio.CancelledError:
                 return
             except Exception:
+                self._ever_stream_opened = (
+                    self._ever_stream_opened
+                    or getattr(stream, "request_opened", False)
+                )
+                self.mark_failed("response_error")
                 logger.warning(
                     "stt_stream_error_recovering",
                     stream_id=stream.stream_id,
@@ -223,3 +340,4 @@ class StreamManager:
                 if self._running:
                     await asyncio.sleep(0.5)
                     continue
+                return

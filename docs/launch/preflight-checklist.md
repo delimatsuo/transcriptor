@@ -66,9 +66,17 @@ canais de captura estiverem ativos **e isolados entre si**.
    Se a pessoa não concordar, siga sem transcrição.
 7. Inicie backend e frontend. Confirme que o frontend está em
    `http://localhost:3003` antes de criar a sessão.
-8. Ao encerrar, pare de falar, aguarde o último enunciado ficar visível e só
-   então encerre a sessão. Confirme que o último enunciado e os dados da sessão
-   persistiram antes de fechar a aplicação.
+8. Ao encerrar, pare de falar e encerre a sessão. O backend para a captura,
+   envia o áudio que ainda estiver na fila, fecha a entrada do STT e aguarda
+   por até ~10 s os resultados finais e sua persistência. Confirme que o último
+   enunciado e os dados da sessão persistiram antes de fechar a aplicação.
+
+   - Se aparecer **Transcrição incompleta**, não use nem gere o relatório final;
+     revise o fim da entrevista e preserve o log para investigação.
+   - Se aparecer **Encerramento não confirmado: a captura pode continuar
+     ativa**, mantenha a aplicação aberta e tente encerrar novamente. A tela
+     permanece no estado ao vivo até receber uma confirmação terminal do
+     backend; não presuma que a captura parou.
 9. Depois da entrevista, revise o transcript: os rótulos **Entrevistador** e
    **Candidato** devem aparecer; procure lacunas nas transições de
    aproximadamente 4 minutos e 30 segundos. Registre cada anomalia como um

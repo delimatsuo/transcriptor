@@ -61,6 +61,13 @@ class Settings(BaseSettings):
     stt_max_speaker_count: int = Field(
         default=6, description="Max expected speakers for diarization"
     )
+    stt_graceful_drain_timeout_seconds: float = Field(
+        default=10.0,
+        gt=0,
+        description=(
+            "Maximum time to await final STT responses after closing audio input"
+        ),
+    )
 
     # Server
     fastapi_host: str = Field(default="127.0.0.1")

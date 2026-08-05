@@ -63,6 +63,26 @@ class AudioBuffer:
     def backup_path(self) -> Path | None:
         return self._backup_path
 
+    def _record_chunk(self, chunk: np.ndarray) -> None:
+        """Write a chunk to the opt-in backup when enabled."""
+        if self._backup_file is not None:
+            try:
+                self._backup_file.write(chunk)
+            except Exception:
+                logger.exception("audio_backup_write_error")
+
+    def drain_pending_chunks(self) -> list[np.ndarray]:
+        """Remove and return every queued chunk without losing backup coverage."""
+        drained: list[np.ndarray] = []
+        while True:
+            try:
+                chunk = self.input_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            self._record_chunk(chunk)
+            drained.append(chunk)
+        return drained
+
     async def chunks(self) -> AsyncIterator[np.ndarray]:
         """Yield audio chunks from the input queue.
 
@@ -75,11 +95,7 @@ class AudioBuffer:
                 continue
 
             # Write to backup (always, even during silence)
-            if self._backup_file is not None:
-                try:
-                    self._backup_file.write(chunk)
-                except Exception:
-                    logger.exception("audio_backup_write_error")
+            self._record_chunk(chunk)
 
             yield chunk
 
