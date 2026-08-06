@@ -30,9 +30,13 @@ not hosted, deployment, provider, physical-device, or real-interview evidence.
   principal. The bypass is test-only and does not bypass backend authentication.
 - Dependency audit: `npm audit --audit-level=moderate` reports zero
   vulnerabilities.
-- GitHub Actions: exact-head run
+- GitHub Actions: run
   [31119758788](https://github.com/delimatsuo/transcriptor/actions/runs/31119758788)
-  passed both backend and frontend jobs on the docs-bound tree above.
+  passed both backend and frontend jobs on the prior docs-bound tree
+  `6705947be0e96ca00e8879e0e55974c2135a227c`, whose executable source is
+  identical to this tree. The current docs-only head has retry
+  [31120461233](https://github.com/delimatsuo/transcriptor/actions/runs/31120461233)
+  queued after a runner-service stall.
 
 ## Efficiency and cost controls
 
