@@ -5,7 +5,7 @@ import asyncio
 from backend import main
 from backend.config import Settings
 from backend.llm.context_window import _TRUNCATION_MARKER, ContextWindowManager
-from backend.schemas.models import TranscriptSegment
+from backend.schemas.models import SessionStatus, TranscriptSegment
 from backend.sessions.manager import SessionManager
 
 
@@ -135,6 +135,45 @@ def test_session_manager_word_count_uses_final_prefix_totals():
     assert manager.get_transcript_word_count_since_index(session.id, from_index=1) == 3
     assert manager.get_transcript_word_count(session.id, from_seq=1) == 3
     assert manager.get_transcript_word_count_since_index(session.id, from_index=99) == 0
+
+
+def test_terminal_transcript_memory_can_be_released_without_losing_session_metadata():
+    manager = SessionManager(Settings(google_cloud_project="test-project"))
+    session = manager.create_session()
+    manager.add_transcript_segment(
+        session.id,
+        TranscriptSegment(text="durable final", sequence_number=1, is_final=True),
+    )
+
+    manager.release_transcript_memory(session.id)
+
+    assert manager.get_session(session.id) is session
+    assert manager.get_transcript(session.id) == []
+    assert manager.get_transcript_word_count_since_index(session.id) == 0
+
+
+def test_incomplete_cleanup_defers_release_until_terminal_write(monkeypatch):
+    manager = SessionManager(Settings(google_cloud_project="test-project"))
+    session = manager.create_session()
+    manager.add_transcript_segment(
+        session.id,
+        TranscriptSegment(text="unsaved final", sequence_number=1, is_final=True),
+    )
+    session.status = SessionStatus.INCOMPLETE
+    previous_manager = main.session_mgr
+    monkeypatch.setattr(main, "session_mgr", manager)
+
+    try:
+        main._cleanup_session_context(
+            session.id,
+            release_transcript_memory=False,
+        )
+        assert len(manager.get_transcript(session.id)) == 1
+
+        main._release_terminal_transcript_memory(session.id)
+        assert manager.get_transcript(session.id) == []
+    finally:
+        main.session_mgr = previous_manager
 
 
 def test_main_rolling_context_isolated_per_session():

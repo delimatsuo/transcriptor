@@ -67,6 +67,17 @@ class SessionManager:
     def get_transcript(self, session_id: str) -> list[TranscriptSegment]:
         return self._transcripts.get(session_id, [])
 
+    def release_transcript_memory(self, session_id: str) -> None:
+        """Release terminal transcript payloads after durable persistence.
+
+        Keep the small session record available for authorization and status
+        reads; terminal transcript/review endpoints reconstruct the durable
+        final segments from Firestore when this in-process cache is empty.
+        """
+        self._transcripts.pop(session_id, None)
+        self._transcript_sequence_counters.pop(session_id, None)
+        self._transcript_final_word_prefix.pop(session_id, None)
+
     def add_transcript_segment(
         self, session_id: str, segment: TranscriptSegment
     ) -> None:

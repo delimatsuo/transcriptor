@@ -976,7 +976,22 @@ async def _generate_final_summary(session_id: str) -> None:
         _cleanup_session_context(session_id)
 
 
-def _cleanup_session_context(session_id: str) -> None:
+def _release_terminal_transcript_memory(session_id: str) -> None:
+    """Drop terminal transcript payloads after durable session persistence."""
+    if session_mgr is None:
+        return
+    get_session = getattr(session_mgr, "get_session", None)
+    session = get_session(session_id) if callable(get_session) else None
+    release = getattr(session_mgr, "release_transcript_memory", None)
+    if session is not None and session.status != SessionStatus.ACTIVE and release:
+        release(session_id)
+
+
+def _cleanup_session_context(
+    session_id: str,
+    *,
+    release_transcript_memory: bool = True,
+) -> None:
     """Remove sensitive per-interview context after terminal handling."""
     interview_documents.pop(session_id, None)
     interview_final_segment_counts.pop(session_id, None)
@@ -998,6 +1013,13 @@ def _cleanup_session_context(session_id: str) -> None:
         if token_session_id == session_id:
             stop_capabilities.pop(token, None)
     _clock_sync_timestamps.pop(session_id, None)
+
+    # Terminal transcript payloads are already durable by the time this
+    # cleanup runs. Release the large in-process cache while retaining the
+    # session metadata needed for status/authorization checks. Direct test
+    # doubles may not expose this optional memory-release seam.
+    if release_transcript_memory:
+        _release_terminal_transcript_memory(session_id)
 
 
 def _schedule_final_summary_once(session_id: str) -> None:
@@ -1128,7 +1150,13 @@ async def stop_session(session_id: str):
 
         transcription_complete = session.status == SessionStatus.COMPLETED
         if not transcription_complete:
-            _cleanup_session_context(session_id)
+            # Clear model/UI runtime state now, but retain transcript memory
+            # until the terminal session write succeeds below. A final segment
+            # may still exist only in memory if its Firestore write failed.
+            _cleanup_session_context(
+                session_id,
+                release_transcript_memory=False,
+            )
 
         # For completed interviews, the durable terminal state and the report
         # obligation are one transaction. A process crash can therefore leave
@@ -1142,6 +1170,9 @@ async def stop_session(session_id: str):
             # A terminal retry replays this durable write. This covers a lost
             # HTTP response or a first write that failed after the transition.
             await firestore_storage.save_session(session)
+
+        if not transcription_complete:
+            _release_terminal_transcript_memory(session_id)
 
         if transcription_complete:
             _schedule_final_summary_once(session_id)
