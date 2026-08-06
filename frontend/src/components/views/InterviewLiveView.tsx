@@ -3,6 +3,7 @@
 import { useState } from "react";
 
 import HeroQuestion from "@/components/HeroQuestion";
+import NoteChips from "@/components/NoteChips";
 import QuestionsSheet from "@/components/QuestionsSheet";
 import TranscriptSheet from "@/components/TranscriptSheet";
 import {
@@ -17,11 +18,13 @@ import { tokens } from "@/lib/tokens";
 import type { SuggestionEntry, TranscriptSegment } from "@/types/ws";
 
 interface Props {
+  sessionId: string;
   transcript: TranscriptSegment[];
   suggestionHistory: SuggestionEntry[];
 }
 
 export default function InterviewLiveView({
+  sessionId,
   transcript,
   suggestionHistory,
 }: Props) {
@@ -51,6 +54,7 @@ export default function InterviewLiveView({
         onDismiss={() => setHeroState((s) => dismissHero(hero, s))}
         onShowQueue={() => setQuestionsOpen(true)}
       />
+      <NoteChips sessionId={sessionId} transcript={transcript} />
       <QuestionsSheet
         log={log}
         open={questionsOpen}

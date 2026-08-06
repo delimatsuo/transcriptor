@@ -14,6 +14,15 @@ from backend.schemas.models import (
     SessionStatus,
     TranscriptSegment,
 )
+from backend.sessions.notes import (
+    CreateRecruiterNoteRequest,
+    RecruiterNote,
+    RecruiterNoteConflict,
+    RecruiterNoteError,
+    build_recruiter_note,
+    deserialize_recruiter_notes,
+    same_note_payload,
+)
 
 logger = structlog.get_logger()
 
@@ -208,3 +217,99 @@ class FirestoreStorage:
             segments.append(data)
 
         return segments
+
+    async def save_recruiter_note(
+        self,
+        session: Session,
+        request: CreateRecruiterNoteRequest,
+    ) -> RecruiterNote:
+        """Create a note only when its transcript anchor is durable."""
+        db = await self._get_db()
+        session_ref = db.collection("sessions").document(session.id)
+        segment_ref = (
+            session_ref.collection("transcript")
+            .document(request.transcript_segment_id)
+        )
+        note_ref = (
+            session_ref
+            .collection("notes")
+            .document(request.client_note_id)
+        )
+
+        @firestore.async_transactional
+        async def create_in_transaction(transaction):
+            segment_snapshot = await segment_ref.get(transaction=transaction)
+            if not segment_snapshot.exists:
+                raise RecruiterNoteError(
+                    "final transcript segment is not durable; retry shortly"
+                )
+            segment_data = segment_snapshot.to_dict() or {}
+            try:
+                segment = TranscriptSegment(
+                    id=segment_snapshot.id,
+                    text=segment_data.get("text", ""),
+                    speaker=segment_data.get("speaker", "Speaker 1"),
+                    start_time=segment_data.get("startTime", 0.0),
+                    end_time=segment_data["endTime"],
+                    confidence=segment_data.get("confidence", 0.0),
+                    sequence_number=segment_data.get("sequenceNumber", 0),
+                    is_final=True,
+                )
+            except (KeyError, TypeError, ValueError) as exc:
+                raise RecruiterNoteError(
+                    "durable transcript segment is invalid"
+                ) from exc
+
+            note = build_recruiter_note(session, segment, request)
+            note_snapshot = await note_ref.get(transaction=transaction)
+            if note_snapshot.exists:
+                existing = note_snapshot.to_dict() or {}
+                existing["id"] = note_snapshot.id
+                durable_note = deserialize_recruiter_notes(
+                    note.session_id,
+                    [existing],
+                )[0]
+                if not same_note_payload(durable_note, note):
+                    raise RecruiterNoteConflict(
+                        "note identity was already used for different evidence"
+                    )
+                return durable_note
+
+            transaction.create(
+                note_ref,
+                {
+                    "kind": note.kind.value,
+                    "text": note.text,
+                    "transcriptSegmentId": note.transcript_segment_id,
+                    "transcriptOffsetMs": note.transcript_offset_ms,
+                    "source": note.source,
+                    "createdAt": note.created_at,
+                },
+            )
+            return note
+
+        durable_note = await create_in_transaction(db.transaction())
+        logger.info(
+            "recruiter_note_saved",
+            session_id=durable_note.session_id,
+            note_id=durable_note.id,
+            kind=durable_note.kind.value,
+        )
+        return durable_note
+
+    async def get_session_notes(self, session_id: str) -> list[dict]:
+        """Read durable recruiter notes for restart-safe downstream review."""
+        db = await self._get_db()
+        query = (
+            db.collection("sessions")
+            .document(session_id)
+            .collection("notes")
+            .order_by("createdAt")
+        )
+
+        notes = []
+        async for doc in query.stream():
+            data = doc.to_dict()
+            data["id"] = doc.id
+            notes.append(data)
+        return notes

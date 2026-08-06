@@ -27,6 +27,12 @@ export type RegenerationStatus =
   | "not_needed"
   | "blocked_source_context"
   | "blocked_session_state";
+export type NoteKind =
+  | "note"
+  | "bookmark"
+  | "concern"
+  | "strength"
+  | "follow_up";
 
 export interface TranscriptSegment {
   id: string;
@@ -82,6 +88,17 @@ export interface SessionReview {
   summary: string | null;
   review_status: ReviewStatus;
   regeneration_status: RegenerationStatus;
+}
+
+export interface RecruiterNote {
+  id: string;
+  session_id: string;
+  kind: NoteKind;
+  text: string;
+  transcript_segment_id: string;
+  transcript_offset_ms: number;
+  source: "recruiter";
+  created_at: string;
 }
 
 export interface TranscriptDelta {

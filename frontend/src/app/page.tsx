@@ -260,8 +260,9 @@ export default function Home() {
       )}
 
       {/* Active interview: two-column layout */}
-      {isActive && isInterview && (
+      {isActive && isInterview && sessionId && (
         <InterviewLiveView
+          sessionId={sessionId}
           transcript={transcript}
           suggestionHistory={suggestionHistory}
         />

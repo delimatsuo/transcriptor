@@ -53,6 +53,12 @@ from backend.speaker_correlation import SpeakerCorrelator
 from backend.startup_credentials import probe_application_default_credentials
 from backend.utils.sanitize import sanitize_participant_name
 from backend.sessions.manager import SessionManager
+from backend.sessions.notes import (
+    CreateRecruiterNoteRequest,
+    RecruiterNoteConflict,
+    RecruiterNoteError,
+    deserialize_recruiter_notes,
+)
 from backend.sessions.review import (
     PersistedReviewError,
     build_recent_interview,
@@ -816,6 +822,43 @@ async def list_recent_interviews():
         except PersistedReviewError:
             interviews.append(corrupt_recent_interview(session_id))
     return {"interviews": [item.model_dump(mode="json") for item in interviews]}
+
+
+@app.post("/api/sessions/{session_id}/notes")
+async def create_recruiter_note(
+    session_id: str,
+    body: CreateRecruiterNoteRequest,
+):
+    """Persist one wordless recruiter marker against a final live segment."""
+    assert session_mgr and firestore_storage
+    session = session_mgr.get_session(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Active session not found")
+    try:
+        durable_note = await firestore_storage.save_recruiter_note(session, body)
+    except (RecruiterNoteConflict, RecruiterNoteError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+    return durable_note.model_dump(mode="json")
+
+
+@app.get("/api/sessions/{session_id}/notes")
+async def get_recruiter_notes(session_id: str):
+    """Read persisted recruiter markers without resuming any runtime work."""
+    assert firestore_storage
+    session = await _read_session(session_id)
+    if session.mode != SessionMode.INTERVIEW:
+        raise HTTPException(status_code=409, detail="Session is not an interview")
+    try:
+        notes = deserialize_recruiter_notes(
+            session_id,
+            await firestore_storage.get_session_notes(session_id),
+        )
+    except RecruiterNoteError:
+        raise HTTPException(
+            status_code=409,
+            detail="Persisted recruiter notes are invalid",
+        ) from None
+    return {"notes": [note.model_dump(mode="json") for note in notes]}
 
 
 @app.get("/api/sessions/{session_id}/review")
