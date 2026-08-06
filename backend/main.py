@@ -120,7 +120,8 @@ rolling_summary_tasks: dict[str, asyncio.Task] = {}
 
 # Interview context
 interview_documents: dict[str, dict[str, str]] = {}  # session_id -> {resume, jd}
-interview_suggestion_counters: dict[str, int] = {}  # session_id -> final segment count
+interview_final_segment_counts: dict[str, int] = {}  # source-warning cadence
+interview_suggestion_counters: dict[str, int] = {}  # candidate final segments
 # At most one in-flight suggestion per session.  Suggestions are ephemeral UI
 # hints; queueing stale generations only adds provider cost and can surface an
 # answer for an older transcript after the interview has moved on.
@@ -496,25 +497,39 @@ async def _on_transcript(session_id: str, segment: TranscriptSegment) -> None:
         if context_window.should_summarize(word_count):
             _schedule_rolling_summary(session_id)
 
-    # Interview mode: generate suggestions every 5th final segment
+    # Interview mode: source warnings count all final segments, while paid live
+    # suggestions count only candidate responses.
     session = session_mgr.get_session(session_id)
     if (
         session
         and session.mode == SessionMode.INTERVIEW
         and segment.is_final
     ):
-        interview_suggestion_counters.setdefault(session_id, 0)
-        interview_suggestion_counters[session_id] += 1
+        interview_final_segment_counts.setdefault(session_id, 0)
+        interview_final_segment_counts[session_id] += 1
 
         # Detect single audio source after 3 final segments
         if (
-            interview_suggestion_counters[session_id] == 3
+            interview_final_segment_counts[session_id] == 3
             and session_id not in single_source_warned
         ):
             asyncio.create_task(_check_single_audio_source(session_id))
 
-        if interview_suggestion_counters[session_id] % 5 == 0:
+        is_candidate = _is_candidate_final_segment(segment)
+        if is_candidate:
+            interview_suggestion_counters.setdefault(session_id, 0)
+            interview_suggestion_counters[session_id] += 1
+
+        if is_candidate and interview_suggestion_counters[session_id] % 5 == 0:
             _schedule_interview_suggestions(session_id)
+
+
+def _is_candidate_final_segment(segment: TranscriptSegment) -> bool:
+    """Return whether a final segment came from the configured candidate channel."""
+    if settings is None or not segment.is_final:
+        return False
+    speaker = segment.speaker_override or segment.speaker
+    return speaker == settings.stt_speaker_label_other
 
 
 async def _generate_rolling_summary(session_id: str) -> None:
@@ -877,6 +892,8 @@ async def _generate_final_summary(session_id: str) -> None:
 def _cleanup_session_context(session_id: str) -> None:
     """Remove sensitive per-interview context after terminal handling."""
     interview_documents.pop(session_id, None)
+    interview_final_segment_counts.pop(session_id, None)
+    interview_suggestion_counters.pop(session_id, None)
     rolling_task = rolling_summary_tasks.pop(session_id, None)
     if rolling_task is not None and not rolling_task.done():
         rolling_task.cancel()
@@ -921,6 +938,7 @@ async def _stop_pipeline(session_id: str) -> bool:
                 pass
 
     # Clean up interview runtime state (documents cleaned after final summary)
+    interview_final_segment_counts.pop(session_id, None)
     interview_suggestion_counters.pop(session_id, None)
     rolling_task = rolling_summary_tasks.pop(session_id, None)
     if rolling_task is not None and not rolling_task.done():
