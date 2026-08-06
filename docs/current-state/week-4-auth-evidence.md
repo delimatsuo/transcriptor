@@ -11,7 +11,7 @@ not hosted, deployment, provider, physical-device, or real-interview evidence.
 | --- | --- |
 | Branch | `codex/week-4-auth` |
 | Source/test qualification commit | `05d024e539c408c1b08a737865b412f8ee7909f2` |
-| PR head at last evidence capture | `6705947be0e96ca00e8879e0e55974c2135a227c` |
+| PR head at last evidence capture | `d37200528023817844b81e50d545d7ff8e04831a` |
 | Pull request | [#8](https://github.com/delimatsuo/transcriptor/pull/8), draft, stacked on `codex/week-3-evidence-report` |
 | Remote head at last evidence capture | Matched the PR head above |
 
