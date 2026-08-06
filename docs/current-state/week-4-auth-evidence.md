@@ -14,6 +14,7 @@ not hosted, deployment, provider, physical-device, or real-interview evidence.
 | PR head at last evidence capture | Verify against the live PR head before any hosted or device work; source qualification is bound to the commit above. |
 | Pull request | [#8](https://github.com/delimatsuo/transcriptor/pull/8), draft, stacked on `codex/week-3-evidence-report` |
 | Remote head at last evidence capture | Matched the PR head above |
+| Exact-head CI run | [31125277784](https://github.com/delimatsuo/transcriptor/actions/runs/31125277784), manually dispatched on `009fb3668b293f02b63c0d9baca355b3790bbbbc`; queued with no job result at last refresh |
 
 ## Source and test evidence
 
@@ -30,11 +31,13 @@ not hosted, deployment, provider, physical-device, or real-interview evidence.
   principal. The bypass is test-only and does not bypass backend authentication.
 - Dependency audit: `npm audit --audit-level=moderate` reports zero
   vulnerabilities.
-- GitHub Actions: no current-head run exists for this branch. The checked-in
-  workflow triggers pull requests only when the base is `staging` or
-  `codex/week-3-evidence-report`, and pushes only on `staging`; this PR head is
-  `codex/week-4-auth`. Local exact-source qualification is complete. Historical
-  runs are not used as green evidence for the current source.
+- GitHub Actions: the exact-head workflow-dispatch run
+  [31125277784](https://github.com/delimatsuo/transcriptor/actions/runs/31125277784)
+  is queued with both jobs and has no result yet. The checked-in workflow now
+  includes `workflow_dispatch` and the stacked-PR base in its pull-request
+  filter, but the base branch's older workflow did not automatically trigger
+  this PR. Local exact-source qualification is complete; historical runs are
+  not used as green evidence for the current source.
 
 ## Efficiency and cost controls
 
