@@ -10,25 +10,26 @@ not hosted, deployment, provider, physical-device, or real-interview evidence.
 | Item | Value |
 | --- | --- |
 | Branch | `codex/week-4-auth` |
-| Source/test qualification commit | `91a65f3dd9aa74ef54fa777916df5eb4b54421c2` |
-| PR head at last evidence capture | `37ca09d887bdd7c99bc7301cdc7c018b37b3e3e4` |
+| Source/test qualification commit | `0736007913ee8cf953a04e1378f811ab493aae38` |
+| PR head at last evidence capture | `0736007913ee8cf953a04e1378f811ab493aae38` |
 | Pull request | [#8](https://github.com/delimatsuo/transcriptor/pull/8), draft, stacked on `codex/week-3-evidence-report` |
 | Remote head at last evidence capture | Matched the PR head above |
 
 ## Source and test evidence
 
-- Backend: 166 tests passed locally, including 43 focused authorization-matrix
+- Backend: 168 tests passed locally, including 43 focused authorization-matrix
   tests. The matrix covers every `/api` route pattern, token admission, CORS
   rejection, cross-owner and child-scope failures, stop capabilities, WebSocket
-  replay/expiry, raw review-record scope, and disabled extension behavior.
+  replay/expiry, raw review-record scope, and disabled extension behavior. The
+  inventory adds deterministic content-free ownership-scope tests.
 - Frontend: 45 unit tests passed; TypeScript and production build passed.
 - Browser rehearsal: 19 Playwright tests passed with the fixed synthetic
   principal. The bypass is test-only and does not bypass backend authentication.
 - Dependency audit: `npm audit --audit-level=moderate` reports zero
   vulnerabilities.
-- GitHub Actions: [run 31108620256](https://github.com/delimatsuo/transcriptor/actions/runs/31108620256)
-  passed both backend and frontend jobs on the exact head at that capture. The only annotation
-  is an upstream Node 20 action-runtime deprecation warning.
+- GitHub Actions: [run 31109609040](https://github.com/delimatsuo/transcriptor/actions/runs/31109609040)
+  passed both backend and frontend jobs on the exact head above, with no
+  action-runtime deprecation annotation.
 
 ## Efficiency and cost controls
 
