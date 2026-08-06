@@ -17,6 +17,16 @@ logger = structlog.get_logger()
 WORD_THRESHOLD = 300
 # Max time between summaries (fallback)
 MAX_TIME_BETWEEN_SUMMARIES_SECONDS = 180  # 3 minutes
+_TRUNCATION_MARKER = "\n...[conteúdo truncado para controle de contexto]...\n"
+
+
+def _bound_transcript(text: str, maximum: int) -> str:
+    """Keep the newest transcript tail within the configured input budget."""
+    if len(text) <= maximum:
+        return text
+    if maximum <= len(_TRUNCATION_MARKER):
+        return text[-maximum:]
+    return f"{_TRUNCATION_MARKER}{text[-(maximum - len(_TRUNCATION_MARKER)) :]}"
 
 
 class ContextWindowManager:
@@ -61,9 +71,13 @@ class ContextWindowManager:
     ) -> str:
         """Generate an updated rolling summary incorporating new transcript content."""
         async with self._lock:
+            bounded_chunk = _bound_transcript(
+                new_transcript_chunk,
+                self.settings.llm_rolling_context_max_chars,
+            )
             user_message = (
                 f"## Previous Summary\n{self._current_summary or '(start of session)'}\n\n"
-                f"## New Transcript Content\n{new_transcript_chunk}"
+                f"## New Transcript Content\n{bounded_chunk}"
             )
 
             try:

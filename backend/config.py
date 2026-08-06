@@ -49,6 +49,12 @@ class Settings(BaseSettings):
         le=300,
         description="Deadline for each non-stream Gemini request",
     )
+    llm_rolling_context_max_chars: int = Field(
+        default=16_000,
+        gt=0,
+        le=50_000,
+        description="Maximum transcript characters sent in each rolling summary update",
+    )
 
     # Audio
     blackhole_device_name: str = Field(
