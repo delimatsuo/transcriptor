@@ -10,7 +10,7 @@ not hosted, deployment, provider, physical-device, or real-interview evidence.
 | Item | Value |
 | --- | --- |
 | Branch | `codex/week-4-auth` |
-| Source/test qualification commit | `50bef27856e3299b77a2b074bfd75c22c5150b5f` |
+| Source/test qualification commit | `c59715e82576cccc621800fceafa2a5d8cd0d7bd` |
 | PR head at last evidence capture | Verify against the live PR head before any hosted or device work; source qualification is bound to the commit above. |
 | Pull request | [#8](https://github.com/delimatsuo/transcriptor/pull/8), draft, stacked on `codex/week-3-evidence-report` |
 | Remote head at last evidence capture | Matched the PR head above |
@@ -77,7 +77,8 @@ not hosted, deployment, provider, physical-device, or real-interview evidence.
   before model construction or network invocation; the final report cap is
   aligned to the same 120,000-character default.
 - Compatibility meeting summaries combine the per-session rolling summary with
-  only a bounded 50-segment tail instead of rebuilding an unbounded transcript.
+  only a bounded 50-segment tail instead of rebuilding an unbounded transcript;
+  coverage metadata reports only the tail when the rolling watermark is stale.
 - Unchanged transcript/suggestion/summary rendering is memoized and report
   polling backs off to a five-second maximum interval.
 
