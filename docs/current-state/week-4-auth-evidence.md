@@ -11,10 +11,11 @@ not hosted, deployment, provider, physical-device, or real-interview evidence.
 | --- | --- |
 | Branch | `codex/week-4-auth` |
 | Source/test qualification commit | `d15804497c70d4beee0eb0a41f799b12b7ac6c6b` |
+| Latest lifecycle hardening commit | `66591bf` (deletion clears in-process interview context, detached warning work, capabilities, and WebSocket replay state) |
 | PR head at last evidence capture | Verify against the live PR head before any hosted or device work; source qualification is bound to the commit above. |
 | Pull request | [#8](https://github.com/delimatsuo/transcriptor/pull/8), draft, stacked on `codex/week-3-evidence-report` |
 | Remote head at last evidence capture | Matched the PR head above |
-| Exact-head CI run | [31125277784](https://github.com/delimatsuo/transcriptor/actions/runs/31125277784), manually dispatched on `009fb3668b293f02b63c0d9baca355b3790bbbbc`; queued with no job result at last refresh |
+| Exact-head CI run | Manual dispatch is enabled; the latest run must be rebound to the final remote head before hosted/device work |
 
 ## Source and test evidence
 
@@ -31,13 +32,11 @@ not hosted, deployment, provider, physical-device, or real-interview evidence.
   principal. The bypass is test-only and does not bypass backend authentication.
 - Dependency audit: `npm audit --audit-level=moderate` reports zero
   vulnerabilities.
-- GitHub Actions: the exact-head workflow-dispatch run
-  [31125277784](https://github.com/delimatsuo/transcriptor/actions/runs/31125277784)
-  is queued with both jobs and has no result yet. The checked-in workflow now
-  includes `workflow_dispatch` and the stacked-PR base in its pull-request
-  filter, but the base branch's older workflow did not automatically trigger
-  this PR. Local exact-source qualification is complete; historical runs are
-  not used as green evidence for the current source.
+- GitHub Actions: manual exact-head dispatch is enabled, but the repository
+  runner has repeatedly left both jobs queued. The stacked PR's base branch has
+  an older workflow that did not automatically trigger this PR. Local
+  exact-source qualification is complete; historical runs are not used as
+  green evidence for the current source.
 
 ## Efficiency and cost controls
 
@@ -101,6 +100,9 @@ not hosted, deployment, provider, physical-device, or real-interview evidence.
 - Active deletion is rejected; terminal deletion shares the stop lock, fences
   late transcript callbacks, and cancels/awaits detached report work before the
   cascade and tombstone.
+- Successful deletion also clears in-process interview documents, context
+  windows, capability maps, detached single-source checks, and WebSocket replay
+  state.
 - A transcript callback durability failure stops STT recovery instead of
   reconnecting every 0.5 seconds during a Firestore outage; the session remains
   visibly incomplete and retryable.
