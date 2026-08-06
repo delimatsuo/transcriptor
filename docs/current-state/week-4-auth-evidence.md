@@ -12,6 +12,7 @@ not hosted, deployment, provider, physical-device, or real-interview evidence.
 | Branch | `codex/week-4-auth` |
 | Source/test qualification commit | `d15804497c70d4beee0eb0a41f799b12b7ac6c6b` |
 | Latest lifecycle hardening commit | `66591bf` (deletion clears in-process interview context, detached warning work, capabilities, and WebSocket replay state) |
+| Latest generation-fence commit | `15f561d` (late callbacks and provider generations cannot publish or persist after deletion fencing) |
 | PR head at last evidence capture | Verify against the live PR head before any hosted or device work; source qualification is bound to the commit above. |
 | Pull request | [#8](https://github.com/delimatsuo/transcriptor/pull/8), draft, stacked on `codex/week-3-evidence-report` |
 | Remote head at last evidence capture | Matched the PR head above |
@@ -106,6 +107,9 @@ not hosted, deployment, provider, physical-device, or real-interview evidence.
 - A transcript callback durability failure stops STT recovery instead of
   reconnecting every 0.5 seconds during a Firestore outage; the session remains
   visibly incomplete and retryable.
+- Late transcript callbacks and in-flight rolling-summary or suggestion
+  generations re-check the deletion fence before child writes, broadcasts, or
+  summary persistence.
 - Rolling summaries advance only through contiguous bounded transcript batches;
   a backlog schedules follow-up batches without silently skipping older speech.
 - Vertex initialization and static-prompt model construction are serialized,
