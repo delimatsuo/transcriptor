@@ -11,7 +11,7 @@ not hosted, deployment, provider, physical-device, or real-interview evidence.
 | --- | --- |
 | Branch | `codex/week-4-auth` |
 | Source/test qualification commit | `f04cecdd195188d6409b2cba23b9134ee8764225` |
-| PR head at last evidence capture | `f04cecdd195188d6409b2cba23b9134ee8764225` |
+| PR head at last evidence capture | `2624416ba112b8659ac25eae7b5d1d58de643bee` |
 | Pull request | [#8](https://github.com/delimatsuo/transcriptor/pull/8), draft, stacked on `codex/week-3-evidence-report` |
 | Remote head at last evidence capture | Matched the PR head above |
 
@@ -27,8 +27,8 @@ not hosted, deployment, provider, physical-device, or real-interview evidence.
   principal. The bypass is test-only and does not bypass backend authentication.
 - Dependency audit: `npm audit --audit-level=moderate` reports zero
   vulnerabilities.
-- GitHub Actions: [run 31109609040](https://github.com/delimatsuo/transcriptor/actions/runs/31109609040)
-  passed both backend and frontend jobs on the exact head above, with no
+- GitHub Actions: [run 31111049706](https://github.com/delimatsuo/transcriptor/actions/runs/31111049706)
+  passed both backend and frontend jobs on the exact PR head above, with no
   action-runtime deprecation annotation.
 
 ## Efficiency and cost controls
@@ -55,8 +55,6 @@ quota enforcement or live-provider cost savings.
 - Deploy and verify the declared Firestore owner/org/startedAt composite index in
   the authorized hosted project.
 - Complete the same-SHA macOS audio soak and physical Windows routing/owner gate.
-- Resolve or explicitly accept dependency/runtime hardening findings before
-  ready/merge.
 - Resolve the distinction between the historical containment inventory and the
   owner-authorized purge report with a fresh authorized cloud readback before
   any migration; quarantine or owner-approved-backfill any records missing
