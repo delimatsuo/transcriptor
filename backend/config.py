@@ -63,6 +63,14 @@ class Settings(BaseSettings):
             "Hard ceiling for any Gemini user message before provider invocation"
         ),
     )
+    llm_max_output_tokens: int = Field(
+        default=8_192,
+        gt=0,
+        le=32_768,
+        description=(
+            "Hard ceiling for any Gemini output budget before provider invocation"
+        ),
+    )
     llm_rolling_context_max_chars: int = Field(
         default=16_000,
         gt=0,

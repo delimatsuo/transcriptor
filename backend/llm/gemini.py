@@ -52,6 +52,35 @@ class GeminiClient:
             self._models[system_instruction] = model
         return model
 
+    def _validate_request_bounds(
+        self,
+        user_message: str,
+        max_output_tokens: int,
+        *,
+        streaming: bool = False,
+    ) -> None:
+        max_input_chars = self.settings.llm_max_input_chars
+        if len(user_message) > max_input_chars:
+            logger.warning(
+                "gemini_stream_input_rejected" if streaming else "gemini_input_rejected",
+                input_chars=len(user_message),
+                max_chars=max_input_chars,
+            )
+            raise ValueError(
+                f"Gemini input exceeds configured limit of {max_input_chars} characters"
+            )
+
+        max_output = self.settings.llm_max_output_tokens
+        if max_output_tokens <= 0 or max_output_tokens > max_output:
+            logger.warning(
+                "gemini_stream_output_rejected" if streaming else "gemini_output_rejected",
+                requested_tokens=max_output_tokens,
+                max_tokens=max_output,
+            )
+            raise ValueError(
+                f"Gemini output exceeds configured limit of {max_output} tokens"
+            )
+
     async def generate(
         self,
         system_instruction: str,
@@ -62,16 +91,10 @@ class GeminiClient:
         response_schema: dict[str, Any] | None = None,
     ) -> str:
         """Generate a single response."""
-        max_input_chars = self.settings.llm_max_input_chars
-        if len(user_message) > max_input_chars:
-            logger.warning(
-                "gemini_input_rejected",
-                input_chars=len(user_message),
-                max_chars=max_input_chars,
-            )
-            raise ValueError(
-                f"Gemini input exceeds configured limit of {max_input_chars} characters"
-            )
+        self._validate_request_bounds(
+            user_message,
+            max_output_tokens,
+        )
         model_with_system = self._model_for(system_instruction)
 
         generation_config = {
@@ -123,16 +146,11 @@ class GeminiClient:
         max_output_tokens: int = 2048,
     ) -> AsyncIterator[str]:
         """Generate a streaming response, yielding text chunks."""
-        max_input_chars = self.settings.llm_max_input_chars
-        if len(user_message) > max_input_chars:
-            logger.warning(
-                "gemini_stream_input_rejected",
-                input_chars=len(user_message),
-                max_chars=max_input_chars,
-            )
-            raise ValueError(
-                f"Gemini input exceeds configured limit of {max_input_chars} characters"
-            )
+        self._validate_request_bounds(
+            user_message,
+            max_output_tokens,
+            streaming=True,
+        )
         model_with_system = self._model_for(system_instruction)
 
         queued_at = time.monotonic()
