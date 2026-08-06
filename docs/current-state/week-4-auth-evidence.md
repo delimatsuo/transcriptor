@@ -10,7 +10,7 @@ not hosted, deployment, provider, physical-device, or real-interview evidence.
 | Item | Value |
 | --- | --- |
 | Branch | `codex/week-4-auth` |
-| Source/test qualification commit | `f21b24cbbc37aac2a8d3bf9ea9f16d7c01cf4a75` |
+| Source/test qualification commit | `cf7a157dad69e985428bee89f58f02b02bf01c34` |
 | PR head at last evidence capture | Verify against the live PR head before any hosted or device work; source qualification is bound to the commit above. |
 | Pull request | [#8](https://github.com/delimatsuo/transcriptor/pull/8), draft, stacked on `codex/week-3-evidence-report` |
 | Remote head at last evidence capture | Matched the PR head above |
@@ -20,7 +20,7 @@ not hosted, deployment, provider, physical-device, or real-interview evidence.
 - Startup performs `google.auth.default()` plus credential refresh before
   readiness, with a 10-second deadline and the exact loud remediation message;
   mocked refresh failure, stuck-refresh, and lifespan-order tests pass.
-- Backend: 195 tests passed locally, including 43 focused authorization-matrix
+- Backend: 196 tests passed locally, including 43 focused authorization-matrix
   tests. The matrix covers every `/api` route pattern, token admission, CORS
   rejection, cross-owner and child-scope failures, stop capabilities, WebSocket
   replay/expiry, raw review-record scope, and disabled extension behavior. The
