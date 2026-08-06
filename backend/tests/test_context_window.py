@@ -2,6 +2,7 @@
 
 import asyncio
 
+from backend import main
 from backend.config import Settings
 from backend.llm.context_window import _TRUNCATION_MARKER, ContextWindowManager
 from backend.schemas.models import TranscriptSegment
@@ -51,3 +52,27 @@ def test_session_context_uses_appended_indices_not_source_sequence_numbers():
         "[Speaker 1]: new words"
     )
     assert manager.get_transcript_word_count_since_index(session.id, from_index=1) == 2
+
+
+def test_main_rolling_context_isolated_per_session():
+    settings = Settings(google_cloud_project="test-project")
+
+    class FakeGemini:
+        async def generate(self, **_kwargs):
+            return "session summary"
+
+    first = ContextWindowManager(settings, FakeGemini())
+    second = ContextWindowManager(settings, FakeGemini())
+    previous = main.context_window
+    main.context_window = None
+    main.context_windows.clear()
+    main.context_windows.update({"session-a": first, "session-b": second})
+
+    try:
+        asyncio.run(first.update_summary("private A", 1))
+        assert main._context_window_for("session-a") is first
+        assert main._context_window_for("session-b") is second
+        assert second.current_summary == ""
+    finally:
+        main.context_windows.clear()
+        main.context_window = previous

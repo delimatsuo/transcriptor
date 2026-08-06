@@ -105,7 +105,10 @@ session_mgr: SessionManager | None = None
 firestore_storage: FirestoreStorage | None = None
 gcs_storage: GCSStorage | None = None
 gemini_client: GeminiClient | None = None
+# Kept only as a compatibility seam for direct unit callers that bypass the
+# session creation route. Production sessions use the per-session map below.
 context_window: ContextWindowManager | None = None
+context_windows: dict[str, ContextWindowManager] = {}
 
 # Active audio pipeline per session (lists for dual capture: [system, mic])
 audio_captures: dict[str, list[AudioCapture]] = {}
@@ -136,6 +139,12 @@ ws_tickets: dict[str, tuple[AuthContext, str, datetime]] = {}
 stop_capabilities: dict[str, tuple[AuthContext, str, datetime]] = {}
 _clock_sync_timestamps: dict[str, float] = {}  # session_id -> last sync time (rate limit)
 
+
+def _context_window_for(session_id: str) -> ContextWindowManager | None:
+    """Return isolated rolling-summary state for one session."""
+    return context_windows.get(session_id) or context_window
+
+
 # Concurrency guard for pre-interview analysis
 _analyze_semaphore = asyncio.Semaphore(2)
 
@@ -152,7 +161,8 @@ async def lifespan(app: FastAPI):
     firestore_storage = FirestoreStorage(settings)
     gcs_storage = GCSStorage(settings)
     gemini_client = GeminiClient(settings)
-    context_window = ContextWindowManager(settings, gemini_client)
+    context_window = None
+    context_windows.clear()
 
     # Detect orphaned sessions from previous crash
     orphaned = session_mgr.detect_orphaned_sessions()
@@ -165,6 +175,7 @@ async def lifespan(app: FastAPI):
     # Cleanup: stop all active pipelines
     for session_id in list(pipeline_tasks.keys()):
         await _stop_pipeline(session_id)
+    context_windows.clear()
 
     logger.info("server_stopped")
 
@@ -462,7 +473,8 @@ async def _run_audio_pipeline(session_id: str) -> None:
 
 async def _on_transcript(session_id: str, segment: TranscriptSegment) -> None:
     """Handle a new transcript segment."""
-    assert session_mgr and firestore_storage and context_window
+    context = _context_window_for(session_id)
+    assert session_mgr and firestore_storage and context
 
     # 1. Store in session manager (in-memory, with original speaker)
     session_mgr.add_transcript_segment(session_id, segment)
@@ -496,14 +508,14 @@ async def _on_transcript(session_id: str, segment: TranscriptSegment) -> None:
         )
         if count_since_index is not None:
             word_count = count_since_index(
-                session_id, from_index=context_window.last_summary_seq
+                session_id, from_index=context.last_summary_seq
             )
         else:
             # Keep direct-call test doubles compatible with the pre-index API.
             word_count = session_mgr.get_transcript_word_count(
-                session_id, from_seq=context_window.last_summary_seq
+                session_id, from_seq=context.last_summary_seq
             )
-        if context_window.should_summarize(word_count):
+        if context.should_summarize(word_count):
             _schedule_rolling_summary(session_id)
 
     # Interview mode: source warnings count all final segments, while paid live
@@ -545,19 +557,20 @@ def _is_candidate_final_segment(segment: TranscriptSegment) -> bool:
 
 async def _generate_rolling_summary(session_id: str) -> None:
     """Generate a rolling summary from recent transcript."""
-    assert session_mgr and context_window and gemini_client
+    context = _context_window_for(session_id)
+    assert session_mgr and context and gemini_client
 
     try:
         current_seq = len(session_mgr.get_transcript(session_id))
         transcript_text = session_mgr.get_transcript_text_since_index(
             session_id,
-            from_index=context_window.last_summary_seq,
+            from_index=context.last_summary_seq,
             max_segments=50,
         )
         if not transcript_text:
             return
 
-        summary = await context_window.update_summary(transcript_text, current_seq)
+        summary = await context.update_summary(transcript_text, current_seq)
 
         # Broadcast summary update
         seq = ws_manager.next_sequence(session_id)
@@ -911,6 +924,7 @@ def _cleanup_session_context(session_id: str) -> None:
     interview_documents.pop(session_id, None)
     interview_final_segment_counts.pop(session_id, None)
     interview_suggestion_counters.pop(session_id, None)
+    context_windows.pop(session_id, None)
     rolling_task = rolling_summary_tasks.pop(session_id, None)
     if rolling_task is not None and not rolling_task.done():
         rolling_task.cancel()
@@ -998,6 +1012,11 @@ async def create_session(
 
     # Save to Firestore
     await firestore_storage.save_session(session)
+
+    # Rolling summaries carry prior model context and counters; never share
+    # that state between authenticated sessions or organizations.
+    assert gemini_client
+    context_windows[session.id] = ContextWindowManager(settings, gemini_client)
 
     # Mint the stop-only recovery capability before capture starts. Its TTL is
     # configured above the maximum session duration plus the bounded drain.

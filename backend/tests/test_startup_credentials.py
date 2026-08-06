@@ -124,10 +124,6 @@ def test_lifespan_probes_adc_before_readiness(monkeypatch):
         def __init__(self, _settings):
             events.append("gemini")
 
-    class FakeContextWindow:
-        def __init__(self, _settings, _gemini):
-            events.append("context_window")
-
     monkeypatch.setattr(main, "get_settings", lambda: settings)
     monkeypatch.setattr(main, "probe_application_default_credentials", fake_probe)
     monkeypatch.setattr(main, "initialize_firebase_admin", fake_initialize)
@@ -135,8 +131,6 @@ def test_lifespan_probes_adc_before_readiness(monkeypatch):
     monkeypatch.setattr(main, "FirestoreStorage", FakeStorage)
     monkeypatch.setattr(main, "GCSStorage", FakeStorage)
     monkeypatch.setattr(main, "GeminiClient", FakeGemini)
-    monkeypatch.setattr(main, "ContextWindowManager", FakeContextWindow)
-
     async def run_lifespan():
         async with main.lifespan(main.app):
             events.append("ready")
