@@ -10,14 +10,14 @@ not hosted, deployment, provider, physical-device, or real-interview evidence.
 | Item | Value |
 | --- | --- |
 | Branch | `codex/week-4-auth` |
-| Source/test qualification commit | `0736007913ee8cf953a04e1378f811ab493aae38` |
-| PR head at last evidence capture | `0736007913ee8cf953a04e1378f811ab493aae38` |
+| Source/test qualification commit | `79638f7874b866639194c02d2ec2fc54fba5d157` |
+| PR head at last evidence capture | `79638f7874b866639194c02d2ec2fc54fba5d157` |
 | Pull request | [#8](https://github.com/delimatsuo/transcriptor/pull/8), draft, stacked on `codex/week-3-evidence-report` |
 | Remote head at last evidence capture | Matched the PR head above |
 
 ## Source and test evidence
 
-- Backend: 168 tests passed locally, including 43 focused authorization-matrix
+- Backend: 170 tests passed locally, including 43 focused authorization-matrix
   tests. The matrix covers every `/api` route pattern, token admission, CORS
   rejection, cross-owner and child-scope failures, stop capabilities, WebSocket
   replay/expiry, raw review-record scope, and disabled extension behavior. The
@@ -38,6 +38,8 @@ not hosted, deployment, provider, physical-device, or real-interview evidence.
 - Repeated suggestion context is capped at 24,000 characters and suggestion
   output is capped at 1,024 tokens.
 - Queue and generation latency are logged without prompt or transcript content.
+- At most one in-flight suggestion generation is allowed per session; stale
+  suggestion work is dropped on duplicate scheduling and canceled on cleanup.
 - Unchanged transcript/suggestion/summary rendering is memoized and report
   polling backs off to a five-second maximum interval.
 
