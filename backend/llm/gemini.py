@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import time
 from typing import Any, AsyncIterator
 
 import structlog
@@ -18,14 +20,34 @@ class GeminiClient:
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
-        self._model: GenerativeModel | None = None
         self._initialized = False
+        # GenerativeModel construction is local but non-trivial.  Reuse one
+        # instance per system prompt instead of rebuilding it for every
+        # segment/report request.  The prompts are static application code,
+        # so this cache cannot grow with candidate/session data.
+        self._models: dict[str, GenerativeModel] = {}
+        # All Gemini features share this process-local budget.  Endpoint-level
+        # semaphores alone allowed rolling summaries, suggestions, reports,
+        # and /api/analyze to fan out concurrently.
+        self._request_semaphore = asyncio.Semaphore(
+            settings.llm_max_concurrent_requests
+        )
 
     def _ensure_init(self) -> None:
         if not self._initialized:
             aiplatform.init(project=self.settings.google_cloud_project)
-            self._model = GenerativeModel("gemini-2.5-flash")
             self._initialized = True
+
+    def _model_for(self, system_instruction: str) -> GenerativeModel:
+        self._ensure_init()
+        model = self._models.get(system_instruction)
+        if model is None:
+            model = GenerativeModel(
+                "gemini-2.5-flash",
+                system_instruction=[system_instruction],
+            )
+            self._models[system_instruction] = model
+        return model
 
     async def generate(
         self,
@@ -37,13 +59,7 @@ class GeminiClient:
         response_schema: dict[str, Any] | None = None,
     ) -> str:
         """Generate a single response."""
-        self._ensure_init()
-        assert self._model is not None
-
-        model_with_system = GenerativeModel(
-            "gemini-2.5-flash",
-            system_instruction=[system_instruction],
-        )
+        model_with_system = self._model_for(system_instruction)
 
         generation_config = {
             "temperature": temperature,
@@ -54,16 +70,21 @@ class GeminiClient:
         if response_schema:
             generation_config["response_schema"] = response_schema
 
-        response = await model_with_system.generate_content_async(
-            [user_message],
-            generation_config=generation_config,
-        )
+        queued_at = time.monotonic()
+        async with self._request_semaphore:
+            started_at = time.monotonic()
+            response = await model_with_system.generate_content_async(
+                [user_message],
+                generation_config=generation_config,
+            )
 
         text = response.text
         logger.info(
             "gemini_response",
             input_chars=len(user_message),
             output_chars=len(text),
+            queue_seconds=round(started_at - queued_at, 3),
+            generation_seconds=round(time.monotonic() - started_at, 3),
         )
         return text
 
@@ -75,22 +96,21 @@ class GeminiClient:
         max_output_tokens: int = 2048,
     ) -> AsyncIterator[str]:
         """Generate a streaming response, yielding text chunks."""
-        self._ensure_init()
+        model_with_system = self._model_for(system_instruction)
 
-        model_with_system = GenerativeModel(
-            "gemini-2.5-flash",
-            system_instruction=[system_instruction],
-        )
+        await self._request_semaphore.acquire()
+        try:
+            response = await model_with_system.generate_content_async(
+                [user_message],
+                generation_config={
+                    "temperature": temperature,
+                    "max_output_tokens": max_output_tokens,
+                },
+                stream=True,
+            )
 
-        response = await model_with_system.generate_content_async(
-            [user_message],
-            generation_config={
-                "temperature": temperature,
-                "max_output_tokens": max_output_tokens,
-            },
-            stream=True,
-        )
-
-        async for chunk in response:
-            if chunk.text:
-                yield chunk.text
+            async for chunk in response:
+                if chunk.text:
+                    yield chunk.text
+        finally:
+            self._request_semaphore.release()

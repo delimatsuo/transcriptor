@@ -36,10 +36,13 @@ export default function RecentInterviews({ onOpen }: Props) {
 
   useEffect(() => {
     let cancelled = false;
+    const controller = new AbortController();
 
     const load = async () => {
       try {
-        const response = await apiFetch(`${API_BASE}/api/sessions/recent-interviews`);
+        const response = await apiFetch(`${API_BASE}/api/sessions/recent-interviews`, {
+          signal: controller.signal,
+        });
         if (!response.ok) throw new Error("recent interviews unavailable");
         const payload = (await response.json()) as {
           interviews?: RecentInterview[];
@@ -57,6 +60,7 @@ export default function RecentInterviews({ onOpen }: Props) {
     void load();
     return () => {
       cancelled = true;
+      controller.abort();
     };
   }, []);
 

@@ -187,6 +187,31 @@ INTERVIEW_REPORT_RESPONSE_SCHEMA = {
 }
 
 
+# Suggestions are generated every fifth final segment and are intentionally
+# short-lived UI guidance.  Keep repeated CV/JD/briefing input bounded so a
+# large pasted document cannot multiply provider input cost throughout a
+# session.  Head and tail are retained because role summaries tend to be at
+# the beginning while requirements/notes often appear at the end.
+MAX_SUGGESTION_RESUME_CHARS = 6_000
+MAX_SUGGESTION_JD_CHARS = 6_000
+MAX_SUGGESTION_BRIEFING_CHARS = 4_000
+MAX_SUGGESTION_TRANSCRIPT_CHARS = 8_000
+MAX_SUGGESTION_CANDIDATE_NAME_CHARS = 200
+_TRUNCATION_MARKER = "\n...[conteúdo truncado para controle de contexto]...\n"
+
+
+def _bound_suggestion_text(value: str, maximum: int) -> str:
+    """Bound untrusted suggestion context while retaining both ends."""
+    if len(value) <= maximum:
+        return value
+    if maximum <= len(_TRUNCATION_MARKER):
+        return value[:maximum]
+    available = maximum - len(_TRUNCATION_MARKER)
+    head = available // 2
+    tail = available - head
+    return f"{value[:head]}{_TRUNCATION_MARKER}{value[-tail:]}"
+
+
 PRE_INTERVIEW_ANALYSIS_PROMPT = """\
 You are a senior executive search consultant preparing a pre-interview briefing. \
 Analyze the candidate's CV against the Job Description to identify the most important \
@@ -235,21 +260,36 @@ def build_interview_user_message(
     parts = []
 
     if candidate_name:
-        parts.append(f"## Candidato: {candidate_name}")
+        parts.append(
+            "## Candidato: "
+            f"{_bound_suggestion_text(candidate_name, MAX_SUGGESTION_CANDIDATE_NAME_CHARS)}"
+        )
 
     if resume_text:
-        parts.append(f"## Currículo / CV do Candidato\n{resume_text}")
+        parts.append(
+            "## Currículo / CV do Candidato\n"
+            f"{_bound_suggestion_text(resume_text, MAX_SUGGESTION_RESUME_CHARS)}"
+        )
     else:
         parts.append("## Currículo / CV do Candidato\n(Não fornecido)")
 
     if jd_text:
-        parts.append(f"## Descrição da Vaga / Job Description\n{jd_text}")
+        parts.append(
+            "## Descrição da Vaga / Job Description\n"
+            f"{_bound_suggestion_text(jd_text, MAX_SUGGESTION_JD_CHARS)}"
+        )
     else:
         parts.append("## Descrição da Vaga / Job Description\n(Não fornecida)")
 
     if briefing_text:
-        parts.append(f"## Briefing Pré-Entrevista\n{briefing_text}")
+        parts.append(
+            "## Briefing Pré-Entrevista\n"
+            f"{_bound_suggestion_text(briefing_text, MAX_SUGGESTION_BRIEFING_CHARS)}"
+        )
 
-    parts.append(f"## Últimas Trocas da Entrevista (transcrição ao vivo)\n{recent_transcript}")
+    parts.append(
+        "## Últimas Trocas da Entrevista (transcrição ao vivo)\n"
+        f"{_bound_suggestion_text(recent_transcript, MAX_SUGGESTION_TRANSCRIPT_CHARS)}"
+    )
 
     return "\n\n".join(parts)

@@ -588,7 +588,11 @@ async def _generate_interview_suggestions(session_id: str) -> None:
             system_instruction=INTERVIEW_SYSTEM_PROMPT,
             user_message=user_msg,
             temperature=0.4,
-            max_output_tokens=2048,
+            # Suggestions are an in-call UI aid, not a report.  1,024 tokens
+            # comfortably covers the requested questions/follow-ups while
+            # preventing an unexpectedly verbose response from consuming
+            # report-scale output budget on every fifth segment.
+            max_output_tokens=1024,
         )
 
         if response.strip():

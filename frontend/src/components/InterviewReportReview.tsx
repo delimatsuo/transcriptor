@@ -7,6 +7,8 @@ import {
   buildReportUpdateRequest,
   formatReportOffset,
   parseApprovedClientReport,
+  reportPollDelayMs,
+  REPORT_POLL_ATTEMPTS,
 } from "@/lib/interviewReport";
 import type {
   ApprovedClientReport,
@@ -18,8 +20,6 @@ import type {
 import { apiFetch } from "@/lib/auth";
 
 const API_BASE = "http://localhost:8000";
-const REPORT_POLL_INTERVAL_MS = 750;
-const REPORT_POLL_ATTEMPTS = 120;
 const LEGACY_ALLOWED_ELEMENTS = [
   "p", "strong", "em", "h2", "h3", "h4", "ul", "ol", "li", "br", "hr",
 ];
@@ -148,7 +148,7 @@ export default function InterviewReportReview({
         if (pending && attempt < REPORT_POLL_ATTEMPTS) {
           retryTimer = setTimeout(
             () => void loadReport(attempt + 1),
-            REPORT_POLL_INTERVAL_MS,
+            reportPollDelayMs(attempt),
           );
           return;
         }

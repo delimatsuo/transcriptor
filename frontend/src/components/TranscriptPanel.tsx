@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { memo, useEffect, useRef } from "react";
 import type { TranscriptSegment } from "@/types/ws";
 
 interface Props {
@@ -16,6 +16,8 @@ const SPEAKER_STYLES: Record<string, { color: string; bg: string; label: string 
   Candidato: { color: "#34c759", bg: "rgba(52, 199, 89, 0.08)", label: "Candidato" },
   Candidate: { color: "#34c759", bg: "rgba(52, 199, 89, 0.08)", label: "Candidate" },
 };
+
+const EMPTY_SPEAKER_MAP: Record<string, string> = {};
 
 function getSpeakerStyle(speaker: string) {
   // Check for known speaker labels
@@ -36,9 +38,75 @@ function getSpeakerStyle(speaker: string) {
   return { ...fallbackColors[idx], label: speaker };
 }
 
+const TranscriptRow = memo(function TranscriptRow({
+  segment,
+  speakerLabel,
+}: {
+  segment: TranscriptSegment;
+  speakerLabel: string;
+}) {
+  const style = getSpeakerStyle(speakerLabel);
+  return (
+    <div
+      id={`transcript-segment-${segment.id}`}
+      style={{
+        padding: "10px 16px",
+        borderRadius: 12,
+        backgroundColor: segment.is_final ? "transparent" : "#fafafa",
+        opacity: segment.is_final ? 1 : 0.6,
+        transition: "opacity 0.3s ease",
+      }}
+    >
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          marginBottom: 4,
+        }}
+      >
+        <span
+          style={{
+            fontSize: 11,
+            fontWeight: 600,
+            color: style.color,
+            backgroundColor: style.bg,
+            padding: "2px 10px",
+            borderRadius: 100,
+            letterSpacing: "0.2px",
+          }}
+        >
+          {speakerLabel}
+        </span>
+        {!segment.is_final && (
+          <span
+            style={{
+              fontSize: 10,
+              color: "#aeaeb2",
+              fontStyle: "italic",
+            }}
+          >
+            transcrevendo...
+          </span>
+        )}
+      </div>
+      <div
+        style={{
+          fontSize: 15,
+          lineHeight: 1.6,
+          color: segment.is_final ? "#1d1d1f" : "#aeaeb2",
+          paddingLeft: 2,
+        }}
+      >
+        {segment.text}
+      </div>
+    </div>
+  );
+});
+
 export default function TranscriptPanel({
   segments,
-  speakerMap = {},
+  speakerMap = EMPTY_SPEAKER_MAP,
   readOnly = false,
   emptyMessage = "Aguardando fala...",
 }: Props) {
@@ -112,67 +180,13 @@ export default function TranscriptPanel({
         </div>
       )}
 
-      {segments.map((seg) => {
-        const speakerLabel = getSpeakerLabel(seg);
-        const style = getSpeakerStyle(speakerLabel);
-        return (
-          <div
-            key={seg.id}
-            id={`transcript-segment-${seg.id}`}
-            style={{
-              padding: "10px 16px",
-              borderRadius: 12,
-              backgroundColor: seg.is_final ? "transparent" : "#fafafa",
-              opacity: seg.is_final ? 1 : 0.6,
-              transition: "opacity 0.3s ease",
-            }}
-          >
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 8,
-                marginBottom: 4,
-              }}
-            >
-              <span
-                style={{
-                  fontSize: 11,
-                  fontWeight: 600,
-                  color: style.color,
-                  backgroundColor: style.bg,
-                  padding: "2px 10px",
-                  borderRadius: 100,
-                  letterSpacing: "0.2px",
-                }}
-              >
-                {speakerLabel}
-              </span>
-              {!seg.is_final && (
-                <span
-                  style={{
-                    fontSize: 10,
-                    color: "#aeaeb2",
-                    fontStyle: "italic",
-                  }}
-                >
-                  transcrevendo...
-                </span>
-              )}
-            </div>
-            <div
-              style={{
-                fontSize: 15,
-                lineHeight: 1.6,
-                color: seg.is_final ? "#1d1d1f" : "#aeaeb2",
-                paddingLeft: 2,
-              }}
-            >
-              {seg.text}
-            </div>
-          </div>
-        );
-      })}
+      {segments.map((segment) => (
+        <TranscriptRow
+          key={segment.id}
+          segment={segment}
+          speakerLabel={getSpeakerLabel(segment)}
+        />
+      ))}
 
       <div ref={bottomRef} />
     </div>

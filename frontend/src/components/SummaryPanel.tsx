@@ -1,5 +1,6 @@
 "use client";
 
+import { memo } from "react";
 import ReactMarkdown from "react-markdown";
 import type { TranscriptSegment } from "@/types/ws";
 
@@ -25,6 +26,14 @@ function downloadText(content: string, filename: string) {
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
 }
+
+const SummaryMarkdown = memo(function SummaryMarkdown({ summary }: { summary: string }) {
+  return (
+    <ReactMarkdown allowedElements={SUMMARY_ALLOWED_ELEMENTS}>
+      {summary}
+    </ReactMarkdown>
+  );
+});
 
 export default function SummaryPanel({
   summary,
@@ -154,9 +163,7 @@ export default function SummaryPanel({
             color: "#424245",
           }}
         >
-          <ReactMarkdown allowedElements={SUMMARY_ALLOWED_ELEMENTS}>
-            {summary}
-          </ReactMarkdown>
+          <SummaryMarkdown summary={summary} />
         </div>
       </div>
     </div>

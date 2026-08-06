@@ -5,6 +5,7 @@ import {
   buildReportUpdateRequest,
   isSafeClientParagraph,
   parseApprovedClientReport,
+  reportPollDelayMs,
 } from "./interviewReport.ts";
 import type { InterviewReport } from "../types/ws.ts";
 
@@ -60,4 +61,12 @@ test("update payload changes prose without accepting evidence or rating edits", 
       },
     },
   );
+});
+
+test("report polling backs off to reduce repeated generation requests", () => {
+  assert.equal(reportPollDelayMs(0), 750);
+  assert.equal(reportPollDelayMs(1), 1500);
+  assert.equal(reportPollDelayMs(2), 3000);
+  assert.equal(reportPollDelayMs(3), 5000);
+  assert.equal(reportPollDelayMs(99), 5000);
 });

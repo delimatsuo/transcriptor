@@ -35,6 +35,15 @@ class Settings(BaseSettings):
         description="Explicit opt-in for the Chrome extension bridge",
     )
 
+    # Model/provider guardrails.  Keep one bounded queue across all Gemini
+    # features so concurrent sessions cannot fan out unbounded provider work.
+    llm_max_concurrent_requests: int = Field(
+        default=2,
+        gt=0,
+        le=8,
+        description="Maximum concurrent Gemini requests in this backend process",
+    )
+
     # Audio
     blackhole_device_name: str = Field(
         default="BlackHole 2ch",
