@@ -10,7 +10,7 @@ not hosted, deployment, provider, physical-device, or real-interview evidence.
 | Item | Value |
 | --- | --- |
 | Branch | `codex/week-4-auth` |
-| Source/test qualification commit | `1841b80934b137a6846817418830dd4feac982c4` |
+| Source/test qualification commit | `29f63f452ecc658e866ec65f252cd89fc8a0c6f4` |
 | PR head at last evidence capture | Verify against the live PR head before any hosted or device work; source qualification is bound to the commit above. |
 | Pull request | [#8](https://github.com/delimatsuo/transcriptor/pull/8), draft, stacked on `codex/week-3-evidence-report` |
 | Remote head at last evidence capture | Matched the PR head above |
@@ -20,7 +20,7 @@ not hosted, deployment, provider, physical-device, or real-interview evidence.
 - Startup performs `google.auth.default()` plus credential refresh before
   readiness, with a 10-second deadline and the exact loud remediation message;
   mocked refresh failure, stuck-refresh, and lifespan-order tests pass.
-- Backend: 190 tests passed locally, including 43 focused authorization-matrix
+- Backend: 192 tests passed locally, including 43 focused authorization-matrix
   tests. The matrix covers every `/api` route pattern, token admission, CORS
   rejection, cross-owner and child-scope failures, stop capabilities, WebSocket
   replay/expiry, raw review-record scope, and disabled extension behavior. The
@@ -70,8 +70,12 @@ not hosted, deployment, provider, physical-device, or real-interview evidence.
   it records `report_input_too_large` rather than silently truncating evidence.
 - Vertex AI location is explicit through `LLM_LOCATION` (default
   `us-central1`); changing it requires the provider/privacy region gate.
-- Non-stream Gemini requests have a configurable 60-second client deadline;
-  timeout cleanup releases the shared request queue.
+- Every Gemini request has a configurable 60-second client deadline;
+  timeout cleanup releases the shared request queue, including the reusable
+  streaming path.
+- A centralized `LLM_MAX_INPUT_CHARS` ceiling rejects oversized provider input
+  before model construction or network invocation; the final report cap is
+  aligned to the same 120,000-character default.
 - Unchanged transcript/suggestion/summary rendering is memoized and report
   polling backs off to a five-second maximum interval.
 
