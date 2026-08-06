@@ -10,8 +10,8 @@ not hosted, deployment, provider, physical-device, or real-interview evidence.
 | Item | Value |
 | --- | --- |
 | Branch | `codex/week-4-auth` |
-| Source/test qualification commit | `05d024e539c408c1b08a737865b412f8ee7909f2` |
-| PR head at last evidence capture | `d37200528023817844b81e50d545d7ff8e04831a` |
+| Source/test qualification commit | `93b41630cf96d0bc0a89c6894ac5286ed1628b80` |
+| PR head at last evidence capture | `93b41630cf96d0bc0a89c6894ac5286ed1628b80` |
 | Pull request | [#8](https://github.com/delimatsuo/transcriptor/pull/8), draft, stacked on `codex/week-3-evidence-report` |
 | Remote head at last evidence capture | Matched the PR head above |
 
@@ -20,7 +20,7 @@ not hosted, deployment, provider, physical-device, or real-interview evidence.
 - Startup performs `google.auth.default()` plus credential refresh before
   readiness, with a 10-second deadline and the exact loud remediation message;
   mocked refresh failure, stuck-refresh, and lifespan-order tests pass.
-- Backend: 187 tests passed locally, including 43 focused authorization-matrix
+- Backend: 188 tests passed locally, including 43 focused authorization-matrix
   tests. The matrix covers every `/api` route pattern, token admission, CORS
   rejection, cross-owner and child-scope failures, stop capabilities, WebSocket
   replay/expiry, raw review-record scope, and disabled extension behavior. The
@@ -30,13 +30,10 @@ not hosted, deployment, provider, physical-device, or real-interview evidence.
   principal. The bypass is test-only and does not bypass backend authentication.
 - Dependency audit: `npm audit --audit-level=moderate` reports zero
   vulnerabilities.
-- GitHub Actions: run
-  [31119758788](https://github.com/delimatsuo/transcriptor/actions/runs/31119758788)
-  passed both backend and frontend jobs on the prior docs-bound tree
-  `6705947be0e96ca00e8879e0e55974c2135a227c`, whose executable source is
-  identical to this tree. The current docs-only head has retry
-  [31120461233](https://github.com/delimatsuo/transcriptor/actions/runs/31120461233)
-  queued after a runner-service stall.
+- GitHub Actions: exact executable-tree run
+  [31121348391](https://github.com/delimatsuo/transcriptor/actions/runs/31121348391)
+  is queued after repeated runner-service stalls; local source qualification is
+  complete and the prior unchanged-source run passed both jobs.
 
 ## Efficiency and cost controls
 
