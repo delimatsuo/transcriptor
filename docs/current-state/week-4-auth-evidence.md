@@ -53,7 +53,9 @@ quota enforcement or live-provider cost savings.
 - Resolve the distinction between the historical containment inventory and the
   owner-authorized purge report with a fresh authorized cloud readback before
   any migration; quarantine or owner-approved-backfill any records missing
-  ownership and never auto-claim them.
+  ownership and never auto-claim them. The read-only inventory command is
+  `backend/scripts/inventory_legacy_scope.py` (version
+  `week4-auth-legacy-scope-v1`).
 - Keep Firebase/Firestore/provider access, deployment, first-user interviews,
   and real candidate data outside this source/test evidence record.
 
