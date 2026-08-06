@@ -198,6 +198,7 @@ MAX_SUGGESTION_BRIEFING_CHARS = 4_000
 MAX_SUGGESTION_TRANSCRIPT_CHARS = 8_000
 MAX_SUGGESTION_CANDIDATE_NAME_CHARS = 200
 _TRUNCATION_MARKER = "\n...[conteúdo truncado para controle de contexto]...\n"
+MAX_ANALYSIS_INPUT_CHARS = 30_000
 
 
 def _bound_suggestion_text(value: str, maximum: int) -> str:
@@ -210,6 +211,19 @@ def _bound_suggestion_text(value: str, maximum: int) -> str:
     head = available // 2
     tail = available - head
     return f"{value[:head]}{_TRUNCATION_MARKER}{value[-tail:]}"
+
+
+def bound_analysis_inputs(cv_text: str, jd_text: str) -> tuple[str, str]:
+    """Bound pre-interview provider input without letting JD bypass the cap.
+
+    The job description is the required source, so it receives the full budget
+    first. The CV is supplementary and uses only the remaining characters.
+    Both ends are retained to preserve role context and trailing requirements.
+    """
+    bounded_jd = _bound_suggestion_text(jd_text, MAX_ANALYSIS_INPUT_CHARS)
+    remaining = max(0, MAX_ANALYSIS_INPUT_CHARS - len(bounded_jd))
+    bounded_cv = _bound_suggestion_text(cv_text, remaining)
+    return bounded_cv, bounded_jd
 
 
 PRE_INTERVIEW_ANALYSIS_PROMPT = """\

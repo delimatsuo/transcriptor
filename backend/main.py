@@ -30,14 +30,16 @@ from backend.auth import (
     verify_bearer_token,
 )
 from backend.config import Settings, get_settings
-from backend.documents.parser import parse_document, DocumentParseError
+from backend.documents.parser import MAX_FILE_SIZE, DocumentParseError, parse_document
 from backend.llm.context_window import ContextWindowManager
 from backend.llm.gemini import GeminiClient
 from backend.llm.interview_prompts import (
     INTERVIEW_SYSTEM_PROMPT,
     INTERVIEW_REPORT_PROMPT,
     INTERVIEW_REPORT_RESPONSE_SCHEMA,
+    MAX_ANALYSIS_INPUT_CHARS,
     PRE_INTERVIEW_ANALYSIS_PROMPT,
+    bound_analysis_inputs,
     build_interview_user_message,
 )
 from backend.llm.meeting_prompts import FINAL_SUMMARY_PROMPT
@@ -571,6 +573,12 @@ async def _generate_rolling_summary(session_id: str) -> None:
             return
 
         summary = await context.update_summary(transcript_text, current_seq)
+
+        # A failed provider call intentionally leaves the source watermark
+        # unchanged.  Do not broadcast or persist the prior/empty summary as if
+        # it covered this transcript; the cooldown will permit a bounded retry.
+        if context.last_summary_seq != current_seq:
+            return
 
         # Broadcast summary update
         seq = ws_manager.next_sequence(session_id)
@@ -1155,7 +1163,9 @@ async def upload_document(
         raise HTTPException(status_code=400, detail="doc_type must be resume or jd")
     session = _require_active_interview(session_id)
 
-    data = await file.read()
+    # Read only one byte beyond the parser's limit so an oversized upload
+    # cannot allocate unbounded memory before validation.
+    data = await file.read(MAX_FILE_SIZE + 1)
     filename = file.filename or "document"
 
     try:
@@ -1242,23 +1252,25 @@ async def analyze_candidate(
                 status_code=400,
                 detail=f"Unsupported file type: {content_type}. Use PDF, DOCX, or TXT.",
             )
-        data = await file.read()
+        data = await file.read(MAX_FILE_SIZE + 1)
         filename = file.filename or "document"
         try:
             cv_text = parse_document(data, filename)
         except DocumentParseError as e:
             raise HTTPException(status_code=400, detail=str(e))
 
-    # Cap combined input
-    combined = cv_text + jd_text
-    if len(combined) > 30_000:
-        logger.warning("analyze_input_truncated", original_len=len(combined))
-        # Truncate CV first (JD is required, CV is supplementary)
-        max_cv = 30_000 - len(jd_text)
-        if max_cv > 0:
-            cv_text = cv_text[:max_cv]
-        else:
-            cv_text = ""
+    # Bound provider input deterministically. The previous CV-first logic
+    # allowed a JD between 30,001 and 50,000 characters to bypass the intended
+    # combined cap when no CV budget remained.
+    original_input_chars = len(cv_text) + len(jd_text)
+    cv_text, analysis_jd_text = bound_analysis_inputs(cv_text, jd_text)
+    if len(cv_text) + len(analysis_jd_text) < original_input_chars:
+        logger.warning(
+            "analyze_input_truncated",
+            original_len=original_input_chars,
+            bounded_len=len(cv_text) + len(analysis_jd_text),
+            max_chars=MAX_ANALYSIS_INPUT_CHARS,
+        )
 
     # Build user message
     parts = []
@@ -1266,7 +1278,9 @@ async def analyze_candidate(
         parts.append(f"## Currículo / CV do Candidato\n{cv_text}")
     else:
         parts.append("## Currículo / CV do Candidato\n(Não fornecido)")
-    parts.append(f"## Descrição da Vaga / Job Description\n{jd_text}")
+    parts.append(
+        f"## Descrição da Vaga / Job Description\n{analysis_jd_text}"
+    )
     user_message = "\n\n".join(parts)
 
     # Call Gemini with timeout and semaphore

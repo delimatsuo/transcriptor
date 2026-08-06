@@ -44,6 +44,8 @@ class ContextWindowManager:
         # Each source stream owns its sequence space and may reset on rotation.
         self._last_summary_seq: int = 0
         self._last_summary_time: float = 0.0
+        self._failure_count: int = 0
+        self._retry_after: float = 0.0
         self._lock = asyncio.Lock()
 
     @property
@@ -54,13 +56,21 @@ class ContextWindowManager:
     def last_summary_seq(self) -> int:
         return self._last_summary_seq
 
+    def _now(self) -> float:
+        """Clock seam for deterministic cooldown tests."""
+        return time.monotonic()
+
     def should_summarize(self, word_count_since_last: int) -> bool:
         """Check if it's time to generate a new rolling summary."""
+        now = self._now()
+        if now < self._retry_after:
+            return False
+
         if word_count_since_last >= WORD_THRESHOLD:
             return True
 
         if self._last_summary_time > 0:
-            elapsed = time.monotonic() - self._last_summary_time
+            elapsed = now - self._last_summary_time
             if elapsed >= MAX_TIME_BETWEEN_SUMMARIES_SECONDS and word_count_since_last > 50:
                 return True
 
@@ -92,7 +102,9 @@ class ContextWindowManager:
 
                 self._current_summary = updated.strip()
                 self._last_summary_seq = current_seq
-                self._last_summary_time = time.monotonic()
+                self._last_summary_time = self._now()
+                self._failure_count = 0
+                self._retry_after = 0.0
 
                 logger.info(
                     "rolling_summary_updated",
@@ -103,5 +115,17 @@ class ContextWindowManager:
                 return self._current_summary
 
             except Exception:
+                self._failure_count += 1
+                backoff = min(
+                    self.settings.llm_rolling_failure_backoff_seconds
+                    * (2 ** (self._failure_count - 1)),
+                    self.settings.llm_rolling_failure_backoff_max_seconds,
+                )
+                self._retry_after = self._now() + backoff
+                logger.warning(
+                    "rolling_summary_retry_backoff",
+                    failure_count=self._failure_count,
+                    backoff_seconds=backoff,
+                )
                 logger.exception("rolling_summary_error")
                 return self._current_summary

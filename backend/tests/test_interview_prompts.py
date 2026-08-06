@@ -1,12 +1,14 @@
 """Suggestion prompt bounds prevent repeated oversized provider inputs."""
 
 from backend.llm.interview_prompts import (
+    MAX_ANALYSIS_INPUT_CHARS,
     MAX_SUGGESTION_BRIEFING_CHARS,
     MAX_SUGGESTION_CANDIDATE_NAME_CHARS,
     MAX_SUGGESTION_JD_CHARS,
     MAX_SUGGESTION_RESUME_CHARS,
     MAX_SUGGESTION_TRANSCRIPT_CHARS,
     _bound_suggestion_text,
+    bound_analysis_inputs,
     build_interview_user_message,
 )
 
@@ -35,3 +37,21 @@ def test_interview_suggestion_message_bounds_each_repeated_context_field():
     assert len(message.split("## Descrição da Vaga / Job Description\n", 1)[1].split("\n\n## ", 1)[0]) == MAX_SUGGESTION_JD_CHARS
     assert len(message.split("## Briefing Pré-Entrevista\n", 1)[1].split("\n\n## ", 1)[0]) == MAX_SUGGESTION_BRIEFING_CHARS
     assert len(message.split("## Últimas Trocas da Entrevista (transcrição ao vivo)\n", 1)[1]) == MAX_SUGGESTION_TRANSCRIPT_CHARS
+
+
+def test_analysis_budget_cannot_be_bypassed_by_a_large_job_description():
+    cv, jd = bound_analysis_inputs(
+        "C" * 2_000,
+        "J" * (MAX_ANALYSIS_INPUT_CHARS + 1_000),
+    )
+
+    assert cv == ""
+    assert len(jd) == MAX_ANALYSIS_INPUT_CHARS
+
+
+def test_analysis_budget_allocates_remaining_chars_to_the_cv():
+    cv, jd = bound_analysis_inputs("C" * 40_000, "J" * 10_000)
+
+    assert len(jd) == 10_000
+    assert len(cv) == MAX_ANALYSIS_INPUT_CHARS - len(jd)
+    assert len(cv) + len(jd) == MAX_ANALYSIS_INPUT_CHARS

@@ -55,6 +55,18 @@ class Settings(BaseSettings):
         le=50_000,
         description="Maximum transcript characters sent in each rolling summary update",
     )
+    llm_rolling_failure_backoff_seconds: float = Field(
+        default=30.0,
+        gt=0,
+        le=300,
+        description="Initial cooldown after a rolling summary provider failure",
+    )
+    llm_rolling_failure_backoff_max_seconds: float = Field(
+        default=300.0,
+        gt=0,
+        le=900,
+        description="Maximum exponential cooldown after rolling summary failures",
+    )
 
     # Audio
     blackhole_device_name: str = Field(

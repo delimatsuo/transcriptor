@@ -1,10 +1,12 @@
 """Rolling summaries must not queue stale duplicate provider work."""
 
 import asyncio
+from unittest.mock import AsyncMock
 
 import pytest
 
 from backend import main
+from backend.schemas.models import TranscriptSegment
 
 
 def test_scheduler_deduplicates_inflight_summary(monkeypatch):
@@ -62,3 +64,41 @@ def test_cleanup_cancels_inflight_summary(monkeypatch):
         asyncio.run(run())
     finally:
         main.rolling_summary_tasks.clear()
+
+
+def test_failed_summary_does_not_broadcast_or_persist_stale_text(monkeypatch):
+    class SessionManager:
+        def get_transcript(self, _session_id):
+            return [TranscriptSegment(text="new words", is_final=True)]
+
+        def get_transcript_text_since_index(self, _session_id, *, from_index, max_segments):
+            assert from_index == 0
+            assert max_segments == 50
+            return "[Candidato]: new words"
+
+    class FailedContext:
+        last_summary_seq = 0
+
+        async def update_summary(self, _text, _current_seq):
+            return ""
+
+    class Storage:
+        save_summary = AsyncMock()
+
+    storage = Storage()
+    monkeypatch.setattr(main, "session_mgr", SessionManager())
+    monkeypatch.setattr(main, "gemini_client", object())
+    monkeypatch.setattr(main, "firestore_storage", storage)
+    monkeypatch.setattr(main.ws_manager, "broadcast", AsyncMock())
+    previous_context = main.context_window
+    main.context_window = None
+    main.context_windows.clear()
+    main.context_windows["session-1"] = FailedContext()
+
+    try:
+        asyncio.run(main._generate_rolling_summary("session-1"))
+        main.ws_manager.broadcast.assert_not_awaited()
+        storage.save_summary.assert_not_awaited()
+    finally:
+        main.context_windows.clear()
+        main.context_window = previous_context
