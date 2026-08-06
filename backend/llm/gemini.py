@@ -26,6 +26,7 @@ class GeminiClient:
         # segment/report request.  The prompts are static application code,
         # so this cache cannot grow with candidate/session data.
         self._models: dict[str, GenerativeModel] = {}
+        self._model_lock = asyncio.Lock()
         # All Gemini features share this process-local budget.  Endpoint-level
         # semaphores alone allowed rolling summaries, suggestions, reports,
         # and /api/analyze to fan out concurrently.
@@ -41,16 +42,18 @@ class GeminiClient:
             )
             self._initialized = True
 
-    def _model_for(self, system_instruction: str) -> GenerativeModel:
-        self._ensure_init()
-        model = self._models.get(system_instruction)
-        if model is None:
-            model = GenerativeModel(
-                "gemini-2.5-flash",
-                system_instruction=[system_instruction],
-            )
-            self._models[system_instruction] = model
-        return model
+    async def _model_for(self, system_instruction: str) -> GenerativeModel:
+        """Initialize Vertex and construct each static-prompt model once."""
+        async with self._model_lock:
+            self._ensure_init()
+            model = self._models.get(system_instruction)
+            if model is None:
+                model = GenerativeModel(
+                    "gemini-2.5-flash",
+                    system_instruction=[system_instruction],
+                )
+                self._models[system_instruction] = model
+            return model
 
     def _validate_request_bounds(
         self,
@@ -95,7 +98,7 @@ class GeminiClient:
             user_message,
             max_output_tokens,
         )
-        model_with_system = self._model_for(system_instruction)
+        model_with_system = await self._model_for(system_instruction)
 
         generation_config = {
             "temperature": temperature,
@@ -151,7 +154,7 @@ class GeminiClient:
             max_output_tokens,
             streaming=True,
         )
-        model_with_system = self._model_for(system_instruction)
+        model_with_system = await self._model_for(system_instruction)
 
         queued_at = time.monotonic()
         timeout_seconds = self.settings.llm_request_timeout_seconds

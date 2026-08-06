@@ -3,6 +3,7 @@ import type { RecentInterview, SessionReview } from "@/types/ws";
 export function canOpenRecentInterview(interview: RecentInterview): boolean {
   return (
     interview.session_status === "completed" &&
+    interview.review_status !== "incomplete" &&
     interview.review_status !== "corrupt"
   );
 }

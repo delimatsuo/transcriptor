@@ -301,6 +301,105 @@ def test_incomplete_stop_keeps_recovery_capability_until_terminal_write_succeeds
         main.firestore_storage = old_firestore
 
 
+def test_active_session_delete_is_rejected_before_storage_mutation(monkeypatch):
+    user = AuthContext("uid-a", "a@example.com", "ella-internal")
+    session = SimpleNamespace(
+        id="active-session",
+        owner_id=user.uid,
+        org_id=user.org_id,
+        status=SessionStatus.ACTIVE,
+    )
+
+    class FakeSessionManager:
+        def get_session(self, _session_id):
+            return session
+
+    class FakeFirestore:
+        _get_db = AsyncMock()
+
+    old_session_mgr = main.session_mgr
+    old_firestore = main.firestore_storage
+    main.session_mgr = FakeSessionManager()
+    storage = FakeFirestore()
+    main.firestore_storage = storage
+    auth_token = main.set_current_auth(user)
+    try:
+        with pytest.raises(HTTPException) as exc_info:
+            asyncio.run(main.delete_session(session.id))
+        assert exc_info.value.status_code == 409
+        assert "Stop the active session" in str(exc_info.value.detail)
+        storage._get_db.assert_not_awaited()
+    finally:
+        main.reset_current_auth(auth_token)
+        main.session_mgr = old_session_mgr
+        main.firestore_storage = old_firestore
+
+
+def test_delete_fences_late_callbacks_and_cancels_final_report(monkeypatch):
+    session = SimpleNamespace(
+        id="completed-session",
+        owner_id=None,
+        org_id=None,
+        status=SessionStatus.COMPLETED,
+    )
+
+    class FakeSessionManager:
+        def get_session(self, _session_id):
+            return session
+
+    class FakeFirestore:
+        _get_db = AsyncMock(return_value=object())
+
+    deletion = AsyncMock(return_value={"session_id": session.id})
+    monkeypatch.setattr(
+        "backend.storage.deletion.delete_session_everywhere",
+        deletion,
+    )
+    old_session_mgr = main.session_mgr
+    old_firestore = main.firestore_storage
+    old_locks = main.session_stop_locks
+    old_tasks = main.final_summary_tasks
+    old_scheduled = main.final_summary_scheduled
+    old_fences = main.session_deletion_fences
+    old_deleted = main.deleted_sessions
+    main.session_mgr = FakeSessionManager()
+    main.firestore_storage = FakeFirestore()
+    main.session_stop_locks = {}
+    main.final_summary_tasks = {}
+    main.final_summary_scheduled = set()
+    main.session_deletion_fences = set()
+    main.deleted_sessions = set()
+
+    async def pending_report():
+        await asyncio.Event().wait()
+
+    async def run():
+        task = asyncio.create_task(pending_report())
+        main.final_summary_tasks[session.id] = task
+        main.final_summary_scheduled.add(session.id)
+        result = await main.delete_session(session.id)
+        return result, task
+
+    try:
+        result, task = asyncio.run(run())
+        assert result["session_id"] == session.id
+        assert task.cancelled()
+        assert deletion.await_count == 1
+        assert session.id in main.session_deletion_fences
+        assert session.id in main.deleted_sessions
+        with pytest.raises(HTTPException) as exc_info:
+            asyncio.run(main._read_session(session.id))
+        assert exc_info.value.status_code == 404
+    finally:
+        main.session_mgr = old_session_mgr
+        main.firestore_storage = old_firestore
+        main.session_stop_locks = old_locks
+        main.final_summary_tasks = old_tasks
+        main.final_summary_scheduled = old_scheduled
+        main.session_deletion_fences = old_fences
+        main.deleted_sessions = old_deleted
+
+
 class FakeWebSocket:
     def __init__(self, ticket: str):
         self.headers = {"sec-websocket-protocol": f"tars-ticket, {ticket}"}

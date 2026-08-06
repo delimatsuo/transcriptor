@@ -138,6 +138,49 @@ class SessionManager:
             appended = appended[-max_segments:]
         return self._format_transcript_text(appended)
 
+    def get_transcript_batch_since_index(
+        self,
+        session_id: str,
+        from_index: int = 0,
+        *,
+        max_segments: int = 50,
+        max_chars: int = 16_000,
+    ) -> tuple[str, int]:
+        """Return one contiguous bounded transcript batch and its end index.
+
+        Unlike the tail-oriented compatibility helper above, this method never
+        skips older appended segments while advancing the rolling-summary
+        watermark. The caller can schedule another bounded batch when the
+        backlog exceeds the provider context budget.
+        """
+        segments = self._transcripts.get(session_id, [])
+        start = min(max(0, from_index), len(segments))
+        end = start
+        lines: list[str] = []
+        total_chars = 0
+
+        for index, segment in enumerate(segments[start:], start=start):
+            line = self._format_transcript_text([segment])
+            separator = 1 if lines else 0
+            if (
+                max_segments > 0
+                and len(lines) >= max_segments
+            ) or (
+                max_chars > 0
+                and lines
+                and total_chars + separator + len(line) > max_chars
+            ):
+                break
+
+            if max_chars > 0 and not lines and len(line) > max_chars:
+                line = line[:max_chars]
+
+            lines.append(line)
+            total_chars += separator + len(line)
+            end = index + 1
+
+        return "\n".join(lines), end
+
     def get_transcript_word_count(self, session_id: str, from_seq: int = 0) -> int:
         """Count words in transcript segments after a given sequence number."""
         prefix = self._transcript_final_word_prefix.get(session_id)

@@ -73,6 +73,8 @@ export interface Session {
   speaker_map: Record<string, string>;
   summary: string | null;
   action_items: ActionItem[];
+  transcript_durability?: "complete" | "pending";
+  transcript_failure_count?: number;
 }
 
 export interface RecentInterview {

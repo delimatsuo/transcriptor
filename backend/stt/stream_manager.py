@@ -219,6 +219,12 @@ class StreamManager:
                     source=self.source_label,
                     buffered=len(self._pending_audio),
                 )
+        elif self._drain_failure_reason is not None:
+            # Surface a terminal callback/provider failure to the capture
+            # loop instead of silently buffering raw audio after STT stopped.
+            raise RuntimeError(
+                f"STT stream unavailable: {self._drain_failure_reason}"
+            )
 
     async def _rotation_loop(self) -> None:
         """Monitor stream age and trigger rotation before the 5-min limit."""
@@ -315,9 +321,29 @@ class StreamManager:
                             self._last_emitted_end_time = end_time
 
                         if self.on_transcript:
-                            callback_result = self.on_transcript(segment)
-                            if inspect.isawaitable(callback_result):
-                                await callback_result
+                            try:
+                                callback_result = self.on_transcript(segment)
+                                if inspect.isawaitable(callback_result):
+                                    await callback_result
+                            except Exception:
+                                # Callback failures include durable transcript
+                                # writes. Reopening STT every 0.5s would turn a
+                                # Firestore outage into an unbounded provider
+                                # retry/cost loop while buffering more audio.
+                                self.mark_failed("transcript_callback_error")
+                                logger.exception(
+                                    "stt_transcript_callback_failed",
+                                    stream_id=stream.stream_id,
+                                )
+                                self._running = False
+                                try:
+                                    await stream.stop()
+                                except Exception:
+                                    logger.exception(
+                                        "stt_stream_stop_after_callback_failure",
+                                        stream_id=stream.stream_id,
+                                    )
+                                return
 
                 self._ever_stream_opened = (
                     self._ever_stream_opened

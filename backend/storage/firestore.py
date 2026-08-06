@@ -63,6 +63,8 @@ class FirestoreStorage:
             "speakerMap": session.speaker_map,
             "summary": session.summary,
             "actionItems": [item.model_dump() for item in session.action_items],
+            "transcriptDurability": session.transcript_durability,
+            "transcriptFailureCount": session.transcript_failure_count,
             "ownerId": session.owner_id,
             "orgId": session.org_id,
         }

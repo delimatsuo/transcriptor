@@ -122,6 +122,17 @@ def test_incomplete_session_is_not_presented_as_completed_review():
     assert review.regeneration_status == RegenerationStatus.BLOCKED_SESSION_STATE
 
 
+def test_pending_transcript_durability_is_not_presented_as_ready():
+    session = deserialize_session(
+        SESSION_ID,
+        session_record(transcriptDurability="pending", transcriptFailureCount=1),
+    )
+    review = build_session_review(session, deserialize_transcript(transcript_records()))
+
+    assert review.review_status == ReviewStatus.INCOMPLETE
+    assert review.regeneration_status == RegenerationStatus.BLOCKED_SESSION_STATE
+
+
 def test_active_and_missing_transcript_states_are_explicit():
     active = deserialize_session(
         SESSION_ID,

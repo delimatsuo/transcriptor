@@ -57,6 +57,44 @@ def test_reuses_model_for_static_system_prompt(monkeypatch):
     assert constructors[0][1]["system_instruction"] == ["system"]
 
 
+def test_concurrent_first_requests_share_model_initialization(monkeypatch):
+    constructors = []
+    initializations = []
+
+    class FakeModel:
+        async def generate_content_async(self, *_args, **_kwargs):
+            await asyncio.sleep(0)
+            return SimpleNamespace(text="ok")
+
+    def make_model(*args, **kwargs):
+        constructors.append((args, kwargs))
+        return FakeModel()
+
+    monkeypatch.setattr(
+        gemini.aiplatform,
+        "init",
+        lambda **kwargs: initializations.append(kwargs),
+    )
+    monkeypatch.setattr(gemini, "GenerativeModel", make_model)
+    client = gemini.GeminiClient(
+        Settings(
+            google_cloud_project="test-project",
+            llm_max_concurrent_requests=2,
+        )
+    )
+
+    async def run():
+        await asyncio.gather(
+            client.generate("system", "first"),
+            client.generate("system", "second"),
+        )
+
+    asyncio.run(run())
+
+    assert len(constructors) == 1
+    assert len(initializations) == 1
+
+
 def test_shared_request_limit_serializes_provider_calls(monkeypatch):
     active = 0
     max_active = 0

@@ -212,7 +212,50 @@ def test_final_callback_failure_marks_drain_incomplete(monkeypatch):
     manager, drained = asyncio.run(run())
 
     assert drained is False
-    assert manager.drain_failure_reason == "response_error"
+    assert manager.drain_failure_reason == "transcript_callback_error"
+
+
+def test_transcript_callback_failure_stops_reconnect_loop(monkeypatch):
+    class CallbackFailureStream(FinalOnCloseStream):
+        instances: list["CallbackFailureStream"] = []
+
+        async def start(self):
+            self._accepting_audio = True
+            self.request_opened = True
+            alternative = SimpleNamespace(
+                transcript="callback failure",
+                confidence=0.99,
+            )
+            result = SimpleNamespace(alternatives=[alternative], is_final=True)
+            yield SimpleNamespace(results=[result])
+            await asyncio.Event().wait()
+
+    CallbackFailureStream.instances.clear()
+    monkeypatch.setattr(stream_manager, "GoogleSTTStream", CallbackFailureStream)
+
+    async def failing_callback(_segment):
+        raise RuntimeError("durable write failed")
+
+    async def run():
+        manager = stream_manager.StreamManager(
+            Settings(google_cloud_project="test-project"),
+            on_transcript=failing_callback,
+        )
+        await manager.start()
+        for _ in range(100):
+            if manager.drain_failure_reason is not None:
+                break
+            await asyncio.sleep(0)
+        await asyncio.sleep(0.6)
+        stream_count = len(CallbackFailureStream.instances)
+        await manager.stop()
+        return manager, stream_count
+
+    manager, stream_count = asyncio.run(run())
+
+    assert manager.drain_failure_reason == "transcript_callback_error"
+    assert manager._running is False
+    assert stream_count == 1
 
 
 def test_final_firestore_failure_propagates_to_completion_contract(monkeypatch):
@@ -255,6 +298,40 @@ def test_final_firestore_failure_propagates_to_completion_contract(monkeypatch):
 
     with pytest.raises(RuntimeError, match="firestore unavailable"):
         asyncio.run(backend_main._on_transcript("session-1", segment))
+
+
+def test_final_child_failure_marks_parent_durability_pending(monkeypatch):
+    manager = SessionManager(Settings(google_cloud_project="test-project"))
+    session = manager.create_session()
+    segment = TranscriptSegment(text="not durable yet", is_final=True)
+
+    class FakeContextWindow:
+        last_summary_seq = 0
+
+        def should_summarize(self, _word_count):
+            return False
+
+    class FailingFirestoreStorage:
+        save_transcript_segment = AsyncMock(
+            side_effect=RuntimeError("firestore unavailable")
+        )
+        save_session = AsyncMock()
+
+    storage = FailingFirestoreStorage()
+    monkeypatch.setattr(backend_main, "session_mgr", manager)
+    monkeypatch.setattr(backend_main, "context_window", FakeContextWindow())
+    monkeypatch.setattr(backend_main, "firestore_storage", storage)
+    monkeypatch.setattr(backend_main.ws_manager, "broadcast", AsyncMock())
+    backend_main.transcript_persistence_failures.clear()
+
+    try:
+        with pytest.raises(RuntimeError, match="firestore unavailable"):
+            asyncio.run(backend_main._on_transcript(session.id, segment))
+        assert session.transcript_durability == "pending"
+        assert session.transcript_failure_count == 1
+        storage.save_session.assert_awaited_once_with(session)
+    finally:
+        backend_main.transcript_persistence_failures.discard(session.id)
 
 
 def test_stop_marks_unsent_rotation_audio_incomplete():
@@ -500,6 +577,35 @@ def test_failed_terminal_save_is_replayed_before_report_on_retry(monkeypatch):
     assert backend_main.firestore_storage.save_session.await_count == 2
     stop_pipeline.assert_awaited_once_with(session.id)
     generate_report.assert_awaited_once_with(session.id)
+
+
+def test_stop_retries_failed_final_children_before_terminal_parent_save(monkeypatch):
+    manager = SessionManager(Settings(google_cloud_project="test-project"))
+    session = manager.create_session()
+    segment = TranscriptSegment(text="durable retry", is_final=True)
+    manager.add_transcript_segment(session.id, segment)
+
+    class RetryStorage:
+        save_transcript_batch = AsyncMock()
+        save_session = AsyncMock()
+
+    storage = RetryStorage()
+    monkeypatch.setattr(backend_main, "session_mgr", manager)
+    monkeypatch.setattr(backend_main, "firestore_storage", storage)
+    monkeypatch.setattr(backend_main, "_stop_pipeline", AsyncMock(return_value=False))
+    monkeypatch.setattr(backend_main, "session_stop_locks", {})
+    monkeypatch.setattr(backend_main, "transcript_persistence_failures", {session.id})
+    monkeypatch.setattr(backend_main.ws_manager, "broadcast", AsyncMock())
+
+    result = asyncio.run(backend_main.stop_session(session.id))
+
+    assert result["status"] == "incomplete"
+    storage.save_transcript_batch.assert_awaited_once()
+    assert storage.save_transcript_batch.await_args.args[0] == session.id
+    assert storage.save_transcript_batch.await_args.args[1] == [segment]
+    storage.save_session.assert_awaited_once_with(session)
+    assert session.id not in backend_main.transcript_persistence_failures
+    assert manager.get_transcript(session.id) == []
 
 
 def test_concurrent_stops_share_one_drain_and_consistent_terminal(monkeypatch):

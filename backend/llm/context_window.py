@@ -91,13 +91,30 @@ class ContextWindowManager:
                 f"## Previous Summary\n{self._current_summary or '(start of session)'}\n\n"
                 f"## New Transcript Content\n{bounded_chunk}"
             )
+            if len(user_message) > self.settings.llm_max_input_chars:
+                # Keep rolling summaries fail-safe even when an operator sets
+                # the global input ceiling below the default feature budget.
+                # Final reports still fail closed; this ephemeral context may
+                # retain only its newest bounded tail.
+                user_message = _bound_transcript(
+                    user_message,
+                    self.settings.llm_max_input_chars,
+                )
+                logger.warning(
+                    "rolling_summary_input_rebounded",
+                    input_chars=len(user_message),
+                    max_chars=self.settings.llm_max_input_chars,
+                )
 
             try:
                 updated = await self.gemini.generate(
                     system_instruction=ROLLING_SUMMARY_PROMPT,
                     user_message=user_message,
                     temperature=0.2,
-                    max_output_tokens=1024,
+                    max_output_tokens=min(
+                        1024,
+                        self.settings.llm_max_output_tokens,
+                    ),
                 )
 
                 self._current_summary = updated.strip()

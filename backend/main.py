@@ -119,13 +119,20 @@ stream_managers: dict[str, list[StreamManager]] = {}
 pipeline_tasks: dict[str, list[asyncio.Task]] = {}
 session_stop_locks: dict[str, asyncio.Lock] = {}
 final_summary_scheduled: set[str] = set()
+final_summary_tasks: dict[str, asyncio.Task] = {}
 # A final child write failure means process memory may be the only copy until
 # an owner-approved retry/recovery path runs. Never release that transcript on
 # the strength of a later parent-session write alone.
 transcript_persistence_failures: set[str] = set()
+# Protect the live worker while a terminal deletion is in progress or has
+# completed. The durable deletion tombstone remains the cross-process source of
+# truth; this fence closes late callback/report races in this process.
+session_deletion_fences: set[str] = set()
+deleted_sessions: set[str] = set()
 # At most one rolling-summary generation per session.  The context-window lock
 # serializes provider calls but does not prevent stale tasks from queueing.
 rolling_summary_tasks: dict[str, asyncio.Task] = {}
+rolling_summary_followups: set[str] = set()
 
 # Interview context
 interview_documents: dict[str, dict[str, str]] = {}  # session_id -> {resume, jd}
@@ -361,6 +368,60 @@ async def _save_transcript_segment(session_id: str, segment: TranscriptSegment) 
     await firestore_storage.save_transcript_segment(session_id, segment, **kwargs)
 
 
+async def _retry_failed_transcript_persistence(session_id: str) -> bool:
+    """Replay final transcript children after a transient durable-write failure.
+
+    The retry is intentionally bounded to the in-memory final segments for
+    this session and prefers the storage batch path, making a repeated stop
+    both idempotent and cheaper than issuing one write per segment.  The
+    failure marker is cleared only after every final segment is accepted.
+    """
+    if session_id not in transcript_persistence_failures:
+        return True
+    assert session_mgr and firestore_storage
+    session = session_mgr.get_session(session_id)
+    get_transcript = getattr(session_mgr, "get_transcript", None)
+    if not callable(get_transcript):
+        logger.warning(
+            "transcript_persistence_retry_unavailable",
+            session_id=session_id,
+        )
+        return False
+    segments = [
+        segment
+        for segment in get_transcript(session_id)
+        if segment.is_final
+    ]
+    kwargs = {}
+    if session and session.owner_id is not None and session.org_id is not None:
+        kwargs.update(owner_id=session.owner_id, org_id=session.org_id)
+
+    try:
+        save_batch = getattr(firestore_storage, "save_transcript_batch", None)
+        if callable(save_batch):
+            await save_batch(session_id, segments, **kwargs)
+        else:
+            for segment in segments:
+                await _save_transcript_segment(session_id, segment)
+    except Exception:
+        logger.exception(
+            "transcript_persistence_retry_failed",
+            session_id=session_id,
+            segment_count=len(segments),
+        )
+        return False
+
+    transcript_persistence_failures.discard(session_id)
+    if session is not None:
+        session.transcript_durability = "complete"
+    logger.info(
+        "transcript_persistence_recovered",
+        session_id=session_id,
+        segment_count=len(segments),
+    )
+    return True
+
+
 # --- Audio Pipeline ---
 
 async def _run_single_audio_stream(
@@ -479,6 +540,12 @@ async def _run_audio_pipeline(session_id: str) -> None:
 
 async def _on_transcript(session_id: str, segment: TranscriptSegment) -> None:
     """Handle a new transcript segment."""
+    if session_id in session_deletion_fences:
+        logger.warning(
+            "transcript_callback_after_delete_ignored",
+            session_id=session_id,
+        )
+        return
     context = _context_window_for(session_id)
     assert session_mgr and firestore_storage and context
 
@@ -503,6 +570,20 @@ async def _on_transcript(session_id: str, segment: TranscriptSegment) -> None:
             await _save_transcript_segment(session_id, segment)
         except Exception:
             transcript_persistence_failures.add(session_id)
+            session = session_mgr.get_session(session_id)
+            if session is not None:
+                session.transcript_durability = "pending"
+                session.transcript_failure_count += 1
+                try:
+                    # Best-effort durable marker. If Firestore is the failing
+                    # dependency this may fail too, but a successful parent
+                    # write lets a later worker surface the uncertainty.
+                    await firestore_storage.save_session(session)
+                except Exception:
+                    logger.exception(
+                        "transcript_durability_marker_save_failed",
+                        session_id=session_id,
+                    )
             logger.exception("firestore_save_error", session_id=session_id)
             # A final is not complete until its durable write succeeds. Let the
             # stream manager make this failure sticky and suppress the report.
@@ -564,33 +645,61 @@ def _is_candidate_final_segment(segment: TranscriptSegment) -> bool:
 
 async def _generate_rolling_summary(session_id: str) -> None:
     """Generate a rolling summary from recent transcript."""
+    if session_id in session_deletion_fences:
+        return
     context = _context_window_for(session_id)
     assert session_mgr and context and gemini_client
 
     try:
         current_seq = len(session_mgr.get_transcript(session_id))
-        transcript_text = session_mgr.get_transcript_text_since_index(
-            session_id,
-            from_index=context.last_summary_seq,
-            max_segments=50,
+        previous_seq = context.last_summary_seq
+        get_batch = getattr(
+            session_mgr,
+            "get_transcript_batch_since_index",
+            None,
         )
+        if callable(get_batch):
+            summary_overhead = len(
+                f"## Previous Summary\n{context.current_summary or '(start of session)'}\n\n"
+                "## New Transcript Content\n"
+            )
+            transcript_text, batch_end = get_batch(
+                session_id,
+                from_index=previous_seq,
+                max_segments=50,
+                max_chars=min(
+                    context.settings.llm_rolling_context_max_chars,
+                    max(
+                        1,
+                        context.settings.llm_max_input_chars - summary_overhead,
+                    ),
+                ),
+            )
+        else:
+            # Keep direct-call test doubles compatible with the pre-batch API.
+            transcript_text = session_mgr.get_transcript_text_since_index(
+                session_id,
+                from_index=previous_seq,
+                max_segments=50,
+            )
+            batch_end = current_seq
         if not transcript_text:
             return
 
-        summary = await context.update_summary(transcript_text, current_seq)
+        summary = await context.update_summary(transcript_text, batch_end)
 
         # A failed provider call intentionally leaves the source watermark
         # unchanged.  Do not broadcast or persist the prior/empty summary as if
         # it covered this transcript; the cooldown will permit a bounded retry.
-        if context.last_summary_seq != current_seq:
+        if context.last_summary_seq != batch_end:
             return
 
         # Broadcast summary update
         seq = ws_manager.next_sequence(session_id)
         update = SummaryUpdate(
             text=summary,
-            covering_from=0,
-            covering_to=current_seq,
+            covering_from=previous_seq,
+            covering_to=batch_end,
         )
         msg = WSMessage.summary_update(session_id, seq, update)
         await ws_manager.broadcast(session_id, msg)
@@ -600,10 +709,16 @@ async def _generate_rolling_summary(session_id: str) -> None:
             session = session_mgr.get_session(session_id)
             await firestore_storage.save_summary(
                 session_id, summary,
-                covering_from=0, covering_to=current_seq,
+                covering_from=previous_seq,
+                covering_to=batch_end,
                 owner_id=session.owner_id if session else None,
                 org_id=session.org_id if session else None,
             )
+
+        if batch_end < current_seq:
+            # The task completion callback starts the next contiguous batch
+            # after this task is removed from the in-flight map.
+            rolling_summary_followups.add(session_id)
 
     except Exception:
         logger.exception("rolling_summary_error", session_id=session_id)
@@ -623,6 +738,9 @@ def _schedule_rolling_summary(session_id: str) -> None:
     def clear_task(completed: asyncio.Task) -> None:
         if rolling_summary_tasks.get(session_id) is completed:
             rolling_summary_tasks.pop(session_id, None)
+        if session_id in rolling_summary_followups:
+            rolling_summary_followups.discard(session_id)
+            _schedule_rolling_summary(session_id)
 
     task.add_done_callback(clear_task)
 
@@ -652,6 +770,8 @@ async def _check_single_audio_source(session_id: str) -> None:
 
 async def _generate_interview_suggestions(session_id: str) -> None:
     """Generate interview follow-up question suggestions."""
+    if session_id in session_deletion_fences:
+        return
     assert session_mgr and gemini_client
 
     docs = interview_documents.get(session_id, {})
@@ -675,7 +795,10 @@ async def _generate_interview_suggestions(session_id: str) -> None:
             # comfortably covers the requested questions/follow-ups while
             # preventing an unexpectedly verbose response from consuming
             # report-scale output budget on every fifth segment.
-            max_output_tokens=1024,
+            max_output_tokens=min(
+                1024,
+                getattr(settings, "llm_max_output_tokens", 1024),
+            ),
         )
 
         if response.strip():
@@ -719,6 +842,8 @@ def _schedule_interview_suggestions(session_id: str) -> None:
 
 async def _generate_final_summary(session_id: str) -> None:
     """Generate comprehensive final summary at end of session."""
+    if session_id in session_deletion_fences:
+        return
     assert session_mgr and gemini_client and firestore_storage
     session = session_mgr.get_session(session_id)
     if session is None:
@@ -874,7 +999,10 @@ async def _generate_final_summary(session_id: str) -> None:
                         system_instruction=INTERVIEW_REPORT_PROMPT,
                         user_message=user_message,
                         temperature=0.2,
-                        max_output_tokens=8192,
+                        max_output_tokens=min(
+                            8192,
+                            getattr(settings, "llm_max_output_tokens", 8192),
+                        ),
                         response_mime_type="application/json",
                         response_schema=INTERVIEW_REPORT_RESPONSE_SCHEMA,
                     ),
@@ -933,7 +1061,10 @@ async def _generate_final_summary(session_id: str) -> None:
                 system_instruction=prompt,
                 user_message=user_message,
                 temperature=0.2,
-                max_output_tokens=4096,
+                max_output_tokens=min(
+                    4096,
+                    getattr(settings, "llm_max_output_tokens", 4096),
+                ),
             )
 
         session_mgr.set_summary(session_id, summary)
@@ -1013,6 +1144,7 @@ def _cleanup_session_context(
     rolling_task = rolling_summary_tasks.pop(session_id, None)
     if rolling_task is not None and not rolling_task.done():
         rolling_task.cancel()
+    rolling_summary_followups.discard(session_id)
     suggestion_task = interview_suggestion_tasks.pop(session_id, None)
     if suggestion_task is not None and not suggestion_task.done():
         suggestion_task.cancel()
@@ -1032,6 +1164,7 @@ def _cleanup_session_context(
     # doubles may not expose this optional memory-release seam.
     if release_transcript_memory:
         _release_terminal_transcript_memory(session_id)
+    final_summary_scheduled.discard(session_id)
 
 
 def _revoke_stop_capabilities(session_id: str) -> None:
@@ -1041,16 +1174,42 @@ def _revoke_stop_capabilities(session_id: str) -> None:
             stop_capabilities.pop(token, None)
 
 
+async def _cancel_final_summary_task(session_id: str) -> None:
+    """Fence and await a queued final report before deleting its session."""
+    task = final_summary_tasks.pop(session_id, None)
+    final_summary_scheduled.discard(session_id)
+    if task is None or task.done():
+        return
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+    except Exception:
+        logger.exception("final_summary_cancel_error", session_id=session_id)
+
+
 def _schedule_final_summary_once(session_id: str) -> None:
     """Schedule at most one final report for a session in this process."""
-    if session_id in final_summary_scheduled:
+    if (
+        session_id in final_summary_scheduled
+        or session_id in session_deletion_fences
+    ):
         return
     final_summary_scheduled.add(session_id)
     try:
-        asyncio.create_task(_generate_final_summary(session_id))
+        task = asyncio.create_task(_generate_final_summary(session_id))
+        final_summary_tasks[session_id] = task
     except Exception:
         final_summary_scheduled.discard(session_id)
         raise
+
+    def clear_task(completed: asyncio.Task) -> None:
+        if final_summary_tasks.get(session_id) is completed:
+            final_summary_tasks.pop(session_id, None)
+        final_summary_scheduled.discard(session_id)
+
+    task.add_done_callback(clear_task)
 
 
 async def _stop_pipeline(session_id: str) -> bool:
@@ -1152,6 +1311,11 @@ async def stop_session(session_id: str):
 
     stop_lock = session_stop_locks.setdefault(session_id, asyncio.Lock())
     async with stop_lock:
+        if (
+            session_id in deleted_sessions
+            or session_id in session_deletion_fences
+        ):
+            raise HTTPException(status_code=404, detail="Session not found")
         session = session_mgr.get_session(session_id)
         if session is None:
             raise HTTPException(status_code=404, detail="Session not found")
@@ -1167,7 +1331,13 @@ async def stop_session(session_id: str):
             if session is None:  # It existed immediately before shutdown.
                 raise HTTPException(status_code=404, detail="Session not found")
 
-        transcription_complete = session.status == SessionStatus.COMPLETED
+        # A pending child durability marker is stronger than the prior status:
+        # never queue a report or release memory while a final segment may be
+        # missing from Firestore.
+        transcription_complete = (
+            session.status == SessionStatus.COMPLETED
+            and session_id not in transcript_persistence_failures
+        )
         if not transcription_complete:
             # Clear model/UI runtime state now, but retain transcript memory
             # until the terminal session write succeeds below. A final segment
@@ -1177,6 +1347,20 @@ async def stop_session(session_id: str):
                 release_transcript_memory=False,
                 preserve_stop_capability=True,
             )
+
+        # A failed final child write is replayed before the parent terminal
+        # record. If the provider is still unavailable, retain memory and the
+        # stop capability so a later stop retry can recover it.
+        await _retry_failed_transcript_persistence(session_id)
+
+        if session_id in transcript_persistence_failures:
+            if session.status == SessionStatus.COMPLETED:
+                session.status = SessionStatus.INCOMPLETE
+            transcription_complete = False
+        elif session.status == SessionStatus.COMPLETED:
+            # A completed session that needed replay can safely resume its
+            # report obligation once every child is durable.
+            transcription_complete = True
 
         # For completed interviews, the durable terminal state and the report
         # obligation are one transaction. A process crash can therefore leave
@@ -1226,28 +1410,58 @@ async def stop_session(session_id: str):
 @app.delete("/api/sessions/{session_id}")
 async def delete_session(session_id: str):
     """Delete a session everywhere: Firestore, GCS documents, and tombstone."""
-    assert firestore_storage
+    assert firestore_storage and session_mgr
     from backend.storage.deletion import delete_session_everywhere
 
-    session = await _read_session(session_id)
-    _assert_session_access(session)
+    lifecycle_lock = session_stop_locks.setdefault(session_id, asyncio.Lock())
+    async with lifecycle_lock:
+        if session_id in deleted_sessions:
+            raise HTTPException(status_code=404, detail="Session not found")
 
-    db = await firestore_storage._get_db()
-    user = current_auth()
-    try:
-        result = await delete_session_everywhere(
-            session_id,
-            db,
-            gcs_storage,
-            owner_id=user.uid if user else None,
-            org_id=user.org_id if user else None,
-        )
-        transcript_persistence_failures.discard(session_id)
-        _revoke_stop_capabilities(session_id)
-        _release_terminal_transcript_memory(session_id)
-        return result
-    except PermissionError:
-        raise HTTPException(status_code=404, detail="Session not found") from None
+        if session_id in session_deletion_fences:
+            # A previous delete attempt fenced the session but failed before
+            # writing its tombstone. Reuse the in-memory terminal record for a
+            # serialized retry; callbacks remain blocked by the fence.
+            session = session_mgr.get_session(session_id)
+            if session is None:
+                raise HTTPException(status_code=404, detail="Session not found")
+            _assert_session_access(session)
+        else:
+            session = await _read_session(session_id)
+        _assert_session_access(session)
+        if session.status == SessionStatus.ACTIVE:
+            # Deletion is terminal-only.  Deleting a live session would leave
+            # its capture/STT pipeline running, allow late transcript callbacks
+            # to recreate children under a deleted parent, and retain sensitive
+            # transcript memory because the session is still active.
+            raise HTTPException(
+                status_code=409,
+                detail="Stop the active session before deleting it",
+            )
+
+        # Fence callbacks and await any detached report before the first
+        # destructive operation. A failed delete remains fenced so a caller
+        # can retry without allowing background work to recreate data.
+        session_deletion_fences.add(session_id)
+        await _cancel_final_summary_task(session_id)
+
+        db = await firestore_storage._get_db()
+        user = current_auth()
+        try:
+            result = await delete_session_everywhere(
+                session_id,
+                db,
+                gcs_storage,
+                owner_id=user.uid if user else None,
+                org_id=user.org_id if user else None,
+            )
+            deleted_sessions.add(session_id)
+            transcript_persistence_failures.discard(session_id)
+            _revoke_stop_capabilities(session_id)
+            _release_terminal_transcript_memory(session_id)
+            return result
+        except PermissionError:
+            raise HTTPException(status_code=404, detail="Session not found") from None
 
 
 @app.post("/api/sessions/{session_id}/speakers")
@@ -1399,7 +1613,10 @@ async def analyze_candidate(
                     system_instruction=PRE_INTERVIEW_ANALYSIS_PROMPT,
                     user_message=user_message,
                     temperature=0.3,
-                    max_output_tokens=2048,
+                    max_output_tokens=min(
+                        2048,
+                        getattr(settings, "llm_max_output_tokens", 2048),
+                    ),
                 ),
                 timeout=30,
             )
@@ -1429,6 +1646,8 @@ async def list_sessions():
 async def _read_session(session_id: str):
     """Read through process memory to Firestore without changing either store."""
     assert session_mgr and firestore_storage
+    if session_id in deleted_sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
     session = session_mgr.get_session(session_id)
     if session is not None:
         _assert_session_access(session)

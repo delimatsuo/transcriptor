@@ -62,6 +62,8 @@ def deserialize_session(session_id: str, record: dict[str, Any]) -> Session:
             speaker_map=record.get("speakerMap", {}),
             summary=record.get("summary"),
             action_items=record.get("actionItems", []),
+            transcript_durability=record.get("transcriptDurability", "complete"),
+            transcript_failure_count=record.get("transcriptFailureCount", 0),
             owner_id=record.get("ownerId"),
             org_id=record.get("orgId"),
         )
@@ -150,7 +152,10 @@ def build_session_review(
     if session.status == SessionStatus.ACTIVE:
         review_status = ReviewStatus.ACTIVE
         regeneration_status = RegenerationStatus.BLOCKED_SESSION_STATE
-    elif session.status == SessionStatus.INCOMPLETE:
+    elif (
+        session.status == SessionStatus.INCOMPLETE
+        or session.transcript_durability != "complete"
+    ):
         review_status = ReviewStatus.INCOMPLETE
         regeneration_status = RegenerationStatus.BLOCKED_SESSION_STATE
     elif not transcript:
@@ -174,9 +179,15 @@ def build_session_review(
 
 def build_recent_interview(session: Session) -> RecentInterview:
     """Build list metadata without claiming transcript availability before reading it."""
-    if session.status == SessionStatus.COMPLETED:
+    if (
+        session.status == SessionStatus.COMPLETED
+        and session.transcript_durability == "complete"
+    ):
         review_status = ReviewStatus.AVAILABLE
-    elif session.status == SessionStatus.INCOMPLETE:
+    elif (
+        session.status == SessionStatus.INCOMPLETE
+        or session.transcript_durability != "complete"
+    ):
         review_status = ReviewStatus.INCOMPLETE
     else:
         review_status = ReviewStatus.ACTIVE

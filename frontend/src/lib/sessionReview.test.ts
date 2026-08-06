@@ -35,6 +35,13 @@ test("only completed, structurally valid interviews can be opened", () => {
     }),
     false,
   );
+  assert.equal(
+    canOpenRecentInterview({
+      ...completed,
+      review_status: "incomplete",
+    }),
+    false,
+  );
 });
 
 test("missing durable report inputs are loud and never presented as ready", () => {

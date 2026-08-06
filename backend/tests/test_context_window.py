@@ -1,6 +1,7 @@
 """Rolling-summary context remains bounded before provider invocation."""
 
 import asyncio
+from unittest.mock import AsyncMock
 
 from backend import main
 from backend.config import Settings
@@ -137,6 +138,41 @@ def test_session_manager_word_count_uses_final_prefix_totals():
     assert manager.get_transcript_word_count_since_index(session.id, from_index=99) == 0
 
 
+def test_session_manager_rolling_batches_are_contiguous_and_bounded():
+    manager = SessionManager(Settings(google_cloud_project="test-project"))
+    session = manager.create_session()
+    for index in range(4):
+        manager.add_transcript_segment(
+            session.id,
+            TranscriptSegment(
+                text=f"segment-{index}",
+                sequence_number=index + 1,
+                is_final=True,
+            ),
+        )
+
+    first_text, first_end = manager.get_transcript_batch_since_index(
+        session.id,
+        max_segments=2,
+        max_chars=200,
+    )
+    second_text, second_end = manager.get_transcript_batch_since_index(
+        session.id,
+        from_index=first_end,
+        max_segments=2,
+        max_chars=200,
+    )
+
+    assert first_end == 2
+    assert second_end == 4
+    assert "segment-0" in first_text
+    assert "segment-1" in first_text
+    assert "segment-2" in second_text
+    assert "segment-3" in second_text
+    assert "segment-2" not in first_text
+    assert "segment-0" not in second_text
+
+
 def test_terminal_transcript_memory_can_be_released_without_losing_session_metadata():
     manager = SessionManager(Settings(google_cloud_project="test-project"))
     session = manager.create_session()
@@ -218,3 +254,76 @@ def test_main_rolling_context_isolated_per_session():
     finally:
         main.context_windows.clear()
         main.context_window = previous
+
+
+def test_rolling_summary_catches_up_contiguous_backlog(monkeypatch):
+    settings = Settings(
+        google_cloud_project="test-project",
+        llm_rolling_context_max_chars=80,
+    )
+    manager = SessionManager(settings)
+    session = manager.create_session()
+    for index in range(40):
+        manager.add_transcript_segment(
+            session.id,
+            TranscriptSegment(
+                text=f"segment-{index} words here",
+                sequence_number=index + 1,
+                is_final=True,
+            ),
+        )
+
+    class FakeGemini:
+        def __init__(self):
+            self.messages: list[str] = []
+
+        async def generate(self, **kwargs):
+            self.messages.append(kwargs["user_message"])
+            return "rolling summary"
+
+    gemini = FakeGemini()
+    context = ContextWindowManager(settings, gemini)
+    previous = (
+        main.session_mgr,
+        main.gemini_client,
+        main.firestore_storage,
+        main.context_windows,
+        main.rolling_summary_tasks,
+        main.rolling_summary_followups,
+    )
+    main.session_mgr = manager
+    main.gemini_client = gemini
+    main.firestore_storage = type(
+        "Storage",
+        (),
+        {"save_summary": AsyncMock()},
+    )()
+    main.context_windows = {session.id: context}
+    main.rolling_summary_tasks = {}
+    main.rolling_summary_followups = set()
+    monkeypatch.setattr(main.ws_manager, "broadcast", AsyncMock())
+
+    async def run():
+        main._schedule_rolling_summary(session.id)
+        for _ in range(2000):
+            await asyncio.sleep(0)
+            if (
+                session.id not in main.rolling_summary_tasks
+                and session.id not in main.rolling_summary_followups
+            ):
+                break
+
+    try:
+        asyncio.run(run())
+        assert context.last_summary_seq == len(manager.get_transcript(session.id))
+        assert len(gemini.messages) > 1
+        assert all(len(message) <= settings.llm_max_input_chars for message in gemini.messages)
+    finally:
+        (
+            main.session_mgr,
+            main.gemini_client,
+            main.firestore_storage,
+            main.context_windows,
+            main.rolling_summary_tasks,
+            main.rolling_summary_followups,
+        ) = previous
