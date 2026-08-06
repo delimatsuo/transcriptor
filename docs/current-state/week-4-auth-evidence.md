@@ -14,6 +14,7 @@ not hosted, deployment, provider, physical-device, or real-interview evidence.
 | Latest lifecycle hardening commit | `66591bf` (deletion clears in-process interview context, detached warning work, capabilities, and WebSocket replay state) |
 | Latest generation-fence commit | `15f561d` (late callbacks and provider generations cannot publish or persist after deletion fencing) |
 | CI trigger hardening commit | `f4e19d2` (checked-in workflow also declares Week 4 branch pushes) |
+| WebSocket delivery hardening commit | `254a22e` (bounded concurrent sends evict slow peers without stalling STT callbacks) |
 | PR head at last evidence capture | Verify against the live PR head before any hosted or device work; source qualification is bound to the commit above. |
 | Pull request | [#8](https://github.com/delimatsuo/transcriptor/pull/8), draft, stacked on `codex/week-3-evidence-report` |
 | Remote head at last evidence capture | Matched the PR head above |
@@ -118,6 +119,9 @@ not hosted, deployment, provider, physical-device, or real-interview evidence.
   and configured output ceilings are honored by every feature callsite.
 - Unchanged transcript/suggestion/summary rendering is memoized and report
   polling backs off to a five-second maximum interval.
+- WebSocket replay and broadcast sends have a bounded deadline; broadcasts send
+  to peers concurrently and evict slow or dead sockets so capture callbacks do
+  not wait on browser delivery.
 
 These are deterministic source-level guardrails. They do not prove hosted Vertex
 quota enforcement or live-provider cost savings.
