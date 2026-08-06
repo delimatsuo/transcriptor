@@ -11,7 +11,7 @@ not hosted, deployment, provider, physical-device, or real-interview evidence.
 | --- | --- |
 | Branch | `codex/week-4-auth` |
 | Source/test qualification commit | `05d024e539c408c1b08a737865b412f8ee7909f2` |
-| PR head at last evidence capture | `05d024e539c408c1b08a737865b412f8ee7909f2` |
+| PR head at last evidence capture | `6705947be0e96ca00e8879e0e55974c2135a227c` |
 | Pull request | [#8](https://github.com/delimatsuo/transcriptor/pull/8), draft, stacked on `codex/week-3-evidence-report` |
 | Remote head at last evidence capture | Matched the PR head above |
 
@@ -20,7 +20,7 @@ not hosted, deployment, provider, physical-device, or real-interview evidence.
 - Startup performs `google.auth.default()` plus credential refresh before
   readiness, with a 10-second deadline and the exact loud remediation message;
   mocked refresh failure, stuck-refresh, and lifespan-order tests pass.
-- Backend: 186 tests passed locally, including 43 focused authorization-matrix
+- Backend: 187 tests passed locally, including 43 focused authorization-matrix
   tests. The matrix covers every `/api` route pattern, token admission, CORS
   rejection, cross-owner and child-scope failures, stop capabilities, WebSocket
   replay/expiry, raw review-record scope, and disabled extension behavior. The
@@ -31,9 +31,8 @@ not hosted, deployment, provider, physical-device, or real-interview evidence.
 - Dependency audit: `npm audit --audit-level=moderate` reports zero
   vulnerabilities.
 - GitHub Actions: exact-head run
-  [31119738592](https://github.com/delimatsuo/transcriptor/actions/runs/31119738592)
-  is queued while GitHub assigns runners. Earlier green runs are on prior
-  source trees and are not used as exact-head qualification.
+  [31119758788](https://github.com/delimatsuo/transcriptor/actions/runs/31119758788)
+  passed both backend and frontend jobs on the docs-bound tree above.
 
 ## Efficiency and cost controls
 
