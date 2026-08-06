@@ -360,33 +360,54 @@ def test_delete_fences_late_callbacks_and_cancels_final_report(monkeypatch):
     old_locks = main.session_stop_locks
     old_tasks = main.final_summary_tasks
     old_scheduled = main.final_summary_scheduled
+    old_single_source_tasks = main.single_source_check_tasks
     old_fences = main.session_deletion_fences
     old_deleted = main.deleted_sessions
+    old_documents = main.interview_documents.get(session.id)
+    old_context_window = main.context_windows.get(session.id)
+    cleanup_calls = []
+    monkeypatch.setattr(
+        main.ws_manager,
+        "cleanup_session",
+        lambda session_id: cleanup_calls.append(session_id),
+    )
     main.session_mgr = FakeSessionManager()
     main.firestore_storage = FakeFirestore()
     main.session_stop_locks = {}
     main.final_summary_tasks = {}
     main.final_summary_scheduled = set()
+    main.single_source_check_tasks = {}
     main.session_deletion_fences = set()
     main.deleted_sessions = set()
+    main.interview_documents[session.id] = {"resume": "sensitive"}
+    main.context_windows[session.id] = object()
+    main.single_source_warned.add(session.id)
 
     async def pending_report():
         await asyncio.Event().wait()
 
     async def run():
         task = asyncio.create_task(pending_report())
+        warning_task = asyncio.create_task(pending_report())
         main.final_summary_tasks[session.id] = task
         main.final_summary_scheduled.add(session.id)
+        main.single_source_check_tasks[session.id] = warning_task
         result = await main.delete_session(session.id)
-        return result, task
+        return result, task, warning_task
 
     try:
-        result, task = asyncio.run(run())
+        result, task, warning_task = asyncio.run(run())
         assert result["session_id"] == session.id
         assert task.cancelled()
+        assert warning_task.cancelled()
         assert deletion.await_count == 1
         assert session.id in main.session_deletion_fences
         assert session.id in main.deleted_sessions
+        assert session.id not in main.interview_documents
+        assert session.id not in main.context_windows
+        assert session.id not in main.single_source_check_tasks
+        assert session.id not in main.single_source_warned
+        assert cleanup_calls == [session.id]
         with pytest.raises(HTTPException) as exc_info:
             asyncio.run(main._read_session(session.id))
         assert exc_info.value.status_code == 404
@@ -396,8 +417,18 @@ def test_delete_fences_late_callbacks_and_cancels_final_report(monkeypatch):
         main.session_stop_locks = old_locks
         main.final_summary_tasks = old_tasks
         main.final_summary_scheduled = old_scheduled
+        main.single_source_check_tasks = old_single_source_tasks
         main.session_deletion_fences = old_fences
         main.deleted_sessions = old_deleted
+        if old_documents is None:
+            main.interview_documents.pop(session.id, None)
+        else:
+            main.interview_documents[session.id] = old_documents
+        if old_context_window is None:
+            main.context_windows.pop(session.id, None)
+        else:
+            main.context_windows[session.id] = old_context_window
+        main.single_source_warned.discard(session.id)
 
 
 class FakeWebSocket:

@@ -133,6 +133,7 @@ deleted_sessions: set[str] = set()
 # serializes provider calls but does not prevent stale tasks from queueing.
 rolling_summary_tasks: dict[str, asyncio.Task] = {}
 rolling_summary_followups: set[str] = set()
+single_source_check_tasks: dict[str, asyncio.Task] = {}
 
 # Interview context
 interview_documents: dict[str, dict[str, str]] = {}  # session_id -> {resume, jd}
@@ -622,7 +623,7 @@ async def _on_transcript(session_id: str, segment: TranscriptSegment) -> None:
             interview_final_segment_counts[session_id] == 3
             and session_id not in single_source_warned
         ):
-            asyncio.create_task(_check_single_audio_source(session_id))
+            _schedule_single_source_check(session_id)
 
         is_candidate = _is_candidate_final_segment(segment)
         if is_candidate:
@@ -747,6 +748,8 @@ def _schedule_rolling_summary(session_id: str) -> None:
 
 async def _check_single_audio_source(session_id: str) -> None:
     """Check if all final segments have the same speaker — warn about single audio source."""
+    if session_id in session_deletion_fences:
+        return
     assert session_mgr
 
     segments = session_mgr.get_transcript(session_id)
@@ -756,6 +759,8 @@ async def _check_single_audio_source(session_id: str) -> None:
 
     speakers = {s.speaker for s in final_segments}
     if len(speakers) <= 1:
+        if session_id in session_deletion_fences:
+            return
         single_source_warned.add(session_id)
         logger.warning("single_audio_source_detected", session_id=session_id, speaker=speakers)
         seq = ws_manager.next_sequence(session_id)
@@ -766,6 +771,24 @@ async def _check_single_audio_source(session_id: str) -> None:
         )
         msg = WSMessage.error_msg(session_id, seq, error)
         await ws_manager.broadcast(session_id, msg)
+
+
+def _schedule_single_source_check(session_id: str) -> None:
+    """Track the warning task so terminal cleanup can cancel it."""
+    existing = single_source_check_tasks.get(session_id)
+    if existing is not None:
+        if not existing.done():
+            return
+        single_source_check_tasks.pop(session_id, None)
+
+    task = asyncio.create_task(_check_single_audio_source(session_id))
+    single_source_check_tasks[session_id] = task
+
+    def clear_task(completed: asyncio.Task) -> None:
+        if single_source_check_tasks.get(session_id) is completed:
+            single_source_check_tasks.pop(session_id, None)
+
+    task.add_done_callback(clear_task)
 
 
 async def _generate_interview_suggestions(session_id: str) -> None:
@@ -1140,6 +1163,7 @@ def _cleanup_session_context(
     interview_documents.pop(session_id, None)
     interview_final_segment_counts.pop(session_id, None)
     interview_suggestion_counters.pop(session_id, None)
+    single_source_warned.discard(session_id)
     context_windows.pop(session_id, None)
     rolling_task = rolling_summary_tasks.pop(session_id, None)
     if rolling_task is not None and not rolling_task.done():
@@ -1148,6 +1172,9 @@ def _cleanup_session_context(
     suggestion_task = interview_suggestion_tasks.pop(session_id, None)
     if suggestion_task is not None and not suggestion_task.done():
         suggestion_task.cancel()
+    single_source_task = single_source_check_tasks.pop(session_id, None)
+    if single_source_task is not None and not single_source_task.done():
+        single_source_task.cancel()
     speaker_correlators.pop(session_id, None)
     extension_tokens.pop(session_id, None)
     extension_capability_expiry.pop(session_id, None)
@@ -1235,6 +1262,9 @@ async def _stop_pipeline(session_id: str) -> bool:
     if suggestion_task is not None and not suggestion_task.done():
         suggestion_task.cancel()
     single_source_warned.discard(session_id)
+    single_source_task = single_source_check_tasks.pop(session_id, None)
+    if single_source_task is not None and not single_source_task.done():
+        single_source_task.cancel()
     if not managers:
         logger.error(
             "audio_pipeline_missing_stream_manager",
@@ -1457,8 +1487,8 @@ async def delete_session(session_id: str):
             )
             deleted_sessions.add(session_id)
             transcript_persistence_failures.discard(session_id)
-            _revoke_stop_capabilities(session_id)
-            _release_terminal_transcript_memory(session_id)
+            _cleanup_session_context(session_id)
+            ws_manager.cleanup_session(session_id)
             return result
         except PermissionError:
             raise HTTPException(status_code=404, detail="Session not found") from None
