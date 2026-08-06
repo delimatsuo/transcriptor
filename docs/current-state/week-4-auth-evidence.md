@@ -31,9 +31,10 @@ not hosted, deployment, provider, physical-device, or real-interview evidence.
 - Dependency audit: `npm audit --audit-level=moderate` reports zero
   vulnerabilities.
 - GitHub Actions: current-head checks are pending after repeated runner-service
-  stalls. Local exact-source qualification is complete, and prior unchanged-
-  source run [31119758788](https://github.com/delimatsuo/transcriptor/actions/runs/31119758788)
-  passed both jobs; no pending or canceled run is presented as green evidence.
+  stalls. Local exact-source qualification is complete. Historical run
+  [31119758788](https://github.com/delimatsuo/transcriptor/actions/runs/31119758788)
+  passed both jobs on an earlier tree; it is not used as green evidence for
+  the current source.
 
 ## Efficiency and cost controls
 
