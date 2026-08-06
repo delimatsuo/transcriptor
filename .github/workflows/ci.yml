@@ -5,7 +5,7 @@ on:
   pull_request:
     branches: [staging, codex/week-3-evidence-report]
   push:
-    branches: [staging]
+    branches: [staging, codex/week-4-auth]
 
 permissions:
   contents: read
