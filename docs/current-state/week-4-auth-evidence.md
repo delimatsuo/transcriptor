@@ -56,7 +56,8 @@ quota enforcement or live-provider cost savings.
 ## Remaining release gates
 
 - Deploy and verify the declared Firestore owner/org/startedAt composite index in
-  the authorized hosted project.
+  the authorized hosted project using the non-authorizing
+  [hosted-gate checklist](../launch/week-4-hosted-gate-checklist.md).
 - Complete the same-SHA macOS audio soak and physical Windows routing/owner gate.
 - Resolve the distinction between the historical containment inventory and the
   owner-authorized purge report with a fresh authorized cloud readback before

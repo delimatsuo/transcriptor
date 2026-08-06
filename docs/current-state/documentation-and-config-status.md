@@ -50,6 +50,7 @@ physical capture, or real interview data.
 | `docs/current-state/phase-1a-guard-evidence.md` | Historical implementation evidence | Guard-first implementation, negative tests, artifact scan, and completed review gate | Superseded for current status by full conformance evidence |
 | `docs/current-state/phase-1a-conformance-evidence.md` | Current-state evidence | Incremental protocol-model, simulator, cross-language, and final 1A verification | Update after every completed conformance slice |
 | `docs/current-state/week-4-auth-evidence.md` | Current-state evidence | Exact Week 4 authenticated-tenancy source/test qualification and remaining release gates | Refresh after every Week 4 head or gate change |
+| `docs/launch/week-4-hosted-gate-checklist.md` | Non-authorizing gate runbook | Owner-bound hosted index/readback procedure; never a deployment or migration approval | Keep separate from source/test and live evidence; require fresh authorization |
 | `docs/current-state/2026-08-03-legacy-data-purge-evidence.md` | Historical current-state evidence | Owner-authorized purge report; not a current cloud readback | Preserve; refresh only with a newly authorized inventory |
 | `docs/current-state/repository-preservation-inventory.md` | Current-state record | Dirty/untracked/ignored file boundary | Refresh before any branch/worktree operation |
 | `DEPLOY-SETUP.md` | Historical | March 2026 prototype deployment setup log | Retain with superseded/incomplete warning |
