@@ -40,6 +40,8 @@ class ContextWindowManager:
         self.settings = settings
         self.gemini = gemini
         self._current_summary: str = ""
+        # This is a session transcript-list index, not an STT sequence number.
+        # Each source stream owns its sequence space and may reset on rotation.
         self._last_summary_seq: int = 0
         self._last_summary_time: float = 0.0
         self._lock = asyncio.Lock()

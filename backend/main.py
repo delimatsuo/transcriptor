@@ -491,9 +491,18 @@ async def _on_transcript(session_id: str, segment: TranscriptSegment) -> None:
 
     # Check if we should generate a rolling summary
     if segment.is_final:
-        word_count = session_mgr.get_transcript_word_count(
-            session_id, from_seq=context_window.last_summary_seq
+        count_since_index = getattr(
+            session_mgr, "get_transcript_word_count_since_index", None
         )
+        if count_since_index is not None:
+            word_count = count_since_index(
+                session_id, from_index=context_window.last_summary_seq
+            )
+        else:
+            # Keep direct-call test doubles compatible with the pre-index API.
+            word_count = session_mgr.get_transcript_word_count(
+                session_id, from_seq=context_window.last_summary_seq
+            )
         if context_window.should_summarize(word_count):
             _schedule_rolling_summary(session_id)
 
@@ -539,8 +548,14 @@ async def _generate_rolling_summary(session_id: str) -> None:
     assert session_mgr and context_window and gemini_client
 
     try:
-        transcript_text = session_mgr.get_recent_transcript_text(session_id)
         current_seq = len(session_mgr.get_transcript(session_id))
+        transcript_text = session_mgr.get_transcript_text_since_index(
+            session_id,
+            from_index=context_window.last_summary_seq,
+            max_segments=50,
+        )
+        if not transcript_text:
+            return
 
         summary = await context_window.update_summary(transcript_text, current_seq)
 

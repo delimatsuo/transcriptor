@@ -74,11 +74,34 @@ class SessionManager:
         """Get recent transcript as plain text for LLM context."""
         segments = self._transcripts.get(session_id, [])
         recent = segments[-max_segments:]
+        return self._format_transcript_text(recent)
+
+    @staticmethod
+    def _format_transcript_text(segments: list[TranscriptSegment]) -> str:
+        """Format transcript segments without exposing storage objects."""
         lines = []
-        for seg in recent:
+        for seg in segments:
             speaker = seg.speaker_override or seg.speaker
             lines.append(f"[{speaker}]: {seg.text}")
         return "\n".join(lines)
+
+    def get_transcript_text_since_index(
+        self,
+        session_id: str,
+        from_index: int = 0,
+        max_segments: int = 50,
+    ) -> str:
+        """Get only transcript segments appended after a prior list index.
+
+        Stream sequence numbers are source-local and may reset for a second
+        audio channel, so rolling context uses the session list index instead.
+        """
+        segments = self._transcripts.get(session_id, [])
+        start = max(0, from_index)
+        appended = segments[start:]
+        if max_segments > 0:
+            appended = appended[-max_segments:]
+        return self._format_transcript_text(appended)
 
     def get_transcript_word_count(self, session_id: str, from_seq: int = 0) -> int:
         """Count words in transcript segments after a given sequence number."""
@@ -88,6 +111,17 @@ class SessionManager:
             if seg.sequence_number > from_seq and seg.is_final:
                 count += len(seg.text.split())
         return count
+
+    def get_transcript_word_count_since_index(
+        self, session_id: str, from_index: int = 0
+    ) -> int:
+        """Count final words appended after a session transcript list index."""
+        segments = self._transcripts.get(session_id, [])
+        return sum(
+            len(segment.text.split())
+            for segment in segments[max(0, from_index) :]
+            if segment.is_final
+        )
 
     async def start_heartbeat(self, session_id: str) -> None:
         """Start a heartbeat task that updates last_active every 30s."""
