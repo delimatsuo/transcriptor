@@ -14,7 +14,7 @@ T.A.R.S. is an executive-search interview companion. The target product uses a n
 
 **Deployment:** not authorized. On 2026-07-15 the remote deploy workflow, GitHub Workload Identity provider, and deploy service account were disabled; the Cloud Run public invoker binding was removed. The checked-in workflow is now manual build-only with no deployment job.
 
-**Data:** do not use real candidate or customer data. The legacy project contains 16 session records and four private PDFs that were preserved during containment. Their retention/deletion basis is unresolved. The Week 4 branch defaults raw-audio backup off and stamps owner/org on new records, but legacy migration and hosted retention remain unresolved.
+**Data:** do not use real candidate or customer data. The historical containment inventory listed 16 sessions and four private PDFs; the later owner-authorized purge record reports 19 sessions and four blobs deleted. Current cloud state still requires a fresh authorized readback. The Week 4 branch defaults raw-audio backup off and stamps owner/org on new records, but hosted retention remains unresolved.
 
 **Development environment:** `transcriptor-dev-20260715` is billed, labeled synthetic-only, and configured with an empty private Firestore database, private GCS bucket, empty secret container, disabled runtime identity, disabled STT data logging, and disabled Vertex cache. It has no hosted endpoint and is deliberately inactive.
 

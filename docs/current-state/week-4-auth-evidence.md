@@ -50,8 +50,10 @@ quota enforcement or live-provider cost savings.
 - Complete the same-SHA macOS audio soak and physical Windows routing/owner gate.
 - Resolve or explicitly accept dependency/runtime hardening findings before
   ready/merge.
-- Inventory and quarantine or owner-approved-backfill legacy records missing
-  ownership; do not auto-claim them.
+- Resolve the distinction between the historical containment inventory and the
+  owner-authorized purge report with a fresh authorized cloud readback before
+  any migration; quarantine or owner-approved-backfill any records missing
+  ownership and never auto-claim them.
 - Keep Firebase/Firestore/provider access, deployment, first-user interviews,
   and real candidate data outside this source/test evidence record.
 
