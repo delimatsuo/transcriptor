@@ -114,6 +114,9 @@ stream_managers: dict[str, list[StreamManager]] = {}
 pipeline_tasks: dict[str, list[asyncio.Task]] = {}
 session_stop_locks: dict[str, asyncio.Lock] = {}
 final_summary_scheduled: set[str] = set()
+# At most one rolling-summary generation per session.  The context-window lock
+# serializes provider calls but does not prevent stale tasks from queueing.
+rolling_summary_tasks: dict[str, asyncio.Task] = {}
 
 # Interview context
 interview_documents: dict[str, dict[str, str]] = {}  # session_id -> {resume, jd}
@@ -491,7 +494,7 @@ async def _on_transcript(session_id: str, segment: TranscriptSegment) -> None:
             session_id, from_seq=context_window.last_summary_seq
         )
         if context_window.should_summarize(word_count):
-            asyncio.create_task(_generate_rolling_summary(session_id))
+            _schedule_rolling_summary(session_id)
 
     # Interview mode: generate suggestions every 5th final segment
     session = session_mgr.get_session(session_id)
@@ -546,6 +549,24 @@ async def _generate_rolling_summary(session_id: str) -> None:
 
     except Exception:
         logger.exception("rolling_summary_error", session_id=session_id)
+
+
+def _schedule_rolling_summary(session_id: str) -> None:
+    """Start one rolling summary and drop duplicate in-flight work."""
+    existing = rolling_summary_tasks.get(session_id)
+    if existing is not None:
+        if not existing.done():
+            return
+        rolling_summary_tasks.pop(session_id, None)
+
+    task = asyncio.create_task(_generate_rolling_summary(session_id))
+    rolling_summary_tasks[session_id] = task
+
+    def clear_task(completed: asyncio.Task) -> None:
+        if rolling_summary_tasks.get(session_id) is completed:
+            rolling_summary_tasks.pop(session_id, None)
+
+    task.add_done_callback(clear_task)
 
 
 async def _check_single_audio_source(session_id: str) -> None:
@@ -856,6 +877,9 @@ async def _generate_final_summary(session_id: str) -> None:
 def _cleanup_session_context(session_id: str) -> None:
     """Remove sensitive per-interview context after terminal handling."""
     interview_documents.pop(session_id, None)
+    rolling_task = rolling_summary_tasks.pop(session_id, None)
+    if rolling_task is not None and not rolling_task.done():
+        rolling_task.cancel()
     suggestion_task = interview_suggestion_tasks.pop(session_id, None)
     if suggestion_task is not None and not suggestion_task.done():
         suggestion_task.cancel()
@@ -898,6 +922,9 @@ async def _stop_pipeline(session_id: str) -> bool:
 
     # Clean up interview runtime state (documents cleaned after final summary)
     interview_suggestion_counters.pop(session_id, None)
+    rolling_task = rolling_summary_tasks.pop(session_id, None)
+    if rolling_task is not None and not rolling_task.done():
+        rolling_task.cancel()
     suggestion_task = interview_suggestion_tasks.pop(session_id, None)
     if suggestion_task is not None and not suggestion_task.done():
         suggestion_task.cancel()
