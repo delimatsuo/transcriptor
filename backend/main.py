@@ -118,6 +118,10 @@ final_summary_scheduled: set[str] = set()
 # Interview context
 interview_documents: dict[str, dict[str, str]] = {}  # session_id -> {resume, jd}
 interview_suggestion_counters: dict[str, int] = {}  # session_id -> final segment count
+# At most one in-flight suggestion per session.  Suggestions are ephemeral UI
+# hints; queueing stale generations only adds provider cost and can surface an
+# answer for an older transcript after the interview has moved on.
+interview_suggestion_tasks: dict[str, asyncio.Task] = {}
 single_source_warned: set[str] = set()  # sessions already warned about single audio source
 
 # Speaker correlation (Chrome extension)
@@ -507,7 +511,7 @@ async def _on_transcript(session_id: str, segment: TranscriptSegment) -> None:
             asyncio.create_task(_check_single_audio_source(session_id))
 
         if interview_suggestion_counters[session_id] % 5 == 0:
-            asyncio.create_task(_generate_interview_suggestions(session_id))
+            _schedule_interview_suggestions(session_id)
 
 
 async def _generate_rolling_summary(session_id: str) -> None:
@@ -614,6 +618,24 @@ async def _generate_interview_suggestions(session_id: str) -> None:
 
     except Exception:
         logger.exception("interview_suggestion_error", session_id=session_id)
+
+
+def _schedule_interview_suggestions(session_id: str) -> None:
+    """Start one suggestion generation, dropping stale duplicate work."""
+    existing = interview_suggestion_tasks.get(session_id)
+    if existing is not None:
+        if not existing.done():
+            return
+        interview_suggestion_tasks.pop(session_id, None)
+
+    task = asyncio.create_task(_generate_interview_suggestions(session_id))
+    interview_suggestion_tasks[session_id] = task
+
+    def clear_task(completed: asyncio.Task) -> None:
+        if interview_suggestion_tasks.get(session_id) is completed:
+            interview_suggestion_tasks.pop(session_id, None)
+
+    task.add_done_callback(clear_task)
 
 
 async def _generate_final_summary(session_id: str) -> None:
@@ -834,6 +856,9 @@ async def _generate_final_summary(session_id: str) -> None:
 def _cleanup_session_context(session_id: str) -> None:
     """Remove sensitive per-interview context after terminal handling."""
     interview_documents.pop(session_id, None)
+    suggestion_task = interview_suggestion_tasks.pop(session_id, None)
+    if suggestion_task is not None and not suggestion_task.done():
+        suggestion_task.cancel()
     speaker_correlators.pop(session_id, None)
     extension_tokens.pop(session_id, None)
     extension_capability_expiry.pop(session_id, None)
@@ -873,6 +898,9 @@ async def _stop_pipeline(session_id: str) -> bool:
 
     # Clean up interview runtime state (documents cleaned after final summary)
     interview_suggestion_counters.pop(session_id, None)
+    suggestion_task = interview_suggestion_tasks.pop(session_id, None)
+    if suggestion_task is not None and not suggestion_task.done():
+        suggestion_task.cancel()
     single_source_warned.discard(session_id)
     if not managers:
         logger.error(
