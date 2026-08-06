@@ -720,6 +720,7 @@ async def _generate_final_summary(session_id: str) -> None:
         _cleanup_session_context(session_id)
         return
     is_interview = session and session.mode == SessionMode.INTERVIEW
+    summary_covering_from = 0
 
     try:
         if is_interview:
@@ -903,6 +904,7 @@ async def _generate_final_summary(session_id: str) -> None:
             )
             if not transcript_text:
                 return
+            transcript = session_mgr.get_transcript(session_id)
             prompt = FINAL_SUMMARY_PROMPT
             rolling = _context_window_for(session_id)
             if rolling and rolling.current_summary:
@@ -912,13 +914,22 @@ async def _generate_final_summary(session_id: str) -> None:
                 )
             else:
                 user_message = f"## Recent Transcript\n{transcript_text}"
+            tail_start = max(0, len(transcript) - 50)
+            # Only claim full coverage when the rolling watermark reaches the
+            # beginning of the bounded tail.  A stale/empty rolling summary
+            # must not make a partial final prompt look like full evidence.
+            if not (
+                rolling
+                and rolling.current_summary
+                and getattr(rolling, "last_summary_seq", 0) >= tail_start
+            ):
+                summary_covering_from = tail_start
             summary = await gemini_client.generate(
                 system_instruction=prompt,
                 user_message=user_message,
                 temperature=0.2,
                 max_output_tokens=4096,
             )
-            transcript = session_mgr.get_transcript(session_id)
 
         session_mgr.set_summary(session_id, summary)
 
@@ -927,7 +938,7 @@ async def _generate_final_summary(session_id: str) -> None:
         update = SummaryUpdate(
             text=summary,
             is_final=True,
-            covering_from=0,
+            covering_from=summary_covering_from,
             covering_to=len(transcript),
         )
         msg = WSMessage.summary_update(session_id, seq, update)
@@ -939,7 +950,8 @@ async def _generate_final_summary(session_id: str) -> None:
             await firestore_storage.save_session(session)
             await firestore_storage.save_summary(
                 session_id, summary,
-                covering_from=0, covering_to=len(transcript),
+                covering_from=summary_covering_from,
+                covering_to=len(transcript),
                 is_final=True,
                 owner_id=session.owner_id,
                 org_id=session.org_id,

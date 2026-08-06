@@ -779,6 +779,15 @@ def test_compatibility_meeting_summary_uses_rolling_context_and_bounded_tail(mon
                     sequence_number=2,
                     is_final=True,
                 ),
+            ] + [
+                TranscriptSegment(
+                    id=f"segment-{index}",
+                    text=f"segment {index}",
+                    speaker="Candidato",
+                    sequence_number=index,
+                    is_final=True,
+                )
+                for index in range(3, 61)
             ]
             self.recent_args = None
 
@@ -806,7 +815,11 @@ def test_compatibility_meeting_summary_uses_rolling_context_and_bounded_tail(mon
         (),
         {"generate": AsyncMock(return_value="final summary")},
     )()
-    rolling = type("Rolling", (), {"current_summary": "earlier coverage"})()
+    rolling = type(
+        "Rolling",
+        (),
+        {"current_summary": "earlier coverage", "last_summary_seq": 1},
+    )()
     monkeypatch.setattr(backend_main, "session_mgr", manager)
     monkeypatch.setattr(backend_main, "firestore_storage", storage)
     monkeypatch.setattr(backend_main, "gemini_client", gemini)
@@ -825,6 +838,8 @@ def test_compatibility_meeting_summary_uses_rolling_context_and_bounded_tail(mon
     user_message = gemini.generate.await_args.kwargs["user_message"]
     assert "## Rolling Summary\nearlier coverage" in user_message
     assert "## Recent Transcript\n[Candidato]: final exchange" in user_message
+    assert storage.save_summary.await_args.kwargs["covering_from"] == 10
+    assert storage.save_summary.await_args.kwargs["covering_to"] == 60
 
 
 def test_final_generation_uses_durable_sources_json_mode_and_persists_failure(monkeypatch):
