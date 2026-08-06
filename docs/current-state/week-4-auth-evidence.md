@@ -10,14 +10,14 @@ not hosted, deployment, provider, physical-device, or real-interview evidence.
 | Item | Value |
 | --- | --- |
 | Branch | `codex/week-4-auth` |
-| Source/test qualification commit | `79638f7874b866639194c02d2ec2fc54fba5d157` |
-| PR head at last evidence capture | `79638f7874b866639194c02d2ec2fc54fba5d157` |
+| Source/test qualification commit | `e3d72ff78eaf9b81f9209356c6718d7728b335a7` |
+| PR head at last evidence capture | `e3d72ff78eaf9b81f9209356c6718d7728b335a7` |
 | Pull request | [#8](https://github.com/delimatsuo/transcriptor/pull/8), draft, stacked on `codex/week-3-evidence-report` |
 | Remote head at last evidence capture | Matched the PR head above |
 
 ## Source and test evidence
 
-- Backend: 170 tests passed locally, including 43 focused authorization-matrix
+- Backend: 171 tests passed locally, including 43 focused authorization-matrix
   tests. The matrix covers every `/api` route pattern, token admission, CORS
   rejection, cross-owner and child-scope failures, stop capabilities, WebSocket
   replay/expiry, raw review-record scope, and disabled extension behavior. The
@@ -40,6 +40,8 @@ not hosted, deployment, provider, physical-device, or real-interview evidence.
 - Queue and generation latency are logged without prompt or transcript content.
 - At most one in-flight suggestion generation is allowed per session; stale
   suggestion work is dropped on duplicate scheduling and canceled on cleanup.
+- Non-stream Gemini requests have a configurable 60-second client deadline;
+  timeout cleanup releases the shared request queue.
 - Unchanged transcript/suggestion/summary rendering is memoized and report
   polling backs off to a five-second maximum interval.
 
