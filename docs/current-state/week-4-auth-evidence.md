@@ -17,6 +17,9 @@ not hosted, deployment, provider, physical-device, or real-interview evidence.
 
 ## Source and test evidence
 
+- Startup performs `google.auth.default()` plus credential refresh before
+  readiness, with a 10-second deadline and the exact loud remediation message;
+  mocked refresh failure and stuck-refresh tests pass.
 - Backend: 173 tests passed locally, including 43 focused authorization-matrix
   tests. The matrix covers every `/api` route pattern, token admission, CORS
   rejection, cross-owner and child-scope failures, stop capabilities, WebSocket
