@@ -10,8 +10,8 @@ not hosted, deployment, provider, physical-device, or real-interview evidence.
 | Item | Value |
 | --- | --- |
 | Branch | `codex/week-4-auth` |
-| Source/test qualification commit | `f04cecdd195188d6409b2cba23b9134ee8764225` |
-| PR head at last evidence capture | `2624416ba112b8659ac25eae7b5d1d58de643bee` |
+| Source/test qualification commit | `00efb293001673abea810602a2fad08c227b9b7d` |
+| PR head at last evidence capture | `00efb293001673abea810602a2fad08c227b9b7d` |
 | Pull request | [#8](https://github.com/delimatsuo/transcriptor/pull/8), draft, stacked on `codex/week-3-evidence-report` |
 | Remote head at last evidence capture | Matched the PR head above |
 
@@ -20,7 +20,7 @@ not hosted, deployment, provider, physical-device, or real-interview evidence.
 - Startup performs `google.auth.default()` plus credential refresh before
   readiness, with a 10-second deadline and the exact loud remediation message;
   mocked refresh failure and stuck-refresh tests pass.
-- Backend: 173 tests passed locally, including 43 focused authorization-matrix
+- Backend: 174 tests passed locally, including 43 focused authorization-matrix
   tests. The matrix covers every `/api` route pattern, token admission, CORS
   rejection, cross-owner and child-scope failures, stop capabilities, WebSocket
   replay/expiry, raw review-record scope, and disabled extension behavior. The
@@ -43,6 +43,8 @@ not hosted, deployment, provider, physical-device, or real-interview evidence.
 - Queue and generation latency are logged without prompt or transcript content.
 - At most one in-flight suggestion generation is allowed per session; stale
   suggestion work is dropped on duplicate scheduling and canceled on cleanup.
+- Suggestion cadence counts only finalized candidate responses; interviewer
+  speech no longer triggers paid suggestion generations.
 - At most one in-flight rolling-summary generation is allowed per session;
   duplicate work is coalesced and canceled on cleanup.
 - Non-stream Gemini requests have a configurable 60-second client deadline;
