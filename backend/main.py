@@ -1206,6 +1206,10 @@ def _cleanup_session_context(
     # doubles may not expose this optional memory-release seam.
     if release_transcript_memory:
         _release_terminal_transcript_memory(session_id)
+        # The replay ring contains transcript and report payloads too. Keep it
+        # while an incomplete stop remains visibly retryable, but release it
+        # with all other terminal interview context once durability is known.
+        ws_manager.cleanup_session(session_id)
     final_summary_scheduled.discard(session_id)
 
 
@@ -1503,7 +1507,6 @@ async def delete_session(session_id: str):
             deleted_sessions.add(session_id)
             transcript_persistence_failures.discard(session_id)
             _cleanup_session_context(session_id)
-            ws_manager.cleanup_session(session_id)
             return result
         except PermissionError:
             raise HTTPException(status_code=404, detail="Session not found") from None
