@@ -10,8 +10,8 @@ not hosted, deployment, provider, physical-device, or real-interview evidence.
 | Item | Value |
 | --- | --- |
 | Branch | `codex/week-4-auth` |
-| Source/test qualification commit | `7314ab7c442fd7b4448a56a18e93159a59feee26` |
-| PR head at last evidence capture | `7314ab7c442fd7b4448a56a18e93159a59feee26` |
+| Source/test qualification commit | `05d024e539c408c1b08a737865b412f8ee7909f2` |
+| PR head at last evidence capture | `05d024e539c408c1b08a737865b412f8ee7909f2` |
 | Pull request | [#8](https://github.com/delimatsuo/transcriptor/pull/8), draft, stacked on `codex/week-3-evidence-report` |
 | Remote head at last evidence capture | Matched the PR head above |
 
@@ -31,7 +31,7 @@ not hosted, deployment, provider, physical-device, or real-interview evidence.
 - Dependency audit: `npm audit --audit-level=moderate` reports zero
   vulnerabilities.
 - GitHub Actions: exact-head run
-  [31119110115](https://github.com/delimatsuo/transcriptor/actions/runs/31119110115)
+  [31119738592](https://github.com/delimatsuo/transcriptor/actions/runs/31119738592)
   is queued while GitHub assigns runners. Earlier green runs are on prior
   source trees and are not used as exact-head qualification.
 
