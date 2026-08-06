@@ -176,6 +176,26 @@ def test_incomplete_cleanup_defers_release_until_terminal_write(monkeypatch):
         main.session_mgr = previous_manager
 
 
+def test_child_persistence_failure_prevents_terminal_memory_release(monkeypatch):
+    manager = SessionManager(Settings(google_cloud_project="test-project"))
+    session = manager.create_session()
+    manager.add_transcript_segment(
+        session.id,
+        TranscriptSegment(text="only in memory", sequence_number=1, is_final=True),
+    )
+    session.status = SessionStatus.INCOMPLETE
+    previous_manager = main.session_mgr
+    monkeypatch.setattr(main, "session_mgr", manager)
+    main.transcript_persistence_failures.add(session.id)
+
+    try:
+        main._release_terminal_transcript_memory(session.id)
+        assert len(manager.get_transcript(session.id)) == 1
+    finally:
+        main.transcript_persistence_failures.discard(session.id)
+        main.session_mgr = previous_manager
+
+
 def test_main_rolling_context_isolated_per_session():
     settings = Settings(google_cloud_project="test-project")
 

@@ -119,6 +119,10 @@ stream_managers: dict[str, list[StreamManager]] = {}
 pipeline_tasks: dict[str, list[asyncio.Task]] = {}
 session_stop_locks: dict[str, asyncio.Lock] = {}
 final_summary_scheduled: set[str] = set()
+# A final child write failure means process memory may be the only copy until
+# an owner-approved retry/recovery path runs. Never release that transcript on
+# the strength of a later parent-session write alone.
+transcript_persistence_failures: set[str] = set()
 # At most one rolling-summary generation per session.  The context-window lock
 # serializes provider calls but does not prevent stale tasks from queueing.
 rolling_summary_tasks: dict[str, asyncio.Task] = {}
@@ -498,6 +502,7 @@ async def _on_transcript(session_id: str, segment: TranscriptSegment) -> None:
         try:
             await _save_transcript_segment(session_id, segment)
         except Exception:
+            transcript_persistence_failures.add(session_id)
             logger.exception("firestore_save_error", session_id=session_id)
             # A final is not complete until its durable write succeeds. Let the
             # stream manager make this failure sticky and suppress the report.
@@ -980,6 +985,13 @@ def _release_terminal_transcript_memory(session_id: str) -> None:
     """Drop terminal transcript payloads after durable session persistence."""
     if session_mgr is None:
         return
+    if session_id in transcript_persistence_failures:
+        logger.error(
+            "terminal_transcript_memory_retained",
+            session_id=session_id,
+            reason="child_persistence_failure",
+        )
+        return
     get_session = getattr(session_mgr, "get_session", None)
     session = get_session(session_id) if callable(get_session) else None
     release = getattr(session_mgr, "release_transcript_memory", None)
@@ -1211,13 +1223,16 @@ async def delete_session(session_id: str):
     db = await firestore_storage._get_db()
     user = current_auth()
     try:
-        return await delete_session_everywhere(
+        result = await delete_session_everywhere(
             session_id,
             db,
             gcs_storage,
             owner_id=user.uid if user else None,
             org_id=user.org_id if user else None,
         )
+        transcript_persistence_failures.discard(session_id)
+        _release_terminal_transcript_memory(session_id)
+        return result
     except PermissionError:
         raise HTTPException(status_code=404, detail="Session not found") from None
 
