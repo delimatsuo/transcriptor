@@ -10,8 +10,8 @@ not hosted, deployment, provider, physical-device, or real-interview evidence.
 | Item | Value |
 | --- | --- |
 | Branch | `codex/week-4-auth` |
-| Source/test qualification commit | `f98059a81086653cceda63784f9ed0f63dbcd53d` |
-| PR head at last evidence capture | `f98059a81086653cceda63784f9ed0f63dbcd53d` |
+| Source/test qualification commit | `a97ff2027a9a181f00ae9dae0a995e7e1b5afa4c` |
+| PR head at last evidence capture | `a97ff2027a9a181f00ae9dae0a995e7e1b5afa4c` |
 | Pull request | [#8](https://github.com/delimatsuo/transcriptor/pull/8), draft, stacked on `codex/week-3-evidence-report` |
 | Remote head at last evidence capture | Matched the PR head above |
 
@@ -20,7 +20,7 @@ not hosted, deployment, provider, physical-device, or real-interview evidence.
 - Startup performs `google.auth.default()` plus credential refresh before
   readiness, with a 10-second deadline and the exact loud remediation message;
   mocked refresh failure, stuck-refresh, and lifespan-order tests pass.
-- Backend: 178 tests passed locally, including 43 focused authorization-matrix
+- Backend: 186 tests passed locally, including 43 focused authorization-matrix
   tests. The matrix covers every `/api` route pattern, token admission, CORS
   rejection, cross-owner and child-scope failures, stop capabilities, WebSocket
   replay/expiry, raw review-record scope, and disabled extension behavior. The
@@ -30,11 +30,9 @@ not hosted, deployment, provider, physical-device, or real-interview evidence.
   principal. The bypass is test-only and does not bypass backend authentication.
 - Dependency audit: `npm audit --audit-level=moderate` reports zero
   vulnerabilities.
-- GitHub Actions: [run 31116078513](https://github.com/delimatsuo/transcriptor/actions/runs/31116078513)
-  passed both backend and frontend jobs on the exact PR head above after a
-  transient hosted action-resolution failure on the first frontend attempt;
-  the failed job was rerun successfully, with no action-runtime deprecation
-  annotation.
+- GitHub Actions: the exact-head run is being rerun after a transient GitHub
+  action-resolution outage; this record will be rebound to the successful run
+  before the PR is considered qualified.
 
 ## Efficiency and cost controls
 
@@ -57,6 +55,14 @@ not hosted, deployment, provider, physical-device, or real-interview evidence.
 - Rolling-summary state is allocated per authenticated session and removed during
   terminal cleanup; summary text, counters, and indices are not shared across
   sessions or organizations.
+- Provider failures use a bounded exponential rolling-summary cooldown and do not
+  broadcast or persist stale/blank summaries as successful coverage.
+- Live transcript segments receive a session-global durable ordinal while the
+  source-local STT counter is retained for provenance; legacy source-scoped
+  records remain reconstructable without accepting same-source duplicates.
+- Pre-interview analysis bounds the combined provider input at 30,000 characters,
+  including the job description, and oversized uploads are read only one byte
+  beyond the parser limit before rejection.
 - Non-stream Gemini requests have a configurable 60-second client deadline;
   timeout cleanup releases the shared request queue.
 - Unchanged transcript/suggestion/summary rendering is memoized and report
