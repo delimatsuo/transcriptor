@@ -20,6 +20,7 @@ logger = structlog.get_logger()
 
 # Ring buffer size for reconnection replay
 REPLAY_BUFFER_SIZE = 1000
+WS_SEND_TIMEOUT_SECONDS = 2.0
 
 
 class WSConnectionManager:
@@ -98,7 +99,10 @@ class WSConnectionManager:
 
         for msg in missed:
             try:
-                await websocket.send_json(msg.model_dump())
+                await asyncio.wait_for(
+                    websocket.send_json(msg.model_dump()),
+                    timeout=WS_SEND_TIMEOUT_SECONDS,
+                )
             except Exception:
                 logger.exception("ws_replay_error")
                 break
@@ -122,14 +126,22 @@ class WSConnectionManager:
         self._message_buffer[session_id].append(message)
 
         data = message.model_dump()
-        conns = self._connections.get(session_id, [])
-        dead = []
+        conns = list(self._connections.get(session_id, []))
 
-        for ws in conns:
+        async def send_one(ws: WebSocket) -> WebSocket | None:
             try:
-                await ws.send_json(data)
+                await asyncio.wait_for(
+                    ws.send_json(data),
+                    timeout=WS_SEND_TIMEOUT_SECONDS,
+                )
             except Exception:
-                dead.append(ws)
+                return ws
+            return None
+
+        # A slow browser must not serialize delivery to every other client or
+        # hold up the STT callback that produced this transcript message.
+        results = await asyncio.gather(*(send_one(ws) for ws in conns))
+        dead = [ws for ws in results if ws is not None]
 
         for ws in dead:
             self.disconnect(ws, session_id)
