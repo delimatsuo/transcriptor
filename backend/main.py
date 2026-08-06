@@ -1484,6 +1484,15 @@ async def get_interview_report(session_id: str):
     if state is not None:
         _assert_child_scope([state], session)
     if state and state.get("status") == "failed":
+        if state.get("reasonCode") == "report_input_too_large":
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "O contexto durável da entrevista excede o limite de geração; "
+                    "a geração automática foi bloqueada para evitar um pedido "
+                    "excessivo ao modelo."
+                ),
+            )
         raise HTTPException(
             status_code=409,
             detail="A geração do relatório falhou e não será repetida automaticamente.",

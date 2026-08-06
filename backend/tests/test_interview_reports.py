@@ -521,8 +521,9 @@ class EmptyManager:
 
 
 class ReadReportStorage:
-    def __init__(self, report):
+    def __init__(self, report, reason_code=None):
         self.report = report
+        self.reason_code = reason_code
         self.reads = []
 
     async def get_session_record(self, session_id):
@@ -535,7 +536,7 @@ class ReadReportStorage:
 
     async def get_report_generation_state(self, session_id):
         self.reads.append(("state", session_id))
-        return {"status": "failed"}
+        return {"status": "failed", "reasonCode": self.reason_code}
 
 
 def test_restart_safe_report_read_and_approved_only_export_use_no_provider(monkeypatch):
@@ -576,6 +577,19 @@ def test_persisted_generation_failure_is_visible_without_provider_retry(monkeypa
 
     assert exc_info.value.status_code == 409
     assert "não será repetida automaticamente" in exc_info.value.detail
+
+
+def test_oversized_report_failure_explains_the_cost_guard(monkeypatch):
+    storage = ReadReportStorage(None, reason_code="report_input_too_large")
+    monkeypatch.setattr(backend_main, "session_mgr", EmptyManager())
+    monkeypatch.setattr(backend_main, "firestore_storage", storage)
+    monkeypatch.setattr(backend_main, "gemini_client", None)
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(backend_main.get_interview_report(SESSION_ID))
+
+    assert exc_info.value.status_code == 409
+    assert "excede o limite de geração" in exc_info.value.detail
 
 
 def test_stale_generation_is_reconciled_to_a_durable_visible_failure(monkeypatch):
