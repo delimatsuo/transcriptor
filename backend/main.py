@@ -565,6 +565,11 @@ async def _on_transcript(session_id: str, segment: TranscriptSegment) -> None:
     msg = WSMessage.transcript_delta(session_id, seq, segment)
     await ws_manager.broadcast(session_id, msg)
 
+    # Deletion can fence the session while the broadcast is in flight. Never
+    # recreate a child record after that terminal fence wins.
+    if session_id in session_deletion_fences:
+        return
+
     # 4. Persist to Firestore (WITH override, after correlation)
     if segment.is_final:
         try:
@@ -592,6 +597,8 @@ async def _on_transcript(session_id: str, segment: TranscriptSegment) -> None:
 
     # Check if we should generate a rolling summary
     if segment.is_final:
+        if session_id in session_deletion_fences:
+            return
         count_since_index = getattr(
             session_mgr, "get_transcript_word_count_since_index", None
         )
@@ -689,6 +696,9 @@ async def _generate_rolling_summary(session_id: str) -> None:
 
         summary = await context.update_summary(transcript_text, batch_end)
 
+        if session_id in session_deletion_fences:
+            return
+
         # A failed provider call intentionally leaves the source watermark
         # unchanged.  Do not broadcast or persist the prior/empty summary as if
         # it covered this transcript; the cooldown will permit a bounded retry.
@@ -707,6 +717,8 @@ async def _generate_rolling_summary(session_id: str) -> None:
 
         # Save to Firestore
         if firestore_storage:
+            if session_id in session_deletion_fences:
+                return
             session = session_mgr.get_session(session_id)
             await firestore_storage.save_summary(
                 session_id, summary,
@@ -823,6 +835,9 @@ async def _generate_interview_suggestions(session_id: str) -> None:
                 getattr(settings, "llm_max_output_tokens", 1024),
             ),
         )
+
+        if session_id in session_deletion_fences:
+            return
 
         if response.strip():
             # Extract numbered questions for backward compat

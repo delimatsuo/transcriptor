@@ -327,3 +327,62 @@ def test_rolling_summary_catches_up_contiguous_backlog(monkeypatch):
             main.rolling_summary_tasks,
             main.rolling_summary_followups,
         ) = previous
+
+
+def test_rolling_summary_does_not_publish_after_deletion_fence(monkeypatch):
+    settings = Settings(google_cloud_project="test-project")
+    manager = SessionManager(settings)
+    session = manager.create_session()
+    manager.add_transcript_segment(
+        session.id,
+        TranscriptSegment(text="private words", sequence_number=1, is_final=True),
+    )
+
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    class SlowGemini:
+        async def generate(self, **_kwargs):
+            started.set()
+            await release.wait()
+            return "stale summary"
+
+    context = ContextWindowManager(settings, SlowGemini())
+    previous = (
+        main.session_mgr,
+        main.gemini_client,
+        main.firestore_storage,
+        main.context_windows,
+        main.session_deletion_fences,
+    )
+    main.session_mgr = manager
+    main.gemini_client = context.gemini
+    main.firestore_storage = type(
+        "Storage",
+        (),
+        {"save_summary": AsyncMock()},
+    )()
+    main.context_windows = {session.id: context}
+    main.session_deletion_fences = set()
+    broadcast = AsyncMock()
+    monkeypatch.setattr(main.ws_manager, "broadcast", broadcast)
+
+    async def run():
+        task = asyncio.create_task(main._generate_rolling_summary(session.id))
+        await started.wait()
+        main.session_deletion_fences.add(session.id)
+        release.set()
+        await task
+
+    try:
+        asyncio.run(run())
+        broadcast.assert_not_awaited()
+        main.firestore_storage.save_summary.assert_not_awaited()
+    finally:
+        (
+            main.session_mgr,
+            main.gemini_client,
+            main.firestore_storage,
+            main.context_windows,
+            main.session_deletion_fences,
+        ) = previous
