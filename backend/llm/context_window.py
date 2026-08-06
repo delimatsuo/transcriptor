@@ -116,9 +116,10 @@ class ContextWindowManager:
 
             except Exception:
                 self._failure_count += 1
+                exponent = min(self._failure_count - 1, 20)
                 backoff = min(
                     self.settings.llm_rolling_failure_backoff_seconds
-                    * (2 ** (self._failure_count - 1)),
+                    * (2**exponent),
                     self.settings.llm_rolling_failure_backoff_max_seconds,
                 )
                 self._retry_after = self._now() + backoff
