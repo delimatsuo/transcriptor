@@ -122,3 +122,61 @@ def test_request_timeout_releases_shared_queue(monkeypatch):
 
     asyncio.run(run())
     assert calls == 2
+
+
+def test_rejects_oversized_input_before_provider_invocation(monkeypatch):
+    constructors = []
+
+    monkeypatch.setattr(gemini.aiplatform, "init", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        gemini,
+        "GenerativeModel",
+        lambda *args, **kwargs: constructors.append((args, kwargs)),
+    )
+
+    client = gemini.GeminiClient(
+        Settings(google_cloud_project="test-project", llm_max_input_chars=10)
+    )
+
+    with pytest.raises(ValueError, match="exceeds configured limit"):
+        asyncio.run(client.generate("system", "01234567890"))
+
+    assert constructors == []
+
+
+def test_stream_timeout_releases_shared_queue(monkeypatch):
+    calls = 0
+
+    class FakeModel:
+        async def generate_content_async(self, *_args, **kwargs):
+            nonlocal calls
+            calls += 1
+            if kwargs.get("stream"):
+                async def chunks():
+                    yield SimpleNamespace(text="first")
+                    await asyncio.sleep(1)
+
+                return chunks()
+            return SimpleNamespace(text="ok")
+
+    monkeypatch.setattr(gemini.aiplatform, "init", lambda **_kwargs: None)
+    monkeypatch.setattr(gemini, "GenerativeModel", lambda *_args, **_kwargs: FakeModel())
+
+    client = gemini.GeminiClient(
+        Settings(
+            google_cloud_project="test-project",
+            llm_max_concurrent_requests=1,
+            llm_request_timeout_seconds=0.01,
+        )
+    )
+
+    async def run():
+        chunks = []
+        with pytest.raises(asyncio.TimeoutError):
+            async for chunk in client.generate_stream("system", "stream"):
+                chunks.append(chunk)
+        assert chunks == ["first"]
+        assert await client.generate("system", "after-timeout") == "ok"
+
+    asyncio.run(run())
+    assert calls == 2

@@ -25,7 +25,7 @@ Immediate public/deployment exposure is contained. The repository and GitHub app
 | Area | Current prototype | Approved target direction |
 | --- | --- | --- |
 | Capture | Python `sounddevice`, default mic, and BlackHole | Thin signed macOS companion using native capture APIs; virtual device only as fallback |
-| Audio retention | Local FLAC backup is always written | No persistent raw audio by default; bounded memory only |
+| Audio retention | Local FLAC backup is opt-in and disabled by default | No persistent raw audio by default; bounded memory only |
 | STT | Google Cloud STT | Google Cloud STT remains the first-release provider |
 | Backend | Local capture and cloud orchestration are coupled | Authenticated cloud control/intelligence plane; capture remains on device |
 | UI | Next.js local web workspace | Reuse Next.js initially, paired with the native companion |

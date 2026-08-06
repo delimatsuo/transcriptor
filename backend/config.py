@@ -53,7 +53,15 @@ class Settings(BaseSettings):
         default=60.0,
         gt=0,
         le=300,
-        description="Deadline for each non-stream Gemini request",
+        description="Deadline for every Gemini request, including streaming",
+    )
+    llm_max_input_chars: int = Field(
+        default=120_000,
+        gt=0,
+        le=500_000,
+        description=(
+            "Hard ceiling for any Gemini user message before provider invocation"
+        ),
     )
     llm_rolling_context_max_chars: int = Field(
         default=16_000,
@@ -76,7 +84,7 @@ class Settings(BaseSettings):
     llm_final_report_max_input_chars: int = Field(
         default=120_000,
         gt=0,
-        le=500_000,
+        le=120_000,
         description=(
             "Maximum durable context/transcript characters sent to final report generation"
         ),

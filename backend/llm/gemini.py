@@ -62,6 +62,16 @@ class GeminiClient:
         response_schema: dict[str, Any] | None = None,
     ) -> str:
         """Generate a single response."""
+        max_input_chars = self.settings.llm_max_input_chars
+        if len(user_message) > max_input_chars:
+            logger.warning(
+                "gemini_input_rejected",
+                input_chars=len(user_message),
+                max_chars=max_input_chars,
+            )
+            raise ValueError(
+                f"Gemini input exceeds configured limit of {max_input_chars} characters"
+            )
         model_with_system = self._model_for(system_instruction)
 
         generation_config = {
@@ -113,21 +123,62 @@ class GeminiClient:
         max_output_tokens: int = 2048,
     ) -> AsyncIterator[str]:
         """Generate a streaming response, yielding text chunks."""
+        max_input_chars = self.settings.llm_max_input_chars
+        if len(user_message) > max_input_chars:
+            logger.warning(
+                "gemini_stream_input_rejected",
+                input_chars=len(user_message),
+                max_chars=max_input_chars,
+            )
+            raise ValueError(
+                f"Gemini input exceeds configured limit of {max_input_chars} characters"
+            )
         model_with_system = self._model_for(system_instruction)
 
-        await self._request_semaphore.acquire()
+        queued_at = time.monotonic()
+        timeout_seconds = self.settings.llm_request_timeout_seconds
+        started_at: float | None = None
+        output_chars = 0
         try:
-            response = await model_with_system.generate_content_async(
-                [user_message],
-                generation_config={
-                    "temperature": temperature,
-                    "max_output_tokens": max_output_tokens,
-                },
-                stream=True,
-            )
+            async with asyncio.timeout(timeout_seconds):
+                async with self._request_semaphore:
+                    started_at = time.monotonic()
+                    response = await model_with_system.generate_content_async(
+                        [user_message],
+                        generation_config={
+                            "temperature": temperature,
+                            "max_output_tokens": max_output_tokens,
+                        },
+                        stream=True,
+                    )
 
-            async for chunk in response:
-                if chunk.text:
-                    yield chunk.text
-        finally:
-            self._request_semaphore.release()
+                    async for chunk in response:
+                        if chunk.text:
+                            output_chars += len(chunk.text)
+                            yield chunk.text
+        except TimeoutError:
+            logger.warning(
+                "gemini_stream_timeout",
+                input_chars=len(user_message),
+                output_chars=output_chars,
+                timeout_seconds=timeout_seconds,
+                queue_seconds=round(
+                    (started_at or time.monotonic()) - queued_at,
+                    3,
+                ),
+            )
+            raise
+        else:
+            logger.info(
+                "gemini_stream_response",
+                input_chars=len(user_message),
+                output_chars=output_chars,
+                queue_seconds=round(
+                    (started_at or time.monotonic()) - queued_at,
+                    3,
+                ),
+                generation_seconds=round(
+                    time.monotonic() - (started_at or time.monotonic()),
+                    3,
+                ),
+            )
