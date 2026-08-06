@@ -43,6 +43,12 @@ class Settings(BaseSettings):
         le=8,
         description="Maximum concurrent Gemini requests in this backend process",
     )
+    llm_location: str = Field(
+        default="us-central1",
+        min_length=1,
+        max_length=64,
+        description="Explicit Vertex AI region for Gemini requests",
+    )
     llm_request_timeout_seconds: float = Field(
         default=60.0,
         gt=0,

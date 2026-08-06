@@ -35,7 +35,10 @@ class GeminiClient:
 
     def _ensure_init(self) -> None:
         if not self._initialized:
-            aiplatform.init(project=self.settings.google_cloud_project)
+            aiplatform.init(
+                project=self.settings.google_cloud_project,
+                location=self.settings.llm_location,
+            )
             self._initialized = True
 
     def _model_for(self, system_instruction: str) -> GenerativeModel:
