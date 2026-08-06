@@ -164,6 +164,33 @@ def test_rejects_oversized_output_budget_before_provider_invocation(monkeypatch)
     assert constructors == []
 
 
+def test_stream_rejects_oversized_output_budget_before_provider_invocation(monkeypatch):
+    constructors = []
+
+    monkeypatch.setattr(gemini.aiplatform, "init", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        gemini,
+        "GenerativeModel",
+        lambda *args, **kwargs: constructors.append((args, kwargs)),
+    )
+
+    client = gemini.GeminiClient(
+        Settings(google_cloud_project="test-project", llm_max_output_tokens=10)
+    )
+
+    async def run():
+        with pytest.raises(ValueError, match="output exceeds configured limit"):
+            async for _chunk in client.generate_stream(
+                "system",
+                "short",
+                max_output_tokens=11,
+            ):
+                pass
+
+    asyncio.run(run())
+    assert constructors == []
+
+
 def test_stream_timeout_releases_shared_queue(monkeypatch):
     calls = 0
 
