@@ -64,6 +64,9 @@ not hosted, deployment, provider, physical-device, or real-interview evidence.
 - Pre-interview analysis bounds the combined provider input at 30,000 characters,
   including the job description, and oversized uploads are read only one byte
   beyond the parser limit before rejection.
+- Final report generation fails closed before the provider call when durable
+  context plus transcript exceeds the configurable 120,000-character budget;
+  it records `report_input_too_large` rather than silently truncating evidence.
 - Non-stream Gemini requests have a configurable 60-second client deadline;
   timeout cleanup releases the shared request queue.
 - Unchanged transcript/suggestion/summary rendering is memoized and report

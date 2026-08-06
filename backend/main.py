@@ -838,10 +838,35 @@ async def _generate_final_summary(session_id: str) -> None:
                 else:
                     user_parts.append("(Nenhuma nota da recrutadora foi registrada.)")
 
+                user_message = "\n\n".join(user_parts)
+                max_report_input_chars = getattr(
+                    settings,
+                    "llm_final_report_max_input_chars",
+                    120_000,
+                )
+                if len(user_message) > max_report_input_chars:
+                    logger.warning(
+                        "report_input_too_large",
+                        session_id=session_id,
+                        input_chars=len(user_message),
+                        max_chars=max_report_input_chars,
+                    )
+                    # Do not silently truncate: the report's evidence IDs must
+                    # describe the complete durable source set. Fail visibly
+                    # before any provider call so an oversized request cannot
+                    # create an unbounded model bill.
+                    await _save_report_generation_state(
+                        session_id,
+                        "failed",
+                        reason_code="report_input_too_large",
+                        session=session,
+                    )
+                    return
+
                 raw_report = await asyncio.wait_for(
                     gemini_client.generate(
                         system_instruction=INTERVIEW_REPORT_PROMPT,
-                        user_message="\n\n".join(user_parts),
+                        user_message=user_message,
                         temperature=0.2,
                         max_output_tokens=8192,
                         response_mime_type="application/json",

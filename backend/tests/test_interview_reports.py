@@ -781,6 +781,37 @@ def test_final_generation_uses_durable_sources_json_mode_and_persists_failure(mo
     assert failed_gemini.generate.await_count == 1
 
 
+def test_final_generation_fails_closed_before_oversized_provider_request(monkeypatch):
+    manager = GenerationManager()
+    storage = GenerationStorage()
+    storage.get_interview_context = AsyncMock(
+        return_value=[
+            {"id": "resume", "type": "resume", "text": "R" * 200},
+        ]
+    )
+    gemini = type("Gemini", (), {"generate": AsyncMock()})()
+    monkeypatch.setattr(backend_main, "session_mgr", manager)
+    monkeypatch.setattr(backend_main, "firestore_storage", storage)
+    monkeypatch.setattr(backend_main, "gemini_client", gemini)
+    monkeypatch.setattr(
+        backend_main,
+        "settings",
+        Settings(
+            google_cloud_project="test-project",
+            llm_final_report_max_input_chars=100,
+        ),
+    )
+    monkeypatch.setattr(backend_main.ws_manager, "broadcast", AsyncMock())
+
+    asyncio.run(backend_main._generate_final_summary(SESSION_ID))
+
+    assert storage.states == [
+        ("generating", None),
+        ("failed", "report_input_too_large"),
+    ]
+    gemini.generate.assert_not_awaited()
+
+
 def test_queued_generation_remains_pending_then_accepts_a_slow_success(monkeypatch):
     manager = GenerationManager()
     storage = GenerationStorage()

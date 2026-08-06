@@ -67,6 +67,14 @@ class Settings(BaseSettings):
         le=900,
         description="Maximum exponential cooldown after rolling summary failures",
     )
+    llm_final_report_max_input_chars: int = Field(
+        default=120_000,
+        gt=0,
+        le=500_000,
+        description=(
+            "Maximum durable context/transcript characters sent to final report generation"
+        ),
+    )
 
     # Audio
     blackhole_device_name: str = Field(
