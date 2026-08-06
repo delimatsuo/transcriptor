@@ -13,6 +13,7 @@ not hosted, deployment, provider, physical-device, or real-interview evidence.
 | Source/test qualification commit | `d15804497c70d4beee0eb0a41f799b12b7ac6c6b` |
 | Latest lifecycle hardening commit | `66591bf` (deletion clears in-process interview context, detached warning work, capabilities, and WebSocket replay state) |
 | Latest generation-fence commit | `15f561d` (late callbacks and provider generations cannot publish or persist after deletion fencing) |
+| CI trigger hardening commit | `f4e19d2` (checked-in workflow also declares Week 4 branch pushes) |
 | PR head at last evidence capture | Verify against the live PR head before any hosted or device work; source qualification is bound to the commit above. |
 | Pull request | [#8](https://github.com/delimatsuo/transcriptor/pull/8), draft, stacked on `codex/week-3-evidence-report` |
 | Remote head at last evidence capture | Matched the PR head above |
@@ -33,11 +34,12 @@ not hosted, deployment, provider, physical-device, or real-interview evidence.
   principal. The bypass is test-only and does not bypass backend authentication.
 - Dependency audit: `npm audit --audit-level=moderate` reports zero
   vulnerabilities.
-- GitHub Actions: manual exact-head dispatch is enabled, but the repository
-  runner has repeatedly left both jobs queued. The stacked PR's base branch has
-  an older workflow that did not automatically trigger this PR. Local
-  exact-source qualification is complete; historical runs are not used as
-  green evidence for the current source.
+- GitHub Actions: manual exact-head dispatch is enabled and the checked-in
+  workflow declares Week 4 branch pushes, but the repository runner has left
+  both jobs queued and the latest dispatch API returned HTTP 500. The stacked
+  PR's base branch has an older workflow that did not automatically trigger
+  this PR. Local exact-source qualification is complete; historical runs are
+  not used as green evidence for the current source.
 
 ## Efficiency and cost controls
 
