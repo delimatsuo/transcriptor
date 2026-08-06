@@ -26,6 +26,7 @@ class SessionManager:
         self.settings = settings
         self._sessions: dict[str, Session] = {}
         self._transcripts: dict[str, list[TranscriptSegment]] = {}
+        self._transcript_sequence_counters: dict[str, int] = {}
         self._heartbeat_tasks: dict[str, asyncio.Task] = {}
 
     def create_session(
@@ -45,6 +46,7 @@ class SessionManager:
         )
         self._sessions[session.id] = session
         self._transcripts[session.id] = []
+        self._transcript_sequence_counters[session.id] = 0
 
         logger.info(
             "session_created",
@@ -63,9 +65,21 @@ class SessionManager:
     def add_transcript_segment(
         self, session_id: str, segment: TranscriptSegment
     ) -> None:
-        """Add a transcript segment to the session."""
+        """Add a segment and assign a session-global durable ordinal.
+
+        Each STT source owns a counter that can restart at one.  Normalize the
+        public/persisted sequence at the session boundary so dual capture has a
+        deterministic unique order, while retaining the original source-local
+        value for provenance and legacy reconstruction.
+        """
         if session_id not in self._transcripts:
             self._transcripts[session_id] = []
+            self._transcript_sequence_counters[session_id] = 0
+        if segment.source_sequence_number is None:
+            segment.source_sequence_number = segment.sequence_number
+        next_sequence = self._transcript_sequence_counters[session_id] + 1
+        self._transcript_sequence_counters[session_id] = next_sequence
+        segment.sequence_number = next_sequence
         self._transcripts[session_id].append(segment)
 
     def get_recent_transcript_text(

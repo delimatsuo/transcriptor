@@ -79,8 +79,10 @@ def deserialize_session(session_id: str, record: dict[str, Any]) -> Session:
 def deserialize_transcript(records: list[dict[str, Any]]) -> list[TranscriptSegment]:
     """Translate ordered Firestore transcript documents into final segments."""
     segments: list[TranscriptSegment] = []
+    sequence_scopes: list[str | None] = []
     try:
         for record in records:
+            sequence_number = record["sequenceNumber"]
             segments.append(
                 TranscriptSegment(
                     id=record["id"],
@@ -90,17 +92,53 @@ def deserialize_transcript(records: list[dict[str, Any]]) -> list[TranscriptSegm
                     start_time=record["startTime"],
                     end_time=record["endTime"],
                     confidence=record["confidence"],
-                    sequence_number=record["sequenceNumber"],
+                    sequence_number=sequence_number,
+                    source_sequence_number=record.get(
+                        "sourceSequenceNumber", sequence_number
+                    ),
                     is_final=True,
                 )
             )
+            sequence_scopes.append(record.get("sequenceScope"))
     except (KeyError, TypeError, ValidationError) as exc:
         raise PersistedReviewError("persisted transcript is invalid") from exc
 
-    segments.sort(key=lambda segment: segment.sequence_number)
-    sequence_numbers = [segment.sequence_number for segment in segments]
-    if len(sequence_numbers) != len(set(sequence_numbers)):
-        raise PersistedReviewError("persisted transcript has duplicate sequence numbers")
+    non_null_scopes = {scope for scope in sequence_scopes if scope is not None}
+    if non_null_scopes and (
+        non_null_scopes != {"session"} or any(scope is None for scope in sequence_scopes)
+    ):
+        raise PersistedReviewError("persisted transcript has mixed sequence scopes")
+
+    if sequence_scopes and all(scope == "session" for scope in sequence_scopes):
+        # New writes use a session-global ordinal, so this is the canonical
+        # order and duplicate check for current dual-source sessions.
+        segments.sort(key=lambda segment: (segment.sequence_number, segment.id))
+        sequence_numbers = [segment.sequence_number for segment in segments]
+        if len(sequence_numbers) != len(set(sequence_numbers)):
+            raise PersistedReviewError(
+                "persisted transcript has duplicate session sequence numbers"
+            )
+    else:
+        # Legacy records predate the session ordinal and contain one counter per
+        # source.  Reconstruct them without treating a valid cross-source reset
+        # as corruption, but still reject duplicate source counters.
+        segments.sort(
+            key=lambda segment: (
+                segment.start_time,
+                segment.end_time,
+                segment.speaker,
+                segment.source_sequence_number or 0,
+                segment.id,
+            )
+        )
+        source_sequences = [
+            (segment.speaker, segment.source_sequence_number)
+            for segment in segments
+        ]
+        if len(source_sequences) != len(set(source_sequences)):
+            raise PersistedReviewError(
+                "persisted transcript has duplicate source sequence numbers"
+            )
     return segments
 
 

@@ -36,6 +36,41 @@ def test_rolling_summary_keeps_recent_tail_within_configured_budget():
     assert new_chunk.endswith("new")
 
 
+def test_failed_rolling_summary_uses_bounded_exponential_backoff():
+    class FailingGemini:
+        calls = 0
+
+        async def generate(self, **_kwargs):
+            self.calls += 1
+            raise RuntimeError("provider unavailable")
+
+    gemini = FailingGemini()
+    manager = ContextWindowManager(
+        Settings(
+            google_cloud_project="test-project",
+            llm_rolling_failure_backoff_seconds=10,
+            llm_rolling_failure_backoff_max_seconds=15,
+        ),
+        gemini,
+    )
+    now = 100.0
+    manager._now = lambda: now
+
+    assert asyncio.run(manager.update_summary("chunk", 1)) == ""
+    assert gemini.calls == 1
+    assert manager.last_summary_seq == 0
+    assert manager.should_summarize(300) is False
+
+    now = 111.0
+    assert manager.should_summarize(300) is True
+
+    now = 120.0
+    assert asyncio.run(manager.update_summary("chunk", 1)) == ""
+    assert manager.should_summarize(300) is False
+    now = 135.0
+    assert manager.should_summarize(300) is True
+
+
 def test_session_context_uses_appended_indices_not_source_sequence_numbers():
     manager = SessionManager(Settings(google_cloud_project="test-project"))
     session = manager.create_session()
@@ -52,6 +87,33 @@ def test_session_context_uses_appended_indices_not_source_sequence_numbers():
         "[Speaker 1]: new words"
     )
     assert manager.get_transcript_word_count_since_index(session.id, from_index=1) == 2
+
+
+def test_session_manager_normalizes_source_sequences_for_durable_order():
+    manager = SessionManager(Settings(google_cloud_project="test-project"))
+    session = manager.create_session()
+    first = TranscriptSegment(
+        text="first",
+        speaker="Entrevistador",
+        sequence_number=1,
+        is_final=True,
+    )
+    second = TranscriptSegment(
+        text="second",
+        speaker="Candidato",
+        sequence_number=1,
+        is_final=True,
+    )
+
+    manager.add_transcript_segment(session.id, first)
+    manager.add_transcript_segment(session.id, second)
+
+    assert [segment.sequence_number for segment in manager.get_transcript(session.id)] == [1, 2]
+    assert [
+        segment.source_sequence_number
+        for segment in manager.get_transcript(session.id)
+    ] == [1, 1]
+    assert "source_sequence_number" not in first.model_dump()
 
 
 def test_main_rolling_context_isolated_per_session():

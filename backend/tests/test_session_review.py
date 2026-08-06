@@ -75,6 +75,34 @@ def test_reconstructs_completed_interview_and_orders_final_transcript():
     assert review.regeneration_status == RegenerationStatus.NOT_NEEDED
 
 
+def test_dual_source_sequence_numbers_can_restart_per_source():
+    records = transcript_records()
+    records[1]["sequenceNumber"] = records[0]["sequenceNumber"]
+
+    transcript = deserialize_transcript(records)
+
+    assert [segment.id for segment in transcript] == ["seg-1", "seg-2"]
+    assert [segment.sequence_number for segment in transcript] == [2, 2]
+
+
+def test_session_scoped_sequence_numbers_must_be_unique():
+    records = transcript_records()
+    records[0]["sequenceScope"] = "session"
+    records[1]["sequenceScope"] = "session"
+    records[1]["sequenceNumber"] = records[0]["sequenceNumber"]
+
+    with pytest.raises(PersistedReviewError, match="duplicate session"):
+        deserialize_transcript(records)
+
+
+def test_mixed_transcript_sequence_scopes_are_rejected():
+    records = transcript_records()
+    records[0]["sequenceScope"] = "session"
+
+    with pytest.raises(PersistedReviewError, match="mixed sequence scopes"):
+        deserialize_transcript(records)
+
+
 def test_missing_summary_blocks_regeneration_instead_of_degrading():
     session = deserialize_session(SESSION_ID, session_record(summary=None))
     review = build_session_review(session, deserialize_transcript(transcript_records()))
@@ -117,8 +145,9 @@ def test_corrupt_session_and_duplicate_transcript_sequences_are_rejected():
         deserialize_session(SESSION_ID, session_record(endedAt=None))
 
     duplicate = transcript_records()
+    duplicate[1]["speaker"] = duplicate[0]["speaker"]
     duplicate[1]["sequenceNumber"] = 2
-    with pytest.raises(PersistedReviewError, match="duplicate"):
+    with pytest.raises(PersistedReviewError, match="duplicate source"):
         deserialize_transcript(duplicate)
 
 

@@ -129,9 +129,12 @@ class FirestoreStorage:
             "endTime": segment.end_time,
             "confidence": segment.confidence,
             "sequenceNumber": segment.sequence_number,
+            "sequenceScope": "session",
             "ownerId": owner_id,
             "orgId": org_id,
         }
+        if segment.source_sequence_number is not None:
+            data["sourceSequenceNumber"] = segment.source_sequence_number
         if segment.speaker_override:
             data["speakerOverride"] = segment.speaker_override
         await doc_ref.set(data)
@@ -160,9 +163,12 @@ class FirestoreStorage:
                 "endTime": segment.end_time,
                 "confidence": segment.confidence,
                 "sequenceNumber": segment.sequence_number,
+                "sequenceScope": "session",
                 "ownerId": owner_id,
                 "orgId": org_id,
             }
+            if segment.source_sequence_number is not None:
+                data["sourceSequenceNumber"] = segment.source_sequence_number
             if segment.speaker_override:
                 data["speakerOverride"] = segment.speaker_override
             batch.set(doc_ref, data)

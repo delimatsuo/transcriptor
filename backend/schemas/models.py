@@ -57,6 +57,11 @@ class TranscriptSegment(BaseModel):
     end_time: float = 0.0
     confidence: float = 0.0
     sequence_number: int = 0
+    # STT sequence counters are source-local.  SessionManager normalizes
+    # sequence_number for durable ordering while retaining this provenance
+    # field for legacy/source-scoped reconstruction.  It is intentionally not
+    # exposed in API/WebSocket model dumps.
+    source_sequence_number: int | None = Field(default=None, exclude=True)
     is_final: bool = False
 
 
