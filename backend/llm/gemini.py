@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import AsyncIterator
+from typing import Any, AsyncIterator
 
 import structlog
 from google.cloud import aiplatform
@@ -33,6 +33,8 @@ class GeminiClient:
         user_message: str,
         temperature: float = 0.3,
         max_output_tokens: int = 2048,
+        response_mime_type: str | None = None,
+        response_schema: dict[str, Any] | None = None,
     ) -> str:
         """Generate a single response."""
         self._ensure_init()
@@ -43,12 +45,18 @@ class GeminiClient:
             system_instruction=[system_instruction],
         )
 
+        generation_config = {
+            "temperature": temperature,
+            "max_output_tokens": max_output_tokens,
+        }
+        if response_mime_type:
+            generation_config["response_mime_type"] = response_mime_type
+        if response_schema:
+            generation_config["response_schema"] = response_schema
+
         response = await model_with_system.generate_content_async(
             [user_message],
-            generation_config={
-                "temperature": temperature,
-                "max_output_tokens": max_output_tokens,
-            },
+            generation_config=generation_config,
         )
 
         text = response.text

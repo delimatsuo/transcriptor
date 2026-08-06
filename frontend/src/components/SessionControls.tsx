@@ -28,6 +28,7 @@ export default function SessionControls({
   const [loading, setLoading] = useState(false);
   const [showInterviewPrep, setShowInterviewPrep] = useState(false);
   const [candidateName, setCandidateName] = useState("");
+  const [nextSteps, setNextSteps] = useState("");
   const [resumeFile, setResumeFile] = useState<File | null>(null);
   const [jdText, setJdText] = useState("");
   const resumeRef = useRef<HTMLInputElement>(null);
@@ -95,11 +96,14 @@ export default function SessionControls({
     docType: string,
     text: string,
   ) => {
-    await fetch(`${API_BASE}/api/sessions/${sid}/context`, {
+    const response = await fetch(`${API_BASE}/api/sessions/${sid}/context`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ doc_type: docType, text }),
     });
+    if (!response.ok) {
+      throw new Error(`Falha ao persistir contexto: ${docType}`);
+    }
   };
 
   const handleStart = async () => {
@@ -110,8 +114,12 @@ export default function SessionControls({
       const res = await fetch(`${API_BASE}/api/sessions?${params}`, {
         method: "POST",
       });
+      if (!res.ok) throw new Error("Falha ao iniciar sessão");
       const data = await res.json();
       const sid = data.session_id;
+      // The backend starts capture with the session. Make that state visible
+      // before any follow-up context request can fail.
+      onSessionStart(sid, mode);
 
       // Upload documents if provided (interview mode)
       if (mode === "interview") {
@@ -122,12 +130,16 @@ export default function SessionControls({
           const formData = new FormData();
           formData.append("file", resumeFile);
           formData.append("doc_type", "resume");
-          uploads.push(
-            fetch(`${API_BASE}/api/sessions/${sid}/documents`, {
+          uploads.push((async () => {
+            const response = await fetch(
+              `${API_BASE}/api/sessions/${sid}/documents`,
+              {
               method: "POST",
               body: formData,
-            }),
-          );
+              },
+            );
+            if (!response.ok) throw new Error("Falha ao persistir currículo");
+          })());
         } else if (cvText) {
           // Use pre-extracted CV text from analysis
           uploads.push(sendContext(sid, "resume", cvText));
@@ -145,10 +157,13 @@ export default function SessionControls({
           uploads.push(sendContext(sid, "candidate_name", candidateName.trim()));
         }
 
+        if (nextSteps.trim()) {
+          uploads.push(sendContext(sid, "next_steps", nextSteps.trim()));
+        }
+
         if (uploads.length > 0) await Promise.all(uploads);
       }
 
-      onSessionStart(sid, mode);
       setShowInterviewPrep(false);
     } catch (err) {
       console.error("Failed to start session:", err);
@@ -371,6 +386,27 @@ export default function SessionControls({
               onBlur={(e) => {
                 e.currentTarget.style.borderColor = "#d2d2d7";
                 e.currentTarget.style.boxShadow = "none";
+              }}
+            />
+          </div>
+
+          <div style={{ marginBottom: 12 }}>
+            <textarea
+              placeholder="Próximas etapas e pessoas envolvidas (ex.: entrevista com Ana, depois avaliação técnica com João)"
+              value={nextSteps}
+              onChange={(event) => setNextSteps(event.target.value)}
+              rows={2}
+              style={{
+                padding: "8px 14px",
+                border: "1px solid #d2d2d7",
+                borderRadius: 10,
+                fontSize: 13,
+                width: "100%",
+                resize: "vertical",
+                outline: "none",
+                backgroundColor: "white",
+                color: "#1d1d1f",
+                boxSizing: "border-box",
               }}
             />
           </div>

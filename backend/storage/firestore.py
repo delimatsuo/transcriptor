@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 import structlog
+from google.api_core.exceptions import AlreadyExists
 from google.cloud import firestore
 
 from backend.config import Settings
@@ -23,6 +24,16 @@ from backend.sessions.notes import (
     deserialize_recruiter_notes,
     same_note_payload,
 )
+from backend.sessions.reports import (
+    ApproveInterviewReportRequest,
+    InterviewReport,
+    InterviewReportConflict,
+    UpdateInterviewReportRequest,
+    approve_report,
+    report_from_record,
+    report_to_record,
+    update_report_content,
+)
 
 logger = structlog.get_logger()
 
@@ -39,12 +50,9 @@ class FirestoreStorage:
             self._db = firestore.AsyncClient(project=self.settings.google_cloud_project)
         return self._db
 
-    async def save_session(self, session: Session) -> None:
-        """Save or update a session document."""
-        db = await self._get_db()
-        doc_ref = db.collection("sessions").document(session.id)
-
-        data = {
+    @staticmethod
+    def _session_record(session: Session) -> dict:
+        return {
             "mode": session.mode.value,
             "title": session.title,
             "startedAt": session.started_at,
@@ -57,8 +65,42 @@ class FirestoreStorage:
             "actionItems": [item.model_dump() for item in session.action_items],
         }
 
-        await doc_ref.set(data, merge=True)
+    async def save_session(self, session: Session) -> None:
+        """Save or update a session document."""
+        db = await self._get_db()
+        doc_ref = db.collection("sessions").document(session.id)
+
+        await doc_ref.set(self._session_record(session), merge=True)
         logger.info("firestore_session_saved", session_id=session.id)
+
+    async def save_session_and_queue_report(self, session: Session) -> None:
+        """Atomically persist terminal interview state and its report obligation."""
+        db = await self._get_db()
+        session_ref = db.collection("sessions").document(session.id)
+        generation_ref = session_ref.collection("reports").document("generation")
+        current_ref = session_ref.collection("reports").document("current")
+
+        @firestore.async_transactional
+        async def save_in_transaction(transaction):
+            generation = await generation_ref.get(transaction=transaction)
+            current = await current_ref.get(transaction=transaction)
+            transaction.set(
+                session_ref,
+                self._session_record(session),
+                merge=True,
+            )
+            if not generation.exists and not current.exists:
+                transaction.set(
+                    generation_ref,
+                    {
+                        "status": "queued",
+                        "reasonCode": None,
+                        "updatedAt": datetime.now(timezone.utc),
+                    },
+                )
+
+        await save_in_transaction(db.transaction())
+        logger.info("firestore_interview_report_queued", session_id=session.id)
 
     async def save_transcript_segment(
         self, session_id: str, segment: TranscriptSegment
@@ -172,6 +214,58 @@ class FirestoreStorage:
             "gcsPath": gcs_path,
             "uploadedAt": datetime.utcnow(),
         })
+
+    async def save_interview_context(
+        self,
+        session_id: str,
+        context_type: str,
+        text: str,
+    ) -> None:
+        """Persist report source context under the session that owns it."""
+        db = await self._get_db()
+        session_ref = db.collection("sessions").document(session_id)
+        source_ref = session_ref.collection("report_sources").document(context_type)
+        generation_ref = session_ref.collection("reports").document("generation")
+        current_ref = session_ref.collection("reports").document("current")
+
+        @firestore.async_transactional
+        async def save_in_transaction(transaction):
+            session = await session_ref.get(transaction=transaction)
+            generation = await generation_ref.get(transaction=transaction)
+            current = await current_ref.get(transaction=transaction)
+            session_data = session.to_dict() or {}
+            if (
+                not session.exists
+                or session_data.get("mode") != "interview"
+                or session_data.get("status") != "active"
+                or generation.exists
+                or current.exists
+            ):
+                raise InterviewReportConflict(
+                    "report sources are immutable after the interview ends"
+                )
+            transaction.set(source_ref, {
+                "type": context_type,
+                "text": text,
+                "updatedAt": datetime.now(timezone.utc),
+            })
+
+        await save_in_transaction(db.transaction())
+
+    async def get_interview_context(self, session_id: str) -> list[dict]:
+        """Read durable CV/JD/briefing context for report provenance."""
+        db = await self._get_db()
+        collection = (
+            db.collection("sessions")
+            .document(session_id)
+            .collection("report_sources")
+        )
+        records = []
+        async for doc in collection.stream():
+            data = doc.to_dict() or {}
+            data["id"] = doc.id
+            records.append(data)
+        return records
 
     async def list_sessions(self, limit: int = 50) -> list[dict]:
         """List recent sessions ordered by start time."""
@@ -313,3 +407,125 @@ class FirestoreStorage:
             data["id"] = doc.id
             notes.append(data)
         return notes
+
+    async def save_report_generation_state(
+        self,
+        session_id: str,
+        status: str,
+        *,
+        reason_code: str | None = None,
+    ) -> None:
+        """Persist a content-free report generation state for visible failures."""
+        db = await self._get_db()
+        doc_ref = (
+            db.collection("sessions")
+            .document(session_id)
+            .collection("reports")
+            .document("generation")
+        )
+        await doc_ref.set({
+            "status": status,
+            "reasonCode": reason_code,
+            "updatedAt": datetime.now(timezone.utc),
+        })
+
+    async def get_report_generation_state(self, session_id: str) -> dict | None:
+        """Read the content-free report generation state."""
+        db = await self._get_db()
+        snapshot = await (
+            db.collection("sessions")
+            .document(session_id)
+            .collection("reports")
+            .document("generation")
+            .get()
+        )
+        if not snapshot.exists:
+            return None
+        return snapshot.to_dict() or {}
+
+    async def save_generated_report(self, report: InterviewReport) -> InterviewReport:
+        """Create the first draft without overwriting human work or approval."""
+        db = await self._get_db()
+        doc_ref = (
+            db.collection("sessions")
+            .document(report.session_id)
+            .collection("reports")
+            .document("current")
+        )
+        try:
+            await doc_ref.create(report_to_record(report))
+            return report
+        except AlreadyExists:
+            snapshot = await doc_ref.get()
+            if not snapshot.exists:
+                raise InterviewReportConflict(
+                    "report exists but cannot be read"
+                ) from None
+            return report_from_record(report.session_id, snapshot.to_dict() or {})
+
+    async def get_interview_report(self, session_id: str) -> InterviewReport | None:
+        """Read the typed report after restart without invoking a provider."""
+        db = await self._get_db()
+        snapshot = await (
+            db.collection("sessions")
+            .document(session_id)
+            .collection("reports")
+            .document("current")
+            .get()
+        )
+        if not snapshot.exists:
+            return None
+        return report_from_record(session_id, snapshot.to_dict() or {})
+
+    async def update_interview_report(
+        self,
+        session_id: str,
+        request: UpdateInterviewReportRequest,
+    ) -> InterviewReport:
+        """CAS-update editable prose while preserving evidence and ratings."""
+        db = await self._get_db()
+        doc_ref = (
+            db.collection("sessions")
+            .document(session_id)
+            .collection("reports")
+            .document("current")
+        )
+
+        @firestore.async_transactional
+        async def update_in_transaction(transaction):
+            snapshot = await doc_ref.get(transaction=transaction)
+            if not snapshot.exists:
+                raise InterviewReportConflict("report not found")
+            report = report_from_record(session_id, snapshot.to_dict() or {})
+            updated = update_report_content(report, request)
+            transaction.set(doc_ref, report_to_record(updated))
+            return updated
+
+        return await update_in_transaction(db.transaction())
+
+    async def approve_interview_report(
+        self,
+        session_id: str,
+        request: ApproveInterviewReportRequest,
+    ) -> InterviewReport:
+        """Transactionally pin one immutable, idempotently replayable version."""
+        db = await self._get_db()
+        doc_ref = (
+            db.collection("sessions")
+            .document(session_id)
+            .collection("reports")
+            .document("current")
+        )
+
+        @firestore.async_transactional
+        async def approve_in_transaction(transaction):
+            snapshot = await doc_ref.get(transaction=transaction)
+            if not snapshot.exists:
+                raise InterviewReportConflict("report not found")
+            report = report_from_record(session_id, snapshot.to_dict() or {})
+            approved = approve_report(report, request.expected_version)
+            if approved != report:
+                transaction.set(doc_ref, report_to_record(approved))
+            return approved
+
+        return await approve_in_transaction(db.transaction())

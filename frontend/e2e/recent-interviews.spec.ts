@@ -71,6 +71,20 @@ test.beforeEach(async ({ page }) => {
       body: JSON.stringify(review),
     });
   });
+  await page.route(`**/api/sessions/${SESSION_ID}/report`, async (route) => {
+    await route.fulfill({
+      status: 404,
+      contentType: "application/json",
+      body: JSON.stringify({ detail: "Report not found" }),
+    });
+  });
+  await page.route(`**/api/sessions/${SESSION_ID}/notes`, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ notes: [] }),
+    });
+  });
 });
 
 test("a completed interview reopens after backend and browser state are gone", async ({
@@ -203,7 +217,9 @@ test("an already-starting live session wins over a stale review response", async
 
   await page.goto("/");
   await page.getByRole("button", { name: "Iniciar sessão" }).click();
-  await page.getByRole("button", { name: "Abrir Diretoria de Produto" }).click();
+  await page
+    .getByRole("button", { name: "Abrir Diretoria de Produto" })
+    .evaluate((button) => (button as HTMLButtonElement).click());
 
   await expect(page.getByText("Gravando")).toBeVisible();
   await expect(page.getByRole("button", { name: "Encerrar sessão" })).toBeVisible();

@@ -22,6 +22,7 @@ from backend.llm.gemini import GeminiClient
 from backend.llm.interview_prompts import (
     INTERVIEW_SYSTEM_PROMPT,
     INTERVIEW_REPORT_PROMPT,
+    INTERVIEW_REPORT_RESPONSE_SCHEMA,
     PRE_INTERVIEW_ANALYSIS_PROMPT,
     build_interview_user_message,
 )
@@ -66,6 +67,16 @@ from backend.sessions.review import (
     corrupt_recent_interview,
     deserialize_session,
     deserialize_transcript,
+)
+from backend.sessions.reports import (
+    ApproveInterviewReportRequest,
+    InterviewReportConflict,
+    InterviewReportError,
+    UpdateInterviewReportRequest,
+    approved_client_report,
+    parse_generated_report,
+    render_internal_summary,
+    report_generation_is_stale,
 )
 from backend.stt.stream_manager import StreamManager
 from backend.storage.firestore import FirestoreStorage
@@ -423,45 +434,156 @@ async def _generate_interview_suggestions(session_id: str) -> None:
 async def _generate_final_summary(session_id: str) -> None:
     """Generate comprehensive final summary at end of session."""
     assert session_mgr and gemini_client and firestore_storage
-
-    transcript_text = session_mgr.get_recent_transcript_text(session_id, max_segments=9999)
-    if not transcript_text:
+    session = session_mgr.get_session(session_id)
+    if session is None:
         _cleanup_session_context(session_id)
         return
-
-    session = session_mgr.get_session(session_id)
     is_interview = session and session.mode == SessionMode.INTERVIEW
 
     try:
         if is_interview:
-            from datetime import date
-            prompt = INTERVIEW_REPORT_PROMPT.replace("{interview_date}", date.today().strftime("%d/%m/%Y"))
-            docs = interview_documents.get(session_id, {})
-            user_parts = []
-            if docs.get("resume"):
-                user_parts.append(f"## Currículo / CV do Candidato\n{docs['resume']}")
-            if docs.get("jd"):
-                user_parts.append(f"## Descrição da Vaga / Job Description\n{docs['jd']}")
-            if docs.get("briefing"):
-                user_parts.append(f"## Briefing Pré-Entrevista\n{docs['briefing']}")
-            user_parts.append(f"## Transcrição Completa da Entrevista\n{transcript_text}")
-            user_message = "\n\n".join(user_parts)
+            existing = await firestore_storage.get_interview_report(session_id)
+            generation_state = await firestore_storage.get_report_generation_state(
+                session_id
+            )
+            if existing is not None:
+                report = existing
+                await firestore_storage.save_report_generation_state(
+                    session_id,
+                    "ready",
+                )
+            elif generation_state and generation_state.get("status") == "failed":
+                logger.warning(
+                    "interview_report_generation_previously_failed",
+                    session_id=session_id,
+                )
+                return
+            elif generation_state and generation_state.get("status") == "generating":
+                await firestore_storage.save_report_generation_state(
+                    session_id,
+                    "failed",
+                    reason_code="generation_interrupted",
+                )
+                logger.error(
+                    "interview_report_generation_interrupted",
+                    session_id=session_id,
+                )
+                return
+            elif generation_state and generation_state.get("status") == "ready":
+                await firestore_storage.save_report_generation_state(
+                    session_id,
+                    "failed",
+                    reason_code="ready_without_report",
+                )
+                logger.error(
+                    "interview_report_ready_without_report",
+                    session_id=session_id,
+                )
+                return
+            else:
+                await firestore_storage.save_report_generation_state(
+                    session_id,
+                    "generating",
+                )
+                transcript = deserialize_transcript(
+                    await firestore_storage.get_session_transcript(session_id)
+                )
+                if not transcript:
+                    raise InterviewReportError(
+                        "durable transcript is required for report generation"
+                    )
+                notes = deserialize_recruiter_notes(
+                    session_id,
+                    await firestore_storage.get_session_notes(session_id),
+                )
+                context_records = await firestore_storage.get_interview_context(
+                    session_id
+                )
+                context: dict[str, str] = {}
+                for record in context_records:
+                    context_id = record.get("id")
+                    if (
+                        not isinstance(context_id, str)
+                        or record.get("type") != context_id
+                        or not isinstance(record.get("text"), str)
+                        or not record["text"].strip()
+                    ):
+                        raise InterviewReportError(
+                            "durable report context is invalid"
+                        )
+                    context[context_id] = record["text"]
+
+                user_parts = ["## Fontes de contexto duráveis"]
+                for context_id in sorted(context):
+                    user_parts.append(
+                        f"[source=context evidence_id={context_id}]\n"
+                        f"{context[context_id]}"
+                    )
+                user_parts.append("## Transcrição final durável")
+                for segment in transcript:
+                    speaker = segment.speaker_override or segment.speaker
+                    user_parts.append(
+                        f"[source=transcript evidence_id={segment.id} "
+                        f"offset_ms={round(segment.end_time * 1000)} "
+                        f"speaker={speaker}]\n{segment.text}"
+                    )
+                user_parts.append("## Julgamentos da recrutadora")
+                if notes:
+                    for note in notes:
+                        user_parts.append(
+                            f"[source=recruiter_note evidence_id={note.id} "
+                            f"kind={note.kind.value} "
+                            f"transcript_segment_id={note.transcript_segment_id}]"
+                        )
+                else:
+                    user_parts.append("(Nenhuma nota da recrutadora foi registrada.)")
+
+                raw_report = await asyncio.wait_for(
+                    gemini_client.generate(
+                        system_instruction=INTERVIEW_REPORT_PROMPT,
+                        user_message="\n\n".join(user_parts),
+                        temperature=0.2,
+                        max_output_tokens=8192,
+                        response_mime_type="application/json",
+                        response_schema=INTERVIEW_REPORT_RESPONSE_SCHEMA,
+                    ),
+                    timeout=60,
+                )
+                report = parse_generated_report(
+                    session_id,
+                    raw_report,
+                    transcript_ids={segment.id for segment in transcript},
+                    note_ids={note.id for note in notes},
+                    context_ids=set(context),
+                )
+                report = await firestore_storage.save_generated_report(report)
+                await firestore_storage.save_report_generation_state(
+                    session_id,
+                    "ready",
+                )
+            summary = render_internal_summary(report)
+            transcript = session_mgr.get_transcript(session_id)
         else:
+            transcript_text = session_mgr.get_recent_transcript_text(
+                session_id,
+                max_segments=9999,
+            )
+            if not transcript_text:
+                return
             prompt = FINAL_SUMMARY_PROMPT
             user_message = f"## Transcript\n{transcript_text}"
-
-        summary = await gemini_client.generate(
-            system_instruction=prompt,
-            user_message=user_message,
-            temperature=0.2,
-            max_output_tokens=4096,
-        )
+            summary = await gemini_client.generate(
+                system_instruction=prompt,
+                user_message=user_message,
+                temperature=0.2,
+                max_output_tokens=4096,
+            )
+            transcript = session_mgr.get_transcript(session_id)
 
         session_mgr.set_summary(session_id, summary)
 
         # Broadcast
         seq = ws_manager.next_sequence(session_id)
-        transcript = session_mgr.get_transcript(session_id)
         update = SummaryUpdate(
             text=summary,
             is_final=True,
@@ -483,6 +605,18 @@ async def _generate_final_summary(session_id: str) -> None:
 
     except Exception:
         logger.exception("final_summary_error", session_id=session_id)
+        if is_interview:
+            try:
+                await firestore_storage.save_report_generation_state(
+                    session_id,
+                    "failed",
+                    reason_code="provider_or_validation_failure",
+                )
+            except Exception:
+                logger.exception(
+                    "report_generation_state_save_error",
+                    session_id=session_id,
+                )
     finally:
         _cleanup_session_context(session_id)
 
@@ -585,9 +719,18 @@ async def stop_session(session_id: str):
         if not transcription_complete:
             _cleanup_session_context(session_id)
 
-        # A terminal retry replays this durable write. This covers a lost HTTP
-        # response or a first write that failed after the in-memory transition.
-        await firestore_storage.save_session(session)
+        # For completed interviews, the durable terminal state and the report
+        # obligation are one transaction. A process crash can therefore leave
+        # neither or both, but never a completed interview with no expectation.
+        if (
+            transcription_complete
+            and session.mode == SessionMode.INTERVIEW
+        ):
+            await firestore_storage.save_session_and_queue_report(session)
+        else:
+            # A terminal retry replays this durable write. This covers a lost
+            # HTTP response or a first write that failed after the transition.
+            await firestore_storage.save_session(session)
 
         if transcription_complete:
             _schedule_final_summary_once(session_id)
@@ -639,7 +782,10 @@ async def upload_document(
     doc_type: str = Form(...),
 ):
     """Upload a resume or JD document for interview mode."""
-    assert firestore_storage and gcs_storage
+    assert session_mgr and firestore_storage and gcs_storage
+    if doc_type not in {"resume", "jd"}:
+        raise HTTPException(status_code=400, detail="doc_type must be resume or jd")
+    _require_active_interview(session_id)
 
     data = await file.read()
     filename = file.filename or "document"
@@ -649,10 +795,10 @@ async def upload_document(
     except DocumentParseError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    # Store extracted text for interview context
-    if session_id not in interview_documents:
-        interview_documents[session_id] = {}
-    interview_documents[session_id][doc_type] = text
+    try:
+        await firestore_storage.save_interview_context(session_id, doc_type, text)
+    except InterviewReportConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
 
     # Upload to GCS
     gcs_path = gcs_storage.upload_bytes(
@@ -665,6 +811,10 @@ async def upload_document(
     await firestore_storage.save_document_metadata(
         session_id, doc_type, filename, text, gcs_path
     )
+    # Store extracted text in memory only after the durable source is accepted.
+    if session_id not in interview_documents:
+        interview_documents[session_id] = {}
+    interview_documents[session_id][doc_type] = text
 
     return {"ok": True, "extracted_chars": len(text)}
 
@@ -672,11 +822,23 @@ async def upload_document(
 @app.post("/api/sessions/{session_id}/context")
 async def set_interview_context(session_id: str, body: SetContextRequest):
     """Set interview context text directly (e.g., pasted job description or briefing)."""
-    allowed_types = {"resume", "jd", "briefing", "candidate_name"}
+    assert session_mgr and firestore_storage
+    allowed_types = {"resume", "jd", "briefing", "candidate_name", "next_steps"}
     if body.doc_type not in allowed_types:
         raise HTTPException(status_code=400, detail=f"doc_type must be one of {allowed_types}")
     if len(body.text) > 100_000:
         raise HTTPException(status_code=400, detail="text exceeds 100,000 character limit")
+    if not body.text.strip():
+        raise HTTPException(status_code=400, detail="text must not be empty")
+    _require_active_interview(session_id)
+    try:
+        await firestore_storage.save_interview_context(
+            session_id,
+            body.doc_type,
+            body.text,
+        )
+    except InterviewReportConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
     if session_id not in interview_documents:
         interview_documents[session_id] = {}
     interview_documents[session_id][body.doc_type] = body.text
@@ -859,6 +1021,118 @@ async def get_recruiter_notes(session_id: str):
             detail="Persisted recruiter notes are invalid",
         ) from None
     return {"notes": [note.model_dump(mode="json") for note in notes]}
+
+
+async def _read_completed_interview(session_id: str):
+    session = await _read_session(session_id)
+    if session.mode != SessionMode.INTERVIEW:
+        raise HTTPException(status_code=409, detail="Session is not an interview")
+    if session.status != SessionStatus.COMPLETED:
+        raise HTTPException(status_code=409, detail="Interview is not completed")
+    return session
+
+
+def _require_active_interview(session_id: str):
+    assert session_mgr
+    session = session_mgr.get_session(session_id)
+    if (
+        session is None
+        or session.mode != SessionMode.INTERVIEW
+        or session.status != SessionStatus.ACTIVE
+    ):
+        raise HTTPException(status_code=409, detail="Active interview not found")
+    return session
+
+
+@app.get("/api/sessions/{session_id}/report")
+async def get_interview_report(session_id: str):
+    """Read a typed report after restart without provider calls or writes."""
+    assert firestore_storage
+    await _read_completed_interview(session_id)
+    try:
+        report = await firestore_storage.get_interview_report(session_id)
+    except InterviewReportError:
+        raise HTTPException(status_code=409, detail="Persisted report is invalid") from None
+    if report is not None:
+        return report.model_dump(mode="json")
+
+    state = await firestore_storage.get_report_generation_state(session_id)
+    if state and state.get("status") == "failed":
+        raise HTTPException(
+            status_code=409,
+            detail="A geração do relatório falhou e não será repetida automaticamente.",
+        )
+    if state and state.get("status") in {"queued", "generating"}:
+        if report_generation_is_stale(state):
+            await firestore_storage.save_report_generation_state(
+                session_id,
+                "failed",
+                reason_code="generation_interrupted",
+            )
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "A geração do relatório foi interrompida e não será "
+                    "repetida automaticamente."
+                ),
+            )
+        raise HTTPException(status_code=425, detail="Relatório ainda em geração")
+    if state and state.get("status") == "ready":
+        await firestore_storage.save_report_generation_state(
+            session_id,
+            "failed",
+            reason_code="ready_without_report",
+        )
+        raise HTTPException(
+            status_code=409,
+            detail="O estado do relatório é inconsistente e requer revisão.",
+        )
+    raise HTTPException(status_code=404, detail="Report not found")
+
+
+@app.put("/api/sessions/{session_id}/report")
+async def update_interview_report(
+    session_id: str,
+    body: UpdateInterviewReportRequest,
+):
+    """Save reviewed prose with optimistic concurrency control."""
+    assert firestore_storage
+    await _read_completed_interview(session_id)
+    try:
+        report = await firestore_storage.update_interview_report(session_id, body)
+    except (InterviewReportConflict, InterviewReportError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+    return report.model_dump(mode="json")
+
+
+@app.post("/api/sessions/{session_id}/report/approve")
+async def approve_interview_report(
+    session_id: str,
+    body: ApproveInterviewReportRequest,
+):
+    """Explicitly pin the exact reviewed version for client export."""
+    assert firestore_storage
+    await _read_completed_interview(session_id)
+    try:
+        report = await firestore_storage.approve_interview_report(session_id, body)
+    except (InterviewReportConflict, InterviewReportError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+    return report.model_dump(mode="json")
+
+
+@app.get("/api/sessions/{session_id}/report/client-export")
+async def get_approved_client_report(session_id: str):
+    """Expose exactly two client paragraphs, and only after human approval."""
+    assert firestore_storage
+    await _read_completed_interview(session_id)
+    try:
+        report = await firestore_storage.get_interview_report(session_id)
+        if report is None:
+            raise InterviewReportConflict("report not found")
+        client_report = approved_client_report(report)
+    except (InterviewReportConflict, InterviewReportError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+    return client_report.model_dump(mode="json")
 
 
 @app.get("/api/sessions/{session_id}/review")

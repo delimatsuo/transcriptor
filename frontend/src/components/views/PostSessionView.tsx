@@ -2,9 +2,11 @@
 
 import TranscriptPanel from "@/components/TranscriptPanel";
 import SummaryPanel from "@/components/SummaryPanel";
+import InterviewReportReview from "@/components/InterviewReportReview";
 import type { TranscriptSegment } from "@/types/ws";
 
 interface Props {
+  sessionId: string;
   transcript: TranscriptSegment[];
   summary: string;
   isSummaryFinal: boolean;
@@ -14,6 +16,7 @@ interface Props {
 }
 
 export default function PostSessionView({
+  sessionId,
   transcript,
   summary,
   isSummaryFinal,
@@ -139,13 +142,21 @@ export default function PostSessionView({
         </div>
       </div>
 
-      {/* Summary / Assessment */}
-      <SummaryPanel
-        summary={summary}
-        isFinal={isSummaryFinal}
-        transcript={transcript}
-        isInterview={isInterview}
-      />
+      {isInterview ? (
+        <InterviewReportReview
+          sessionId={sessionId}
+          summary={summary}
+          isSummaryFinal={isSummaryFinal}
+          transcript={transcript}
+        />
+      ) : (
+        <SummaryPanel
+          summary={summary}
+          isFinal={isSummaryFinal}
+          transcript={transcript}
+          isInterview={false}
+        />
+      )}
     </div>
   );
 }

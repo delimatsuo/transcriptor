@@ -33,6 +33,8 @@ export type NoteKind =
   | "concern"
   | "strength"
   | "follow_up";
+export type ReportStatus = "draft" | "approved";
+export type EvidenceSource = "transcript" | "recruiter_note" | "context";
 
 export interface TranscriptSegment {
   id: string;
@@ -99,6 +101,47 @@ export interface RecruiterNote {
   transcript_offset_ms: number;
   source: "recruiter";
   created_at: string;
+}
+
+export interface EvidenceReference {
+  source: EvidenceSource;
+  evidence_id: string;
+}
+
+export interface InternalReportSection {
+  id: string;
+  title: string;
+  body: string;
+  rating: number | null;
+  evidence: EvidenceReference[];
+}
+
+export interface ClientNarrative {
+  trajectory: string;
+  assessment: string;
+  trajectory_evidence: EvidenceReference[];
+  assessment_evidence: EvidenceReference[];
+}
+
+export interface InterviewReport {
+  session_id: string;
+  version: number;
+  status: ReportStatus;
+  ai_draft_label: "Rascunho gerado por IA";
+  internal_sections: InternalReportSection[];
+  client_narrative: ClientNarrative;
+  created_at: string;
+  updated_at: string;
+  approved_version: number | null;
+  approved_at: string | null;
+}
+
+export interface ApprovedClientReport {
+  session_id: string;
+  version: number;
+  trajectory: string;
+  assessment: string;
+  approved_at: string;
 }
 
 export interface TranscriptDelta {

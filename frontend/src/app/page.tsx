@@ -281,6 +281,7 @@ export default function Home() {
       {/* Post-session review */}
       {isPostSession && (
         <PostSessionView
+          sessionId={sessionId}
           transcript={transcript}
           summary={summary}
           isSummaryFinal={isSummaryFinal}

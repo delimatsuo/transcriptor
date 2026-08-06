@@ -62,6 +62,43 @@ export default function RootLayout({
           input, textarea, select, button {
             font-family: inherit;
           }
+
+          .client-report-print {
+            display: none;
+          }
+
+          @media print {
+            @page {
+              size: A4;
+              margin: 22mm 20mm;
+            }
+
+            body * {
+              visibility: hidden !important;
+            }
+
+            .client-report-print,
+            .client-report-print * {
+              visibility: visible !important;
+            }
+
+            .client-report-print {
+              display: block !important;
+              position: absolute;
+              inset: 0;
+              color: #000;
+              font-family: Georgia, "Times New Roman", serif;
+              font-size: 11pt;
+              line-height: 1.55;
+            }
+
+            .client-report-print p {
+              margin: 0 0 14pt;
+              text-align: justify;
+              orphans: 3;
+              widows: 3;
+            }
+          }
         `}</style>
       </body>
     </html>

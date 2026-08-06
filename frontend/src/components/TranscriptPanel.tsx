@@ -118,6 +118,7 @@ export default function TranscriptPanel({
         return (
           <div
             key={seg.id}
+            id={`transcript-segment-${seg.id}`}
             style={{
               padding: "10px 16px",
               borderRadius: 12,
