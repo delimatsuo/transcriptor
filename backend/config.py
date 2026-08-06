@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings
 
 
@@ -81,6 +81,16 @@ class Settings(BaseSettings):
             "Maximum durable context/transcript characters sent to final report generation"
         ),
     )
+
+    @field_validator("llm_location")
+    @classmethod
+    def validate_llm_location(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("LLM_LOCATION must not be blank")
+        if normalized.lower() == "global":
+            raise ValueError("LLM_LOCATION=global is prohibited by the privacy policy")
+        return normalized
 
     # Audio
     blackhole_device_name: str = Field(

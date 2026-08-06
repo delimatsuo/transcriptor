@@ -3,8 +3,23 @@
 import asyncio
 from types import SimpleNamespace
 
+import pytest
+
 from backend.config import Settings
 from backend.llm import gemini
+
+
+def test_global_vertex_location_is_rejected():
+    with pytest.raises(ValueError, match="global is prohibited"):
+        Settings(google_cloud_project="test-project", llm_location="global")
+
+
+def test_vertex_location_is_trimmed_for_explicit_provider_routing():
+    settings = Settings(
+        google_cloud_project="test-project",
+        llm_location=" southamerica-east1 ",
+    )
+    assert settings.llm_location == "southamerica-east1"
 
 
 def test_reuses_model_for_static_system_prompt(monkeypatch):
