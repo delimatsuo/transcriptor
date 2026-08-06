@@ -11,7 +11,7 @@ not hosted, deployment, provider, physical-device, or real-interview evidence.
 | --- | --- |
 | Branch | `codex/week-4-auth` |
 | Source/test qualification commit | `3bb4e3974008cbf67a9d6746307d1de74dd51156` |
-| PR head at last evidence capture | `3bb4e3974008cbf67a9d6746307d1de74dd51156` |
+| PR head at last evidence capture | `46b8223d46541f0444ca2169fa551a3e65b13b96` |
 | Pull request | [#8](https://github.com/delimatsuo/transcriptor/pull/8), draft, stacked on `codex/week-3-evidence-report` |
 | Remote head at last evidence capture | Matched the PR head above |
 
@@ -31,7 +31,7 @@ not hosted, deployment, provider, physical-device, or real-interview evidence.
 - Dependency audit: `npm audit --audit-level=moderate` reports zero
   vulnerabilities.
 - GitHub Actions: exact executable-tree run
-  [31121647153](https://github.com/delimatsuo/transcriptor/actions/runs/31121647153)
+  [31121684183](https://github.com/delimatsuo/transcriptor/actions/runs/31121684183)
   is queued after repeated runner-service stalls; local source qualification is
   complete and the prior unchanged-source run passed both jobs.
 
