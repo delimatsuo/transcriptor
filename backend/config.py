@@ -43,6 +43,12 @@ class Settings(BaseSettings):
         le=8,
         description="Maximum concurrent Gemini requests in this backend process",
     )
+    llm_request_timeout_seconds: float = Field(
+        default=60.0,
+        gt=0,
+        le=300,
+        description="Deadline for each non-stream Gemini request",
+    )
 
     # Audio
     blackhole_device_name: str = Field(

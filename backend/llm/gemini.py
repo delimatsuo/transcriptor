@@ -71,12 +71,26 @@ class GeminiClient:
             generation_config["response_schema"] = response_schema
 
         queued_at = time.monotonic()
-        async with self._request_semaphore:
-            started_at = time.monotonic()
-            response = await model_with_system.generate_content_async(
-                [user_message],
-                generation_config=generation_config,
+        timeout_seconds = self.settings.llm_request_timeout_seconds
+        try:
+            async with asyncio.timeout(timeout_seconds):
+                async with self._request_semaphore:
+                    started_at = time.monotonic()
+                    response = await model_with_system.generate_content_async(
+                        [user_message],
+                        generation_config=generation_config,
+                    )
+        except TimeoutError:
+            logger.warning(
+                "gemini_request_timeout",
+                input_chars=len(user_message),
+                timeout_seconds=timeout_seconds,
+                queue_seconds=round(
+                    time.monotonic() - queued_at,
+                    3,
+                ),
             )
+            raise
 
         text = response.text
         logger.info(

@@ -63,3 +63,39 @@ def test_shared_request_limit_serializes_provider_calls(monkeypatch):
     asyncio.run(run())
 
     assert max_active == 1
+
+
+def test_request_timeout_releases_shared_queue(monkeypatch):
+    calls = 0
+
+    class FakeModel:
+        async def generate_content_async(self, *_args, **_kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                await asyncio.sleep(1)
+            return SimpleNamespace(text="ok")
+
+    monkeypatch.setattr(gemini.aiplatform, "init", lambda **_kwargs: None)
+    monkeypatch.setattr(gemini, "GenerativeModel", lambda *_args, **_kwargs: FakeModel())
+
+    client = gemini.GeminiClient(
+        Settings(
+            google_cloud_project="test-project",
+            llm_max_concurrent_requests=1,
+            llm_request_timeout_seconds=0.01,
+        )
+    )
+
+    async def run():
+        try:
+            await client.generate("system", "first")
+        except asyncio.TimeoutError:
+            pass
+        else:
+            raise AssertionError("the first provider call should time out")
+
+        assert await client.generate("system", "second") == "ok"
+
+    asyncio.run(run())
+    assert calls == 2
