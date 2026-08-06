@@ -26,8 +26,12 @@ function reviewLoadError(status: number): string {
   return "Não foi possível reabrir esta entrevista persistida.";
 }
 
-export default function Home() {
-  const auth = useAuth();
+type AuthState = ReturnType<typeof useAuth>;
+type AuthenticatedAuthState = Omit<AuthState, "user"> & {
+  user: NonNullable<AuthState["user"]>;
+};
+
+function AuthenticatedHome({ auth }: { auth: AuthenticatedAuthState }) {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [sessionMode, setSessionMode] = useState<SessionMode>("meeting");
   const [isActive, setIsActive] = useState(false);
@@ -42,7 +46,6 @@ export default function Home() {
   const disconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reviewRequestRef = useRef<AbortController | null>(null);
   const reviewRequestTokenRef = useRef(0);
-  const previousUidRef = useRef<string | null>(null);
 
   const {
     transcript,
@@ -55,28 +58,6 @@ export default function Home() {
     disconnect,
     hydrateReview,
   } = useWebSocket();
-
-  // Authentication is a hard data boundary. Clear all prior-account state
-  // synchronously before rendering a different principal.
-  useEffect(() => {
-    const uid = auth.user?.uid ?? null;
-    if (previousUidRef.current !== null && previousUidRef.current !== uid) {
-      disconnect();
-      reviewRequestTokenRef.current += 1;
-      reviewRequestRef.current?.abort();
-      setSessionId(null);
-      setSessionMode("interview");
-      setIsActive(false);
-      setPreInterviewBriefing("");
-      setStopError(null);
-      setReviewError(null);
-      setPersistedReviewWarning(null);
-      setStopCapability(null);
-      hydrateReview([], null);
-      window.history.replaceState({}, "", window.location.pathname);
-    }
-    previousUidRef.current = uid;
-  }, [auth.user?.uid, disconnect, hydrateReview]);
 
   const handleSessionStart = useCallback(
     (id: string, mode: SessionMode, initialStopCapability?: string) => {
@@ -218,21 +199,6 @@ export default function Home() {
     await auth.signOut();
   }, [auth, isActive]);
 
-  if (auth.status === "initializing") {
-    return <main role="status" aria-live="polite" style={{ padding: 40 }}>Verificando acesso…</main>;
-  }
-  if (!auth.user) {
-    return (
-      <main style={{ minHeight: "100vh", display: "grid", placeItems: "center", padding: 24 }}>
-        <section aria-labelledby="auth-title" style={{ maxWidth: 460, textAlign: "center" }}>
-          <h1 id="auth-title">T.A.R.S.</h1>
-          <p>Entre com sua conta Google autorizada para preparar entrevistas com aviso e controle de acesso.</p>
-          <AuthControls status={auth.status} user={auth.user} error={auth.error} onSignIn={auth.signIn} onSignOut={handleSignOut} />
-        </section>
-      </main>
-    );
-  }
-
   const isInterview = sessionMode === "interview";
   const isPostSession = !isActive && sessionId !== null;
   const hasContent = isActive || isPostSession;
@@ -366,4 +332,26 @@ export default function Home() {
       )}
     </div>
   );
+}
+
+export default function Home() {
+  const auth = useAuth();
+  const admittedUser = auth.user;
+
+  if (auth.status === "initializing") {
+    return <main role="status" aria-live="polite" style={{ padding: 40 }}>Verificando acesso…</main>;
+  }
+  if (!admittedUser) {
+    return (
+      <main style={{ minHeight: "100vh", display: "grid", placeItems: "center", padding: 24 }}>
+        <section aria-labelledby="auth-title" style={{ maxWidth: 460, textAlign: "center" }}>
+          <h1 id="auth-title">T.A.R.S.</h1>
+          <p>Entre com sua conta Google autorizada para preparar entrevistas com aviso e controle de acesso.</p>
+          <AuthControls status={auth.status} user={auth.user} error={auth.error} onSignIn={auth.signIn} onSignOut={auth.signOut} />
+        </section>
+      </main>
+    );
+  }
+
+  return <AuthenticatedHome key={admittedUser.uid} auth={{ ...auth, user: admittedUser }} />;
 }

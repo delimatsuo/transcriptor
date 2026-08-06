@@ -73,3 +73,25 @@ def test_foreign_session_is_non_enumerating_not_found():
         main.reset_current_auth(token)
         main.reset_auth_enforced(enforced)
         assert main.current_auth() is previous
+
+
+@pytest.mark.parametrize(
+    "record",
+    [
+        {"ownerId": "uid-b", "orgId": "ella-internal", "mode": object()},
+        {"ownerId": "uid-a", "orgId": "other-org", "mode": object()},
+        {"mode": object()},
+    ],
+)
+def test_raw_persisted_foreign_or_unowned_session_is_non_enumerating_not_found(record):
+    previous = main.current_auth()
+    token = main.set_current_auth(AuthContext("uid-a", "a@example.com", "ella-internal"))
+    enforced = main.set_auth_enforced()
+    try:
+        with pytest.raises(HTTPException) as exc_info:
+            main._assert_persisted_session_access(record)
+        assert exc_info.value.status_code == 404
+    finally:
+        main.reset_current_auth(token)
+        main.reset_auth_enforced(enforced)
+        assert main.current_auth() is previous

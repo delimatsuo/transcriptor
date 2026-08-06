@@ -264,6 +264,16 @@ def _assert_session_access(session) -> AuthContext | None:
     return user
 
 
+def _assert_persisted_session_access(record: dict) -> AuthContext | None:
+    """Authorize raw persisted scope before parsing untrusted session fields."""
+    user = _principal()
+    if user is None:
+        return None
+    if record.get("ownerId") != user.uid or record.get("orgId") != user.org_id:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return user
+
+
 def _assert_report_scope(report, session) -> None:
     """Require report ownership to agree with its authorized parent session."""
     user = current_auth()
@@ -1192,6 +1202,7 @@ async def _read_session(session_id: str):
     record = await firestore_storage.get_session_record(session_id)
     if record is None:
         raise HTTPException(status_code=404, detail="Session not found")
+    _assert_persisted_session_access(record)
     try:
         session = deserialize_session(session_id, record)
         _assert_session_access(session)

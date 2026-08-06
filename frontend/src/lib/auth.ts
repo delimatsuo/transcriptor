@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   GoogleAuthProvider,
   onAuthStateChanged,
@@ -9,6 +9,7 @@ import {
   type User,
 } from "firebase/auth";
 import { auth, firebaseConfigured } from "@/lib/firebase";
+import { admissionIsCurrent } from "@/lib/authAdmission";
 
 const bypassEnabled =
   process.env.NEXT_PUBLIC_AUTH_BYPASS === "1" && process.env.NODE_ENV !== "production";
@@ -69,6 +70,8 @@ export function useAuth() {
   const [status, setStatus] = useState<AuthStatus>("initializing");
   const [user, setUser] = useState<AuthUser | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const admissionGenerationRef = useRef(0);
+  const admissionAbortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     if (bypassEnabled) {
@@ -80,7 +83,12 @@ export function useAuth() {
       setStatus("signed_out");
       return;
     }
-    return onAuthStateChanged(auth, (next) => {
+    const firebaseAuth = auth;
+    const unsubscribe = onAuthStateChanged(firebaseAuth, (next) => {
+      const generation = admissionGenerationRef.current + 1;
+      admissionGenerationRef.current = generation;
+      admissionAbortRef.current?.abort();
+      admissionAbortRef.current = null;
       if (!next) {
         setUser(null);
         setStatus("signed_out");
@@ -91,12 +99,26 @@ export function useAuth() {
       setStatus("initializing");
       // Admission is a backend decision, not a client-side Firebase claim.
       // Keep the app/data tree hidden until the allowlist/org check passes.
+      const controller = new AbortController();
+      admissionAbortRef.current = controller;
       void (async () => {
         try {
           const token = await next.getIdToken();
           const response = await fetch(`${API_BASE_URL}/api/me`, {
             headers: { Authorization: `Bearer ${token}` },
+            signal: controller.signal,
           });
+          if (
+            !admissionIsCurrent(
+              controller.signal,
+              generation,
+              admissionGenerationRef.current,
+              firebaseAuth.currentUser?.uid,
+              next.uid,
+            )
+          ) {
+            return;
+          }
           if (!response.ok) {
             setUser(null);
             setStatus("error");
@@ -107,12 +129,29 @@ export function useAuth() {
           setStatus("signed_in");
           setError(null);
         } catch {
+          if (
+            !admissionIsCurrent(
+              controller.signal,
+              generation,
+              admissionGenerationRef.current,
+              firebaseAuth.currentUser?.uid,
+              next.uid,
+            )
+          ) {
+            return;
+          }
           setUser(null);
           setStatus("error");
           setError("Não foi possível validar o acesso com o backend. Verifique a conexão e tente novamente.");
         }
       })();
     });
+    return () => {
+      admissionGenerationRef.current += 1;
+      admissionAbortRef.current?.abort();
+      admissionAbortRef.current = null;
+      unsubscribe();
+    };
   }, []);
 
   const signIn = async () => {
@@ -134,6 +173,9 @@ export function useAuth() {
     if (bypassEnabled || !auth) return;
     // Clear the local principal before the provider round-trip so the prior
     // account's interview state cannot remain visible during sign-out.
+    admissionGenerationRef.current += 1;
+    admissionAbortRef.current?.abort();
+    admissionAbortRef.current = null;
     setUser(null);
     setStatus("signed_out");
     await firebaseSignOut(auth);
