@@ -1003,6 +1003,7 @@ def _cleanup_session_context(
     session_id: str,
     *,
     release_transcript_memory: bool = True,
+    preserve_stop_capability: bool = False,
 ) -> None:
     """Remove sensitive per-interview context after terminal handling."""
     interview_documents.pop(session_id, None)
@@ -1021,9 +1022,8 @@ def _cleanup_session_context(
     for token, (_, token_session_id, _) in list(ws_tickets.items()):
         if token_session_id == session_id:
             ws_tickets.pop(token, None)
-    for token, (_, token_session_id, _) in list(stop_capabilities.items()):
-        if token_session_id == session_id:
-            stop_capabilities.pop(token, None)
+    if not preserve_stop_capability:
+        _revoke_stop_capabilities(session_id)
     _clock_sync_timestamps.pop(session_id, None)
 
     # Terminal transcript payloads are already durable by the time this
@@ -1032,6 +1032,13 @@ def _cleanup_session_context(
     # doubles may not expose this optional memory-release seam.
     if release_transcript_memory:
         _release_terminal_transcript_memory(session_id)
+
+
+def _revoke_stop_capabilities(session_id: str) -> None:
+    """Revoke recovery capabilities after terminal durability succeeds."""
+    for token, (_, token_session_id, _) in list(stop_capabilities.items()):
+        if token_session_id == session_id:
+            stop_capabilities.pop(token, None)
 
 
 def _schedule_final_summary_once(session_id: str) -> None:
@@ -1168,6 +1175,7 @@ async def stop_session(session_id: str):
             _cleanup_session_context(
                 session_id,
                 release_transcript_memory=False,
+                preserve_stop_capability=True,
             )
 
         # For completed interviews, the durable terminal state and the report
@@ -1182,6 +1190,10 @@ async def stop_session(session_id: str):
             # A terminal retry replays this durable write. This covers a lost
             # HTTP response or a first write that failed after the transition.
             await firestore_storage.save_session(session)
+
+        # Keep the bearer-loss recovery credential usable if the terminal
+        # write failed. Revoke it only after durable persistence succeeds.
+        _revoke_stop_capabilities(session_id)
 
         if not transcription_complete:
             _release_terminal_transcript_memory(session_id)
@@ -1231,6 +1243,7 @@ async def delete_session(session_id: str):
             org_id=user.org_id if user else None,
         )
         transcript_persistence_failures.discard(session_id)
+        _revoke_stop_capabilities(session_id)
         _release_terminal_transcript_memory(session_id)
         return result
     except PermissionError:

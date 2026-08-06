@@ -22,6 +22,7 @@ from starlette.websockets import WebSocketDisconnect
 from backend import main
 from backend.auth import AuthContext, AuthenticationError, verify_bearer_token
 from backend.config import Settings
+from backend.schemas.models import SessionStatus
 
 
 def auth_settings(**overrides) -> Settings:
@@ -240,6 +241,64 @@ def test_stop_capability_is_bounded_and_only_fallback_for_matching_stop_route(mo
         assert expired.status_code == 401
     finally:
         main.stop_capabilities.clear()
+
+
+def test_incomplete_stop_keeps_recovery_capability_until_terminal_write_succeeds(
+    monkeypatch,
+):
+    user = AuthContext("uid-a", "a@example.com", "ella-internal")
+    session = SimpleNamespace(
+        id="s1",
+        owner_id=user.uid,
+        org_id=user.org_id,
+        status=SessionStatus.INCOMPLETE,
+        mode="meeting",
+    )
+
+    class FakeSessionManager:
+        def get_session(self, _session_id):
+            return session
+
+    class FlakyFirestore:
+        def __init__(self):
+            self.calls = 0
+
+        async def save_session(self, _session):
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("transient Firestore failure")
+
+    firestore = FlakyFirestore()
+    old_session_mgr = main.session_mgr
+    old_firestore = main.firestore_storage
+    old_locks = main.session_stop_locks.copy()
+    main.session_stop_locks.clear()
+    main.stop_capabilities.clear()
+    main.session_mgr = FakeSessionManager()
+    main.firestore_storage = firestore
+    auth_token = main.set_current_auth(user)
+    capability = main._mint_capability(main.stop_capabilities, user, session.id, 120)
+
+    async def no_pipeline(_session_id):
+        raise AssertionError("incomplete retry must not restart the pipeline")
+
+    monkeypatch.setattr(main, "_stop_pipeline", no_pipeline)
+    try:
+        with pytest.raises(RuntimeError, match="transient Firestore failure"):
+            asyncio.run(main.stop_session(session.id))
+        assert capability in main.stop_capabilities
+
+        result = asyncio.run(main.stop_session(session.id))
+        assert result["transcription_complete"] is False
+        assert capability not in main.stop_capabilities
+        assert firestore.calls == 2
+    finally:
+        main.reset_current_auth(auth_token)
+        main.stop_capabilities.clear()
+        main.session_stop_locks.clear()
+        main.session_stop_locks.update(old_locks)
+        main.session_mgr = old_session_mgr
+        main.firestore_storage = old_firestore
 
 
 class FakeWebSocket:
