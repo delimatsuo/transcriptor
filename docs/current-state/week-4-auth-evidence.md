@@ -30,11 +30,11 @@ not hosted, deployment, provider, physical-device, or real-interview evidence.
   principal. The bypass is test-only and does not bypass backend authentication.
 - Dependency audit: `npm audit --audit-level=moderate` reports zero
   vulnerabilities.
-- GitHub Actions: current-head checks are pending after repeated runner-service
-  stalls. Local exact-source qualification is complete. Historical run
-  [31119758788](https://github.com/delimatsuo/transcriptor/actions/runs/31119758788)
-  passed both jobs on an earlier tree; it is not used as green evidence for
-  the current source.
+- GitHub Actions: no current-head run exists for this branch. The checked-in
+  workflow triggers pull requests only when the base is `staging` or
+  `codex/week-3-evidence-report`, and pushes only on `staging`; this PR head is
+  `codex/week-4-auth`. Local exact-source qualification is complete. Historical
+  runs are not used as green evidence for the current source.
 
 ## Efficiency and cost controls
 
