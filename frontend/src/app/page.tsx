@@ -10,6 +10,8 @@ import MeetingLiveView from "@/components/views/MeetingLiveView";
 import PostSessionView from "@/components/views/PostSessionView";
 import { reviewWarning as getReviewWarning } from "@/lib/sessionReview";
 import { requestSessionStop } from "@/lib/sessionStop";
+import { apiFetch, useAuth } from "@/lib/auth";
+import AuthControls from "@/components/AuthControls";
 import type { SessionMode, SessionReview } from "@/types/ws";
 
 const API_BASE = "http://localhost:8000";
@@ -25,6 +27,7 @@ function reviewLoadError(status: number): string {
 }
 
 export default function Home() {
+  const auth = useAuth();
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [sessionMode, setSessionMode] = useState<SessionMode>("meeting");
   const [isActive, setIsActive] = useState(false);
@@ -35,9 +38,11 @@ export default function Home() {
     string | null
   >(null);
   const [reviewLoading, setReviewLoading] = useState(false);
+  const [stopCapability, setStopCapability] = useState<string | null>(null);
   const disconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reviewRequestRef = useRef<AbortController | null>(null);
   const reviewRequestTokenRef = useRef(0);
+  const previousUidRef = useRef<string | null>(null);
 
   const {
     transcript,
@@ -51,8 +56,30 @@ export default function Home() {
     hydrateReview,
   } = useWebSocket();
 
+  // Authentication is a hard data boundary. Clear all prior-account state
+  // synchronously before rendering a different principal.
+  useEffect(() => {
+    const uid = auth.user?.uid ?? null;
+    if (previousUidRef.current !== null && previousUidRef.current !== uid) {
+      disconnect();
+      reviewRequestTokenRef.current += 1;
+      reviewRequestRef.current?.abort();
+      setSessionId(null);
+      setSessionMode("interview");
+      setIsActive(false);
+      setPreInterviewBriefing("");
+      setStopError(null);
+      setReviewError(null);
+      setPersistedReviewWarning(null);
+      setStopCapability(null);
+      hydrateReview([], null);
+      window.history.replaceState({}, "", window.location.pathname);
+    }
+    previousUidRef.current = uid;
+  }, [auth.user?.uid, disconnect, hydrateReview]);
+
   const handleSessionStart = useCallback(
-    (id: string, mode: SessionMode) => {
+    (id: string, mode: SessionMode, initialStopCapability?: string) => {
       reviewRequestTokenRef.current += 1;
       reviewRequestRef.current?.abort();
       reviewRequestRef.current = null;
@@ -69,6 +96,7 @@ export default function Home() {
       setStopError(null);
       setReviewError(null);
       setPersistedReviewWarning(null);
+      setStopCapability(initialStopCapability ?? null);
       window.history.replaceState({}, "", window.location.pathname);
       connect(id);
     },
@@ -85,7 +113,7 @@ export default function Home() {
       setReviewLoading(true);
       setReviewError(null);
       try {
-        const response = await fetch(
+        const response = await apiFetch(
           `${API_BASE}/api/sessions/${encodeURIComponent(id)}/review`,
           { signal: controller.signal },
         );
@@ -139,13 +167,13 @@ export default function Home() {
         }
       }
     },
-    [disconnect, hydrateReview],
+    [disconnect, hydrateReview, auth.status],
   );
 
   useEffect(() => {
     const reviewId = new URLSearchParams(window.location.search).get("review");
-    if (reviewId) void handleOpenReview(reviewId, false);
-  }, [handleOpenReview]);
+    if (reviewId && auth.status === "signed_in") void handleOpenReview(reviewId, false);
+  }, [handleOpenReview, auth.status]);
 
   useEffect(
     () => () => {
@@ -162,8 +190,9 @@ export default function Home() {
 
     try {
       const outcome = await requestSessionStop(
-        fetch,
+        apiFetch,
         `${API_BASE}/api/sessions/${sessionId}/stop`,
+        stopCapability,
       );
       setStopError(outcome.warning);
     } catch (err) {
@@ -179,7 +208,30 @@ export default function Home() {
       disconnect();
       disconnectTimerRef.current = null;
     }, 10000);
-  }, [sessionId, disconnect]);
+  }, [sessionId, disconnect, stopCapability]);
+
+  const handleSignOut = useCallback(async () => {
+    if (isActive) {
+      setStopError("Encerre a entrevista e aguarde a confirmação antes de sair.");
+      return;
+    }
+    await auth.signOut();
+  }, [auth, isActive]);
+
+  if (auth.status === "initializing") {
+    return <main role="status" aria-live="polite" style={{ padding: 40 }}>Verificando acesso…</main>;
+  }
+  if (!auth.user) {
+    return (
+      <main style={{ minHeight: "100vh", display: "grid", placeItems: "center", padding: 24 }}>
+        <section aria-labelledby="auth-title" style={{ maxWidth: 460, textAlign: "center" }}>
+          <h1 id="auth-title">T.A.R.S.</h1>
+          <p>Entre com sua conta Google autorizada para preparar entrevistas com aviso e controle de acesso.</p>
+          <AuthControls status={auth.status} user={auth.user} error={auth.error} onSignIn={auth.signIn} onSignOut={handleSignOut} />
+        </section>
+      </main>
+    );
+  }
 
   const isInterview = sessionMode === "interview";
   const isPostSession = !isActive && sessionId !== null;
@@ -187,6 +239,7 @@ export default function Home() {
 
   return (
     <div
+      key={auth.user.uid}
       style={{
         display: "flex",
         flexDirection: "column",
@@ -231,6 +284,14 @@ export default function Home() {
           isActive={isActive}
           sessionId={sessionId}
           disabled={reviewLoading}
+        />
+        <AuthControls
+          status={auth.status}
+          user={auth.user}
+          error={auth.error}
+          onSignIn={auth.signIn}
+          onSignOut={handleSignOut}
+          disabled={isActive}
         />
       </header>
 
@@ -294,6 +355,7 @@ export default function Home() {
             setReviewLoading(false);
             hydrateReview([], null);
             setSessionId(null);
+            setStopCapability(null);
             setIsActive(false);
             setStopError(null);
             setReviewError(null);

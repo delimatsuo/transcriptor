@@ -18,6 +18,15 @@ canais de captura estiverem ativos **e isolados entre si**.
    antes de ficar pronto; se a operação falhar ou exceder ~10 s, ele encerra
    com `ADC expirado — rode: gcloud auth application-default login`.
 
+   **Acesso Week 4:** configure no `.env` o `AUTH_ALLOWED_EMAILS` com a conta
+   Google autorizada (lista exata, sem curingas) e confira a configuração web
+   Firebase em `.env.local` (`NEXT_PUBLIC_FIREBASE_*`). Entre com essa conta e
+   confirme que o nome/e-mail aparecem no cabeçalho antes de criar qualquer
+   sessão. A autenticação Firebase atribui o entrevistador e o `org_id`
+   interno; ela não transforma este computador/Admin SDK em uma fronteira de
+   segurança hospedada. Não use dados reais até o gate de hospedagem e a
+   migração/quarentena de registros legados serem aprovados.
+
 1. No macOS, abra **Ajuste de Áudio e MIDI**. Em **Dispositivo de Saída**,
    selecione o **Dispositivo de Saída Múltipla** e confirme que ele contém
    **BlackHole 2ch** e os fones de ouvido reais. Não deixe a saída em fones

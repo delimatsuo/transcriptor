@@ -14,6 +14,27 @@ class Settings(BaseSettings):
     # GCP
     google_cloud_project: str = Field(..., description="GCP project ID")
 
+    # Authentication / internal tenancy
+    firebase_project_id: str | None = Field(
+        default=None,
+        description="Firebase project ID; defaults to google_cloud_project",
+    )
+    auth_org_id: str = Field(
+        default="ella-internal",
+        description="Server-derived internal organization identifier",
+    )
+    auth_allowed_emails: str = Field(
+        default="",
+        description="Comma-separated exact email allowlist for internal access",
+    )
+    auth_ws_ticket_ttl_seconds: int = Field(default=60, gt=0, le=300)
+    auth_stop_capability_ttl_seconds: int = Field(default=14_400, gt=0, le=86_400)
+    auth_extension_capability_ttl_seconds: int = Field(default=900, gt=0, le=3600)
+    extension_enabled: bool = Field(
+        default=False,
+        description="Explicit opt-in for the Chrome extension bridge",
+    )
+
     # Audio
     blackhole_device_name: str = Field(
         default="BlackHole 2ch",

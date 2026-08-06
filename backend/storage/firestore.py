@@ -63,6 +63,8 @@ class FirestoreStorage:
             "speakerMap": session.speaker_map,
             "summary": session.summary,
             "actionItems": [item.model_dump() for item in session.action_items],
+            "ownerId": session.owner_id,
+            "orgId": session.org_id,
         }
 
     async def save_session(self, session: Session) -> None:
@@ -96,6 +98,8 @@ class FirestoreStorage:
                         "status": "queued",
                         "reasonCode": None,
                         "updatedAt": datetime.now(timezone.utc),
+                        "ownerId": session.owner_id,
+                        "orgId": session.org_id,
                     },
                 )
 
@@ -103,7 +107,11 @@ class FirestoreStorage:
         logger.info("firestore_interview_report_queued", session_id=session.id)
 
     async def save_transcript_segment(
-        self, session_id: str, segment: TranscriptSegment
+        self,
+        session_id: str,
+        segment: TranscriptSegment,
+        owner_id: str | None = None,
+        org_id: str | None = None,
     ) -> None:
         """Save a single transcript segment to the subcollection."""
         db = await self._get_db()
@@ -121,13 +129,19 @@ class FirestoreStorage:
             "endTime": segment.end_time,
             "confidence": segment.confidence,
             "sequenceNumber": segment.sequence_number,
+            "ownerId": owner_id,
+            "orgId": org_id,
         }
         if segment.speaker_override:
             data["speakerOverride"] = segment.speaker_override
         await doc_ref.set(data)
 
     async def save_transcript_batch(
-        self, session_id: str, segments: list[TranscriptSegment]
+        self,
+        session_id: str,
+        segments: list[TranscriptSegment],
+        owner_id: str | None = None,
+        org_id: str | None = None,
     ) -> None:
         """Save multiple transcript segments in a batch write."""
         if not segments:
@@ -146,6 +160,8 @@ class FirestoreStorage:
                 "endTime": segment.end_time,
                 "confidence": segment.confidence,
                 "sequenceNumber": segment.sequence_number,
+                "ownerId": owner_id,
+                "orgId": org_id,
             }
             if segment.speaker_override:
                 data["speakerOverride"] = segment.speaker_override
@@ -165,6 +181,8 @@ class FirestoreStorage:
         covering_from: int,
         covering_to: int,
         is_final: bool = False,
+        owner_id: str | None = None,
+        org_id: str | None = None,
     ) -> None:
         """Save a rolling or final summary."""
         db = await self._get_db()
@@ -177,6 +195,8 @@ class FirestoreStorage:
             "coveringFrom": covering_from,
             "coveringTo": covering_to,
             "isFinal": is_final,
+            "ownerId": owner_id,
+            "orgId": org_id,
         })
 
         # Also update the session's summary field if final
@@ -197,6 +217,8 @@ class FirestoreStorage:
         file_name: str,
         extracted_text: str,
         gcs_path: str,
+        owner_id: str | None = None,
+        org_id: str | None = None,
     ) -> None:
         """Save uploaded document metadata (resume/JD)."""
         db = await self._get_db()
@@ -213,6 +235,8 @@ class FirestoreStorage:
             "extractedText": extracted_text,
             "gcsPath": gcs_path,
             "uploadedAt": datetime.utcnow(),
+            "ownerId": owner_id,
+            "orgId": org_id,
         })
 
     async def save_interview_context(
@@ -248,6 +272,8 @@ class FirestoreStorage:
                 "type": context_type,
                 "text": text,
                 "updatedAt": datetime.now(timezone.utc),
+                "ownerId": session_data.get("ownerId"),
+                "orgId": session_data.get("orgId"),
             })
 
         await save_in_transaction(db.transaction())
@@ -267,14 +293,21 @@ class FirestoreStorage:
             records.append(data)
         return records
 
-    async def list_sessions(self, limit: int = 50) -> list[dict]:
+    async def list_sessions(
+        self,
+        limit: int = 50,
+        *,
+        owner_id: str | None = None,
+        org_id: str | None = None,
+    ) -> list[dict]:
         """List recent sessions ordered by start time."""
         db = await self._get_db()
-        query = (
-            db.collection("sessions")
-            .order_by("startedAt", direction=firestore.Query.DESCENDING)
-            .limit(limit)
-        )
+        query = db.collection("sessions")
+        if owner_id is not None:
+            query = query.where("ownerId", "==", owner_id)
+        if org_id is not None:
+            query = query.where("orgId", "==", org_id)
+        query = query.order_by("startedAt", direction=firestore.Query.DESCENDING).limit(limit)
 
         sessions = []
         async for doc in query.stream():
@@ -378,6 +411,8 @@ class FirestoreStorage:
                     "transcriptOffsetMs": note.transcript_offset_ms,
                     "source": note.source,
                     "createdAt": note.created_at,
+                    "ownerId": session.owner_id,
+                    "orgId": session.org_id,
                 },
             )
             return note
@@ -414,6 +449,8 @@ class FirestoreStorage:
         status: str,
         *,
         reason_code: str | None = None,
+        owner_id: str | None = None,
+        org_id: str | None = None,
     ) -> None:
         """Persist a content-free report generation state for visible failures."""
         db = await self._get_db()
@@ -427,6 +464,8 @@ class FirestoreStorage:
             "status": status,
             "reasonCode": reason_code,
             "updatedAt": datetime.now(timezone.utc),
+            "ownerId": owner_id,
+            "orgId": org_id,
         })
 
     async def get_report_generation_state(self, session_id: str) -> dict | None:
@@ -481,6 +520,8 @@ class FirestoreStorage:
         self,
         session_id: str,
         request: UpdateInterviewReportRequest,
+        owner_id: str | None = None,
+        org_id: str | None = None,
     ) -> InterviewReport:
         """CAS-update editable prose while preserving evidence and ratings."""
         db = await self._get_db()
@@ -496,7 +537,12 @@ class FirestoreStorage:
             snapshot = await doc_ref.get(transaction=transaction)
             if not snapshot.exists:
                 raise InterviewReportConflict("report not found")
-            report = report_from_record(session_id, snapshot.to_dict() or {})
+            record = snapshot.to_dict() or {}
+            if owner_id is not None and org_id is not None and (
+                record.get("ownerId") != owner_id or record.get("orgId") != org_id
+            ):
+                raise InterviewReportConflict("report not found")
+            report = report_from_record(session_id, record)
             updated = update_report_content(report, request)
             transaction.set(doc_ref, report_to_record(updated))
             return updated
@@ -507,6 +553,8 @@ class FirestoreStorage:
         self,
         session_id: str,
         request: ApproveInterviewReportRequest,
+        owner_id: str | None = None,
+        org_id: str | None = None,
     ) -> InterviewReport:
         """Transactionally pin one immutable, idempotently replayable version."""
         db = await self._get_db()
@@ -522,7 +570,12 @@ class FirestoreStorage:
             snapshot = await doc_ref.get(transaction=transaction)
             if not snapshot.exists:
                 raise InterviewReportConflict("report not found")
-            report = report_from_record(session_id, snapshot.to_dict() or {})
+            record = snapshot.to_dict() or {}
+            if owner_id is not None and org_id is not None and (
+                record.get("ownerId") != owner_id or record.get("orgId") != org_id
+            ):
+                raise InterviewReportConflict("report not found")
+            report = report_from_record(session_id, record)
             approved = approve_report(report, request.expected_version)
             if approved != report:
                 transaction.set(doc_ref, report_to_record(approved))

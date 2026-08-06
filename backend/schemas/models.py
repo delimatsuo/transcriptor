@@ -80,6 +80,10 @@ class Session(BaseModel):
     speaker_map: dict[str, str] = Field(default_factory=dict)
     summary: str | None = None
     action_items: list[ActionItem] = Field(default_factory=list)
+    # Optional for backwards-compatible deserialization; HTTP-created records
+    # always receive server-derived values from the authenticated principal.
+    owner_id: str | None = None
+    org_id: str | None = None
 
 
 # --- WebSocket Messages ---

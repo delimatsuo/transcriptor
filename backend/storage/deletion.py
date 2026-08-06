@@ -10,7 +10,13 @@ logger = structlog.get_logger()
 
 
 async def delete_session_everywhere(
-    session_id: str, db, gcs, *, reason: str = "owner_request"
+    session_id: str,
+    db,
+    gcs,
+    *,
+    reason: str = "owner_request",
+    owner_id: str | None = None,
+    org_id: str | None = None,
 ) -> dict:
     """Delete a session's Firestore data, linked GCS blobs, and write a tombstone.
 
@@ -27,6 +33,10 @@ async def delete_session_everywhere(
             subs_deleted += 1
             async for snapshot in subcollection.stream():
                 data = snapshot.to_dict() or {}
+                if owner_id is not None and org_id is not None and (
+                    data.get("ownerId") != owner_id or data.get("orgId") != org_id
+                ):
+                    raise PermissionError("child record ownership is not authorized")
                 gcs_path = data.get("gcsPath")
                 if gcs_path and gcs is not None and gcs.delete_blob(gcs_path):
                     blobs_deleted += 1
@@ -44,6 +54,8 @@ async def delete_session_everywhere(
         "subcollectionsDeleted": subs_deleted,
         "docsDeleted": docs_deleted,
         "gcsBlobsDeleted": blobs_deleted,
+        "ownerId": owner_id,
+        "orgId": org_id,
     })
     logger.info(
         "session_deleted_everywhere",

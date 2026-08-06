@@ -8,6 +8,7 @@ import {
 } from "@/lib/recruiterNotes";
 import { tokens } from "@/lib/tokens";
 import type { NoteKind, RecruiterNote, TranscriptSegment } from "@/types/ws";
+import { apiFetch } from "@/lib/auth";
 
 const API_BASE = "http://localhost:8000";
 
@@ -83,7 +84,7 @@ export default function NoteChips({ sessionId, transcript }: Props) {
     setSaveState({ status: "saving", label, request });
 
     try {
-      const response = await fetch(
+      const response = await apiFetch(
         `${API_BASE}/api/sessions/${encodeURIComponent(sessionId)}/notes`,
         {
           method: "POST",

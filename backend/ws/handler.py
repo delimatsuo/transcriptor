@@ -42,10 +42,15 @@ class WSConnectionManager:
         return self._sequence_counters[session_id]
 
     async def connect(
-        self, websocket: WebSocket, session_id: str, last_seq: int = 0
+        self,
+        websocket: WebSocket,
+        session_id: str,
+        last_seq: int = 0,
+        *,
+        subprotocol: str | None = None,
     ) -> None:
         """Accept a WebSocket connection and replay missed messages."""
-        await websocket.accept()
+        await websocket.accept(subprotocol=subprotocol)
         self._ensure_session(session_id)
         self._connections[session_id].append(websocket)
 

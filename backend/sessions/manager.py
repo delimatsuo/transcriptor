@@ -32,9 +32,17 @@ class SessionManager:
         self,
         mode: SessionMode = SessionMode.MEETING,
         title: str = "",
+        *,
+        owner_id: str | None = None,
+        org_id: str | None = None,
     ) -> Session:
         """Create a new session."""
-        session = Session(mode=mode, title=title or f"Session {datetime.utcnow().strftime('%Y-%m-%d %H:%M')}")
+        session = Session(
+            mode=mode,
+            title=title or f"Session {datetime.utcnow().strftime('%Y-%m-%d %H:%M')}",
+            owner_id=owner_id,
+            org_id=org_id,
+        )
         self._sessions[session.id] = session
         self._transcripts[session.id] = []
 

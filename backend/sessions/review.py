@@ -62,6 +62,8 @@ def deserialize_session(session_id: str, record: dict[str, Any]) -> Session:
             speaker_map=record.get("speakerMap", {}),
             summary=record.get("summary"),
             action_items=record.get("actionItems", []),
+            owner_id=record.get("ownerId"),
+            org_id=record.get("orgId"),
         )
     except (KeyError, TypeError, ValidationError) as exc:
         raise PersistedReviewError("persisted session is invalid") from exc

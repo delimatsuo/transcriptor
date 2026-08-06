@@ -8,6 +8,7 @@ import {
 } from "@/lib/sessionReview";
 import { tokens } from "@/lib/tokens";
 import type { RecentInterview } from "@/types/ws";
+import { apiFetch } from "@/lib/auth";
 
 const API_BASE = "http://localhost:8000";
 
@@ -38,7 +39,7 @@ export default function RecentInterviews({ onOpen }: Props) {
 
     const load = async () => {
       try {
-        const response = await fetch(`${API_BASE}/api/sessions/recent-interviews`);
+        const response = await apiFetch(`${API_BASE}/api/sessions/recent-interviews`);
         if (!response.ok) throw new Error("recent interviews unavailable");
         const payload = (await response.json()) as {
           interviews?: RecentInterview[];

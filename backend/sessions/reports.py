@@ -142,6 +142,8 @@ class InterviewReport(BaseModel):
     updated_at: datetime
     approved_version: int | None = Field(default=None, ge=1)
     approved_at: datetime | None = None
+    owner_id: str | None = None
+    org_id: str | None = None
 
     @model_validator(mode="after")
     def validate_approval_state(self) -> "InterviewReport":
@@ -267,6 +269,8 @@ def parse_generated_report(
     transcript_ids: set[str],
     note_ids: set[str],
     context_ids: set[str],
+    owner_id: str | None = None,
+    org_id: str | None = None,
     now: datetime | None = None,
 ) -> InterviewReport:
     """Strictly parse provider JSON and bind every claim to durable sources."""
@@ -291,6 +295,8 @@ def parse_generated_report(
         client_narrative=generated.client_narrative,
         created_at=timestamp,
         updated_at=timestamp,
+        owner_id=owner_id,
+        org_id=org_id,
     )
 
 
@@ -419,6 +425,8 @@ def report_to_record(report: InterviewReport) -> dict[str, Any]:
         "updatedAt": report.updated_at,
         "approvedVersion": report.approved_version,
         "approvedAt": report.approved_at,
+        "ownerId": report.owner_id,
+        "orgId": report.org_id,
     }
 
 
@@ -473,6 +481,8 @@ def report_from_record(
             updated_at=record["updatedAt"],
             approved_version=record.get("approvedVersion"),
             approved_at=record.get("approvedAt"),
+            owner_id=record.get("ownerId"),
+            org_id=record.get("orgId"),
         )
     except (KeyError, TypeError, ValidationError) as exc:
         raise InterviewReportError("persisted report is invalid") from exc

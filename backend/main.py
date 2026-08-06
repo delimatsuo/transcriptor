@@ -6,15 +6,29 @@ import asyncio
 import secrets
 import time
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
+from uuid import uuid4
 
 import structlog
 import uvicorn
-from fastapi import FastAPI, Header, WebSocket, WebSocketDisconnect, UploadFile, File, Form, HTTPException
+from fastapi import FastAPI, Header, WebSocket, WebSocketDisconnect, UploadFile, File, Form, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 
 from backend.audio.buffer import AudioBuffer
 from backend.audio.capture import AudioCapture
+from backend.auth import (
+    AuthenticationError,
+    AuthContext,
+    current_auth,
+    auth_is_enforced,
+    initialize_firebase_admin,
+    reset_current_auth,
+    reset_auth_enforced,
+    set_auth_enforced,
+    set_current_auth,
+    verify_bearer_token,
+)
 from backend.config import Settings, get_settings
 from backend.documents.parser import parse_document, DocumentParseError
 from backend.llm.context_window import ContextWindowManager
@@ -109,6 +123,9 @@ single_source_warned: set[str] = set()  # sessions already warned about single a
 # Speaker correlation (Chrome extension)
 speaker_correlators: dict[str, SpeakerCorrelator] = {}
 extension_tokens: dict[str, str] = {}  # session_id -> token
+extension_capability_expiry: dict[str, datetime] = {}
+ws_tickets: dict[str, tuple[AuthContext, str, datetime]] = {}
+stop_capabilities: dict[str, tuple[AuthContext, str, datetime]] = {}
 _clock_sync_timestamps: dict[str, float] = {}  # session_id -> last sync time (rate limit)
 
 # Concurrency guard for pre-interview analysis
@@ -122,6 +139,7 @@ async def lifespan(app: FastAPI):
 
     settings = get_settings()
     await probe_application_default_credentials()
+    initialize_firebase_admin(settings)
     session_mgr = SessionManager(settings)
     firestore_storage = FirestoreStorage(settings)
     gcs_storage = GCSStorage(settings)
@@ -145,17 +163,167 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="T.A.R.S.", lifespan=lifespan)
 
+@app.middleware("http")
+async def authenticate_api_requests(request: Request, call_next):
+    """Authenticate every API request before route code can touch data."""
+    if request.method == "OPTIONS" or not request.url.path.startswith("/api/"):
+        return await call_next(request)
+    try:
+        request_settings = settings or get_settings()
+        user = verify_bearer_token(request.headers.get("authorization"), request_settings)
+    except (AuthenticationError, ValueError):
+        # A short-lived stop capability is the only non-bearer exception. It is
+        # scoped to one session and cannot authorize reads or other mutations.
+        capability = request.headers.get("x-tars-stop-capability")
+        path_parts = request.url.path.rstrip("/").split("/")
+        session_id = path_parts[-1] if path_parts[-1] == "stop" and len(path_parts) >= 2 else None
+        if session_id == "stop":
+            session_id = path_parts[-2]
+        if request.url.path.endswith("/stop") and capability and session_id:
+            entry = stop_capabilities.get(capability)
+            now = datetime.now(timezone.utc)
+            if entry and entry[1] == session_id and entry[2] > now:
+                user = entry[0]
+            else:
+                user = None
+        else:
+            user = None
+        if user is None:
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "Authentication required"},
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
+    token = set_current_auth(user)
+    enforced_token = set_auth_enforced()
+    request.state.auth_user = user
+    try:
+        return await call_next(request)
+    finally:
+        reset_current_auth(token)
+        reset_auth_enforced(enforced_token)
+
+
+# Keep CORS outermost so even auth rejection responses carry browser-readable
+# CORS headers instead of surfacing as opaque network failures.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:3000",
-        "http://localhost:3003",  # standing dev port per .claude/launch.json (3000-3002 host an unrelated app on the dev machine)
-        "chrome-extension://fhnadcdkfgdlkomjpilmgehhpgmkjnga",  # pinned extension ID (derived from manifest "key")
+        "http://localhost:3003",
+        "chrome-extension://fhnadcdkfgdlkomjpilmgehhpgmkjnga",
     ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.get("/healthz")
+async def healthz():
+    """Unauthenticated process health; readiness still depends on lifespan."""
+    return {"status": "ok"}
+
+
+@app.get("/api/me")
+async def current_user_profile():
+    """Authenticated admission preflight; no interview data is returned."""
+    user = _principal()
+    return {"uid": user.uid, "email": user.email, "org_id": user.org_id}
+
+
+async def _close_ws_at_expiry(websocket: WebSocket, expires_at: datetime) -> None:
+    """Bound a socket's authorization lifetime; reconnect mints a fresh ticket."""
+    delay = max(0.0, (expires_at - datetime.now(timezone.utc)).total_seconds())
+    await asyncio.sleep(delay)
+    try:
+        await websocket.close(code=4001, reason="auth_expired")
+    except Exception:
+        pass
+
+
+def _principal() -> AuthContext | None:
+    """Route principal; unlike old direct-call tests, production fails closed."""
+    user = current_auth()
+    if user is None:
+        if not auth_is_enforced():
+            # Direct function calls in the legacy unit suite do not traverse
+            # ASGI middleware. Real HTTP requests always set this flag first.
+            return None
+        raise HTTPException(status_code=401, detail="Authentication required")
+    return user
+
+
+def _assert_session_access(session) -> AuthContext | None:
+    user = _principal()
+    if user is None:
+        return None
+    if session is None or session.owner_id != user.uid or session.org_id != user.org_id:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return user
+
+
+def _assert_report_scope(report, session) -> None:
+    """Require report ownership to agree with its authorized parent session."""
+    user = current_auth()
+    if user is None and not auth_is_enforced():
+        return
+    if (
+        report is None
+        or report.owner_id != session.owner_id
+        or report.org_id != session.org_id
+    ):
+        raise HTTPException(status_code=404, detail="Report not found")
+
+
+def _assert_child_scope(records: list[dict], session) -> None:
+    """Reject missing/mismatched durable child scope for owned sessions."""
+    if session.owner_id is None or session.org_id is None:
+        return
+    for record in records:
+        if record.get("ownerId") != session.owner_id or record.get("orgId") != session.org_id:
+            raise HTTPException(status_code=404, detail="Session not found")
+
+
+def _mint_capability(
+    store: dict[str, tuple[AuthContext, str, datetime]],
+    user: AuthContext,
+    session_id: str,
+    ttl_seconds: int,
+) -> str:
+    token = secrets.token_urlsafe(32)
+    store[token] = (
+        user,
+        session_id,
+        datetime.now(timezone.utc) + timedelta(seconds=ttl_seconds),
+    )
+    return token
+
+
+async def _save_report_generation_state(
+    session_id: str,
+    status: str,
+    *,
+    reason_code: str | None = None,
+    session=None,
+) -> None:
+    """Persist scope when supported while keeping old fakes source-compatible."""
+    assert firestore_storage
+    kwargs = {"reason_code": reason_code}
+    if session is not None and session.owner_id is not None and session.org_id is not None:
+        kwargs.update(owner_id=session.owner_id, org_id=session.org_id)
+    await firestore_storage.save_report_generation_state(session_id, status, **kwargs)
+
+
+async def _save_transcript_segment(session_id: str, segment: TranscriptSegment) -> None:
+    """Stamp transcript children when the owning session is available."""
+    assert firestore_storage and session_mgr
+    session = session_mgr.get_session(session_id)
+    kwargs = {}
+    if session and session.owner_id is not None and session.org_id is not None:
+        kwargs.update(owner_id=session.owner_id, org_id=session.org_id)
+    await firestore_storage.save_transcript_segment(session_id, segment, **kwargs)
 
 
 # --- Audio Pipeline ---
@@ -296,7 +464,7 @@ async def _on_transcript(session_id: str, segment: TranscriptSegment) -> None:
     # 4. Persist to Firestore (WITH override, after correlation)
     if segment.is_final:
         try:
-            await firestore_storage.save_transcript_segment(session_id, segment)
+            await _save_transcript_segment(session_id, segment)
         except Exception:
             logger.exception("firestore_save_error", session_id=session_id)
             # A final is not complete until its durable write succeeds. Let the
@@ -354,9 +522,12 @@ async def _generate_rolling_summary(session_id: str) -> None:
 
         # Save to Firestore
         if firestore_storage:
+            session = session_mgr.get_session(session_id)
             await firestore_storage.save_summary(
                 session_id, summary,
                 covering_from=0, covering_to=current_seq,
+                owner_id=session.owner_id if session else None,
+                org_id=session.org_id if session else None,
             )
 
     except Exception:
@@ -447,10 +618,16 @@ async def _generate_final_summary(session_id: str) -> None:
                 session_id
             )
             if existing is not None:
-                report = existing
-                await firestore_storage.save_report_generation_state(
+                report = existing.model_copy(
+                    update={
+                        "owner_id": session.owner_id,
+                        "org_id": session.org_id,
+                    }
+                )
+                await _save_report_generation_state(
                     session_id,
                     "ready",
+                    session=session,
                 )
             elif generation_state and generation_state.get("status") == "failed":
                 logger.warning(
@@ -459,10 +636,11 @@ async def _generate_final_summary(session_id: str) -> None:
                 )
                 return
             elif generation_state and generation_state.get("status") == "generating":
-                await firestore_storage.save_report_generation_state(
+                await _save_report_generation_state(
                     session_id,
                     "failed",
                     reason_code="generation_interrupted",
+                    session=session,
                 )
                 logger.error(
                     "interview_report_generation_interrupted",
@@ -470,10 +648,11 @@ async def _generate_final_summary(session_id: str) -> None:
                 )
                 return
             elif generation_state and generation_state.get("status") == "ready":
-                await firestore_storage.save_report_generation_state(
+                await _save_report_generation_state(
                     session_id,
                     "failed",
                     reason_code="ready_without_report",
+                    session=session,
                 )
                 logger.error(
                     "interview_report_ready_without_report",
@@ -481,24 +660,35 @@ async def _generate_final_summary(session_id: str) -> None:
                 )
                 return
             else:
-                await firestore_storage.save_report_generation_state(
+                await _save_report_generation_state(
                     session_id,
                     "generating",
+                    session=session,
                 )
-                transcript = deserialize_transcript(
-                    await firestore_storage.get_session_transcript(session_id)
-                )
+                transcript_records = await firestore_storage.get_session_transcript(session_id)
+                if session.owner_id is not None:
+                    for record in transcript_records:
+                        if record.get("ownerId") != session.owner_id or record.get("orgId") != session.org_id:
+                            raise InterviewReportError("durable transcript scope is invalid")
+                transcript = deserialize_transcript(transcript_records)
                 if not transcript:
                     raise InterviewReportError(
                         "durable transcript is required for report generation"
                     )
+                note_records = await firestore_storage.get_session_notes(session_id)
+                if session.owner_id is not None:
+                    for record in note_records:
+                        if record.get("ownerId") != session.owner_id or record.get("orgId") != session.org_id:
+                            raise InterviewReportError("durable note scope is invalid")
                 notes = deserialize_recruiter_notes(
                     session_id,
-                    await firestore_storage.get_session_notes(session_id),
+                    note_records,
                 )
-                context_records = await firestore_storage.get_interview_context(
-                    session_id
-                )
+                context_records = await firestore_storage.get_interview_context(session_id)
+                if session.owner_id is not None:
+                    for record in context_records:
+                        if record.get("ownerId") != session.owner_id or record.get("orgId") != session.org_id:
+                            raise InterviewReportError("durable context scope is invalid")
                 context: dict[str, str] = {}
                 for record in context_records:
                     context_id = record.get("id")
@@ -555,11 +745,14 @@ async def _generate_final_summary(session_id: str) -> None:
                     transcript_ids={segment.id for segment in transcript},
                     note_ids={note.id for note in notes},
                     context_ids=set(context),
+                    owner_id=session.owner_id,
+                    org_id=session.org_id,
                 )
                 report = await firestore_storage.save_generated_report(report)
-                await firestore_storage.save_report_generation_state(
+                await _save_report_generation_state(
                     session_id,
                     "ready",
+                    session=session,
                 )
             summary = render_internal_summary(report)
             transcript = session_mgr.get_transcript(session_id)
@@ -601,16 +794,19 @@ async def _generate_final_summary(session_id: str) -> None:
                 session_id, summary,
                 covering_from=0, covering_to=len(transcript),
                 is_final=True,
+                owner_id=session.owner_id,
+                org_id=session.org_id,
             )
 
     except Exception:
         logger.exception("final_summary_error", session_id=session_id)
         if is_interview:
             try:
-                await firestore_storage.save_report_generation_state(
+                await _save_report_generation_state(
                     session_id,
                     "failed",
                     reason_code="provider_or_validation_failure",
+                    session=session,
                 )
             except Exception:
                 logger.exception(
@@ -626,6 +822,13 @@ def _cleanup_session_context(session_id: str) -> None:
     interview_documents.pop(session_id, None)
     speaker_correlators.pop(session_id, None)
     extension_tokens.pop(session_id, None)
+    extension_capability_expiry.pop(session_id, None)
+    for token, (_, token_session_id, _) in list(ws_tickets.items()):
+        if token_session_id == session_id:
+            ws_tickets.pop(token, None)
+    for token, (_, token_session_id, _) in list(stop_capabilities.items()):
+        if token_session_id == session_id:
+            stop_capabilities.pop(token, None)
     _clock_sync_timestamps.pop(session_id, None)
 
 
@@ -676,13 +879,34 @@ async def create_session(
 ):
     """Create a new session and start the audio pipeline."""
     assert settings and session_mgr and firestore_storage
+    user = _principal()
 
     session_mode = SessionMode(mode)
-    session = session_mgr.create_session(mode=session_mode, title=title)
+    # Launch Week 4 is interview-only; meeting remains a backend compatibility
+    # mode for older direct callers but is not admitted by the web UI.
+    session = session_mgr.create_session(
+        mode=session_mode,
+        title=title,
+        owner_id=user.uid if user else None,
+        org_id=user.org_id if user else None,
+    )
     session.notice_given = notice_given
 
     # Save to Firestore
     await firestore_storage.save_session(session)
+
+    # Mint the stop-only recovery capability before capture starts. Its TTL is
+    # configured above the maximum session duration plus the bounded drain.
+    stop_capability = (
+        _mint_capability(
+            stop_capabilities,
+            user,
+            session.id,
+            settings.auth_stop_capability_ttl_seconds,
+        )
+        if user is not None
+        else None
+    )
 
     # Start heartbeat
     await session_mgr.start_heartbeat(session.id)
@@ -691,7 +915,13 @@ async def create_session(
     task = asyncio.create_task(_run_audio_pipeline(session.id))
     pipeline_tasks[session.id] = [task]
 
-    return {"session_id": session.id, "status": "active", "mode": mode}
+    return {
+        "session_id": session.id,
+        "status": "active",
+        "mode": mode,
+        "stop_capability": stop_capability,
+        "stop_capability_expires_in": settings.auth_stop_capability_ttl_seconds,
+    }
 
 
 @app.post("/api/sessions/{session_id}/stop")
@@ -704,6 +934,7 @@ async def stop_session(session_id: str):
         session = session_mgr.get_session(session_id)
         if session is None:
             raise HTTPException(status_code=404, detail="Session not found")
+        _assert_session_access(session)
 
         newly_stopped = session.status == SessionStatus.ACTIVE
         if newly_stopped:
@@ -763,14 +994,28 @@ async def delete_session(session_id: str):
     assert firestore_storage
     from backend.storage.deletion import delete_session_everywhere
 
+    session = await _read_session(session_id)
+    _assert_session_access(session)
+
     db = await firestore_storage._get_db()
-    return await delete_session_everywhere(session_id, db, gcs_storage)
+    user = current_auth()
+    try:
+        return await delete_session_everywhere(
+            session_id,
+            db,
+            gcs_storage,
+            owner_id=user.uid if user else None,
+            org_id=user.org_id if user else None,
+        )
+    except PermissionError:
+        raise HTTPException(status_code=404, detail="Session not found") from None
 
 
 @app.post("/api/sessions/{session_id}/speakers")
 async def update_speakers(session_id: str, speaker_map: dict[str, str]):
     """Update speaker label mapping."""
     assert session_mgr
+    _assert_session_access(session_mgr.get_session(session_id))
     session_mgr.update_speaker_map(session_id, speaker_map)
     return {"ok": True}
 
@@ -785,7 +1030,7 @@ async def upload_document(
     assert session_mgr and firestore_storage and gcs_storage
     if doc_type not in {"resume", "jd"}:
         raise HTTPException(status_code=400, detail="doc_type must be resume or jd")
-    _require_active_interview(session_id)
+    session = _require_active_interview(session_id)
 
     data = await file.read()
     filename = file.filename or "document"
@@ -803,13 +1048,15 @@ async def upload_document(
     # Upload to GCS
     gcs_path = gcs_storage.upload_bytes(
         data,
-        f"sessions/{session_id}/documents/{filename}",
+        f"sessions/{session.org_id}/{session.owner_id}/{session_id}/documents/{uuid4().hex}",
         content_type=file.content_type or "application/octet-stream",
     )
 
     # Save metadata to Firestore
     await firestore_storage.save_document_metadata(
-        session_id, doc_type, filename, text, gcs_path
+        session_id, doc_type, filename, text, gcs_path,
+        owner_id=session.owner_id,
+        org_id=session.org_id,
     )
     # Store extracted text in memory only after the durable source is accepted.
     if session_id not in interview_documents:
@@ -928,7 +1175,9 @@ async def analyze_candidate(
 async def list_sessions():
     """List recent sessions."""
     assert firestore_storage
-    sessions = await firestore_storage.list_sessions()
+    user = _principal()
+    list_kwargs = {"owner_id": user.uid, "org_id": user.org_id} if user else {}
+    sessions = await firestore_storage.list_sessions(**list_kwargs)
     return {"sessions": sessions}
 
 
@@ -937,13 +1186,16 @@ async def _read_session(session_id: str):
     assert session_mgr and firestore_storage
     session = session_mgr.get_session(session_id)
     if session is not None:
+        _assert_session_access(session)
         return session
 
     record = await firestore_storage.get_session_record(session_id)
     if record is None:
         raise HTTPException(status_code=404, detail="Session not found")
     try:
-        return deserialize_session(session_id, record)
+        session = deserialize_session(session_id, record)
+        _assert_session_access(session)
+        return session
     except PersistedReviewError:
         raise HTTPException(
             status_code=409,
@@ -951,7 +1203,7 @@ async def _read_session(session_id: str):
         ) from None
 
 
-async def _read_transcript(session_id: str) -> list[TranscriptSegment]:
+async def _read_transcript(session_id: str, session=None) -> list[TranscriptSegment]:
     """Read transcript memory first, then reconstruct durable final segments."""
     assert session_mgr and firestore_storage
     segments = session_mgr.get_transcript(session_id)
@@ -959,6 +1211,8 @@ async def _read_transcript(session_id: str) -> list[TranscriptSegment]:
         return segments
 
     records = await firestore_storage.get_session_transcript(session_id)
+    if session is not None:
+        _assert_child_scope(records, session)
     try:
         return deserialize_transcript(records)
     except PersistedReviewError:
@@ -972,7 +1226,9 @@ async def _read_transcript(session_id: str) -> list[TranscriptSegment]:
 async def list_recent_interviews():
     """List durable interview review entries without starting any runtime work."""
     assert firestore_storage
-    records = await firestore_storage.list_sessions()
+    user = _principal()
+    list_kwargs = {"owner_id": user.uid, "org_id": user.org_id} if user else {}
+    records = await firestore_storage.list_sessions(**list_kwargs)
     interviews = []
     for record in records:
         if record.get("mode") != SessionMode.INTERVIEW.value:
@@ -996,6 +1252,7 @@ async def create_recruiter_note(
     session = session_mgr.get_session(session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="Active session not found")
+    _assert_session_access(session)
     try:
         durable_note = await firestore_storage.save_recruiter_note(session, body)
     except (RecruiterNoteConflict, RecruiterNoteError) as exc:
@@ -1011,9 +1268,11 @@ async def get_recruiter_notes(session_id: str):
     if session.mode != SessionMode.INTERVIEW:
         raise HTTPException(status_code=409, detail="Session is not an interview")
     try:
+        note_records = await firestore_storage.get_session_notes(session_id)
+        _assert_child_scope(note_records, session)
         notes = deserialize_recruiter_notes(
             session_id,
-            await firestore_storage.get_session_notes(session_id),
+            note_records,
         )
     except RecruiterNoteError:
         raise HTTPException(
@@ -1041,6 +1300,7 @@ def _require_active_interview(session_id: str):
         or session.status != SessionStatus.ACTIVE
     ):
         raise HTTPException(status_code=409, detail="Active interview not found")
+    _assert_session_access(session)
     return session
 
 
@@ -1048,15 +1308,18 @@ def _require_active_interview(session_id: str):
 async def get_interview_report(session_id: str):
     """Read a typed report after restart without provider calls or writes."""
     assert firestore_storage
-    await _read_completed_interview(session_id)
+    session = await _read_completed_interview(session_id)
     try:
         report = await firestore_storage.get_interview_report(session_id)
     except InterviewReportError:
         raise HTTPException(status_code=409, detail="Persisted report is invalid") from None
     if report is not None:
+        _assert_report_scope(report, session)
         return report.model_dump(mode="json")
 
     state = await firestore_storage.get_report_generation_state(session_id)
+    if state is not None:
+        _assert_child_scope([state], session)
     if state and state.get("status") == "failed":
         raise HTTPException(
             status_code=409,
@@ -1064,10 +1327,11 @@ async def get_interview_report(session_id: str):
         )
     if state and state.get("status") in {"queued", "generating"}:
         if report_generation_is_stale(state):
-            await firestore_storage.save_report_generation_state(
+            await _save_report_generation_state(
                 session_id,
                 "failed",
                 reason_code="generation_interrupted",
+                session=session,
             )
             raise HTTPException(
                 status_code=409,
@@ -1078,10 +1342,11 @@ async def get_interview_report(session_id: str):
             )
         raise HTTPException(status_code=425, detail="Relatório ainda em geração")
     if state and state.get("status") == "ready":
-        await firestore_storage.save_report_generation_state(
+        await _save_report_generation_state(
             session_id,
             "failed",
             reason_code="ready_without_report",
+            session=session,
         )
         raise HTTPException(
             status_code=409,
@@ -1097,9 +1362,15 @@ async def update_interview_report(
 ):
     """Save reviewed prose with optimistic concurrency control."""
     assert firestore_storage
-    await _read_completed_interview(session_id)
+    session = await _read_completed_interview(session_id)
     try:
-        report = await firestore_storage.update_interview_report(session_id, body)
+        report = await firestore_storage.update_interview_report(
+            session_id,
+            body,
+            owner_id=session.owner_id,
+            org_id=session.org_id,
+        )
+        _assert_report_scope(report, session)
     except (InterviewReportConflict, InterviewReportError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from None
     return report.model_dump(mode="json")
@@ -1112,9 +1383,15 @@ async def approve_interview_report(
 ):
     """Explicitly pin the exact reviewed version for client export."""
     assert firestore_storage
-    await _read_completed_interview(session_id)
+    session = await _read_completed_interview(session_id)
     try:
-        report = await firestore_storage.approve_interview_report(session_id, body)
+        report = await firestore_storage.approve_interview_report(
+            session_id,
+            body,
+            owner_id=session.owner_id,
+            org_id=session.org_id,
+        )
+        _assert_report_scope(report, session)
     except (InterviewReportConflict, InterviewReportError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from None
     return report.model_dump(mode="json")
@@ -1124,15 +1401,41 @@ async def approve_interview_report(
 async def get_approved_client_report(session_id: str):
     """Expose exactly two client paragraphs, and only after human approval."""
     assert firestore_storage
-    await _read_completed_interview(session_id)
+    session = await _read_completed_interview(session_id)
     try:
         report = await firestore_storage.get_interview_report(session_id)
+        _assert_report_scope(report, session)
         if report is None:
             raise InterviewReportConflict("report not found")
         client_report = approved_client_report(report)
     except (InterviewReportConflict, InterviewReportError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from None
     return client_report.model_dump(mode="json")
+
+
+@app.post("/api/sessions/{session_id}/ws-ticket")
+async def create_ws_ticket(session_id: str):
+    """Mint a single-use ticket for the browser WebSocket handshake."""
+    assert settings
+    session = await _read_session(session_id)
+    user = _assert_session_access(session)
+    ticket = _mint_capability(ws_tickets, user, session_id, settings.auth_ws_ticket_ttl_seconds)
+    return {"ticket": ticket, "expires_in": settings.auth_ws_ticket_ttl_seconds}
+
+
+@app.post("/api/sessions/{session_id}/stop-capability")
+async def create_stop_capability(session_id: str):
+    """Mint a bounded stop-only capability for token-loss recovery."""
+    assert settings
+    session = await _read_session(session_id)
+    user = _assert_session_access(session)
+    capability = _mint_capability(
+        stop_capabilities,
+        user,
+        session_id,
+        settings.auth_stop_capability_ttl_seconds,
+    )
+    return {"capability": capability, "expires_in": settings.auth_stop_capability_ttl_seconds}
 
 
 @app.get("/api/sessions/{session_id}/review")
@@ -1144,11 +1447,12 @@ async def get_session_review(session_id: str):
         raise HTTPException(status_code=404, detail="Session not found")
     try:
         session = deserialize_session(session_id, record)
+        _assert_session_access(session)
         if session.mode != SessionMode.INTERVIEW:
             raise HTTPException(status_code=409, detail="Session is not an interview")
-        transcript = deserialize_transcript(
-            await firestore_storage.get_session_transcript(session_id)
-        )
+        transcript_records = await firestore_storage.get_session_transcript(session_id)
+        _assert_child_scope(transcript_records, session)
+        transcript = deserialize_transcript(transcript_records)
         review = build_session_review(session, transcript)
     except PersistedReviewError:
         raise HTTPException(status_code=409, detail="Persisted review is invalid") from None
@@ -1165,16 +1469,16 @@ async def get_session(session_id: str):
 @app.get("/api/sessions/{session_id}/transcript")
 async def get_transcript(session_id: str):
     """Get session transcript."""
-    await _read_session(session_id)
-    segments = await _read_transcript(session_id)
+    session = await _read_session(session_id)
+    segments = await _read_transcript(session_id, session)
     return {"segments": [s.model_dump() for s in segments]}
 
 
 @app.get("/api/sessions/{session_id}/transcript/download")
 async def download_transcript(session_id: str):
     """Download the full transcript as a plain text file."""
-    await _read_session(session_id)
-    segments = await _read_transcript(session_id)
+    session = await _read_session(session_id)
+    segments = await _read_transcript(session_id, session)
     if not segments:
         return PlainTextResponse("No transcript available.", status_code=404)
 
@@ -1196,48 +1500,67 @@ async def download_transcript(session_id: str):
 
 # --- Chrome Extension Endpoints ---
 
-def _validate_extension_token(session_id: str, authorization: str | None) -> None:
-    """Validate the extension session token."""
+def _validate_extension_token(session_id: str, capability: str | None) -> None:
+    """Validate an owner-bound extension capability, separate from Firebase."""
+    if settings is not None and not settings.extension_enabled:
+        raise HTTPException(status_code=404, detail="Chrome extension bridge is disabled")
     expected = extension_tokens.get(session_id)
     if not expected:
         raise HTTPException(status_code=403, detail="No extension linked to this session")
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Missing or invalid authorization header")
-    token = authorization[len("Bearer "):]
-    if token != expected:
+    expiry = extension_capability_expiry.get(session_id)
+    if expiry is None and not auth_is_enforced():
+        # Compatibility for the direct unit helper tests; HTTP always uses the
+        # expiring X-TARS-Extension-Capability path below.
+        if not capability or not capability.startswith("Bearer "):
+            raise HTTPException(status_code=401, detail="Missing or invalid authorization header")
+        legacy = capability[len("Bearer "):] if capability and capability.startswith("Bearer ") else capability
+        if not legacy or not secrets.compare_digest(legacy, expected):
+            raise HTTPException(status_code=403, detail="Invalid session token")
+        return
+    if not capability or not expiry or expiry <= datetime.now(timezone.utc):
+        raise HTTPException(status_code=401, detail="Missing or expired extension capability")
+    if not secrets.compare_digest(capability, expected):
         raise HTTPException(status_code=403, detail="Invalid session token")
+    session = session_mgr.get_session(session_id) if session_mgr else None
+    _assert_session_access(session)
 
 
 @app.post("/api/sessions/{session_id}/extension-link")
 async def extension_link(session_id: str):
     """Link Chrome extension to a session. Returns a session token."""
-    assert session_mgr
+    assert session_mgr and settings
+    if not settings.extension_enabled:
+        raise HTTPException(status_code=404, detail="Chrome extension bridge is disabled")
     session = session_mgr.get_session(session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="Session not found")
     if session.status != SessionStatus.ACTIVE:
         raise HTTPException(status_code=400, detail="Session is not active")
+    _assert_session_access(session)
 
     token = secrets.token_urlsafe(32)
     extension_tokens[session_id] = token
+    extension_capability_expiry[session_id] = datetime.now(timezone.utc) + timedelta(
+        seconds=settings.auth_extension_capability_ttl_seconds
+    )
 
     # Create correlator for this session
     if session_id not in speaker_correlators:
         speaker_correlators[session_id] = SpeakerCorrelator(session_id=session_id)
 
     logger.info("extension_linked", session_id=session_id)
-    return {"token": token, "session_id": session_id}
+    return {"capability": token, "session_id": session_id}
 
 
 @app.post("/api/sessions/{session_id}/clock-sync")
 async def clock_sync(
     session_id: str,
     body: ClockSyncRequest,
-    authorization: str | None = Header(None),
+    extension_capability: str | None = Header(None, alias="X-TARS-Extension-Capability"),
 ):
     """NTP-style clock synchronization for Chrome extension."""
     assert session_mgr
-    _validate_extension_token(session_id, authorization)
+    _validate_extension_token(session_id, extension_capability)
 
     session = session_mgr.get_session(session_id)
     if session is None:
@@ -1272,11 +1595,11 @@ async def clock_sync(
 async def active_speaker(
     session_id: str,
     body: ActiveSpeakerBatch,
-    authorization: str | None = Header(None),
+    extension_capability: str | None = Header(None, alias="X-TARS-Extension-Capability"),
 ):
     """Receive active-speaker events from Chrome extension."""
     assert session_mgr and firestore_storage
-    _validate_extension_token(session_id, authorization)
+    _validate_extension_token(session_id, extension_capability)
 
     session = session_mgr.get_session(session_id)
     if session is None or session.status != SessionStatus.ACTIVE:
@@ -1324,7 +1647,7 @@ async def active_speaker(
         for update in relabel_updates:
             try:
                 seg = next(s for s in segments if s.id == update.segment_id)
-                await firestore_storage.save_transcript_segment(session_id, seg)
+                await _save_transcript_segment(session_id, seg)
             except (StopIteration, Exception):
                 logger.exception("firestore_relabel_error", segment_id=update.segment_id)
 
@@ -1335,11 +1658,11 @@ async def active_speaker(
 async def update_participants(
     session_id: str,
     body: ParticipantsList,
-    authorization: str | None = Header(None),
+    extension_capability: str | None = Header(None, alias="X-TARS-Extension-Capability"),
 ):
     """Receive participant list from Chrome extension."""
     assert session_mgr
-    _validate_extension_token(session_id, authorization)
+    _validate_extension_token(session_id, extension_capability)
 
     correlator = speaker_correlators.get(session_id)
     if not correlator:
@@ -1377,10 +1700,10 @@ async def update_participants(
 async def extension_heartbeat(
     session_id: str,
     body: HeartbeatRequest,
-    authorization: str | None = Header(None),
+    extension_capability: str | None = Header(None, alias="X-TARS-Extension-Capability"),
 ):
     """Receive health heartbeat from Chrome extension."""
-    _validate_extension_token(session_id, authorization)
+    _validate_extension_token(session_id, extension_capability)
 
     correlator = speaker_correlators.get(session_id)
     if not correlator:
@@ -1407,6 +1730,29 @@ async def extension_heartbeat(
 @app.websocket("/ws/{session_id}")
 async def websocket_endpoint(websocket: WebSocket, session_id: str):
     """WebSocket endpoint for real-time transcript and suggestion streaming."""
+    # Browser WebSocket cannot set Authorization headers. It receives a
+    # short-lived, single-use ticket from the authenticated HTTP API instead.
+    offered = [item.strip() for item in websocket.headers.get("sec-websocket-protocol", "").split(",") if item.strip()]
+    if len(offered) != 2 or offered[0] != "tars-ticket":
+        await websocket.close(code=1008)
+        return
+    ticket = offered[1]
+    entry = ws_tickets.pop(ticket, None)
+    now = datetime.now(timezone.utc)
+    if entry is None or entry[1] != session_id or entry[2] <= now:
+        await websocket.close(code=1008)
+        return
+    user = entry[0]
+    token = set_current_auth(user)
+    try:
+        session = await _read_session(session_id)
+        if session.owner_id != user.uid or session.org_id != user.org_id:
+            await websocket.close(code=1008)
+            return
+    except HTTPException:
+        await websocket.close(code=1008)
+        return
+
     # Check for last_seq query param for reconnection
     last_seq = 0
     query_params = websocket.query_params
@@ -1416,7 +1762,8 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
         except ValueError:
             pass
 
-    await ws_manager.connect(websocket, session_id, last_seq=last_seq)
+    await ws_manager.connect(websocket, session_id, last_seq=last_seq, subprotocol="tars-ticket")
+    expiry_task = asyncio.create_task(_close_ws_at_expiry(websocket, entry[2]))
 
     try:
         while True:
@@ -1433,6 +1780,9 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
     except Exception:
         logger.exception("ws_error", session_id=session_id)
         ws_manager.disconnect(websocket, session_id)
+    finally:
+        expiry_task.cancel()
+        reset_current_auth(token)
 
 
 # --- Entry point ---

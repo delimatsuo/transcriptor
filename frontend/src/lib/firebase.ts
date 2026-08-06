@@ -13,8 +13,13 @@ const firebaseConfig = {
   appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID,
 };
 
-const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApps()[0];
-const auth = getAuth(app);
-const db = getFirestore(app);
+const firebaseConfigured = Object.values(firebaseConfig).every(Boolean);
+const app = firebaseConfigured
+  ? getApps().length === 0
+    ? initializeApp(firebaseConfig)
+    : getApps()[0]
+  : null;
+const auth = app ? getAuth(app) : null;
+const db = app ? getFirestore(app) : null;
 
-export { app, auth, db };
+export { app, auth, db, firebaseConfigured };

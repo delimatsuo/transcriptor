@@ -15,6 +15,7 @@ import type {
   RecruiterNote,
   TranscriptSegment,
 } from "@/types/ws";
+import { apiFetch } from "@/lib/auth";
 
 const API_BASE = "http://localhost:8000";
 const REPORT_POLL_INTERVAL_MS = 750;
@@ -112,7 +113,7 @@ export default function InterviewReportReview({
       !controller.signal.aborted && token === requestTokenRef.current;
 
     const loadApprovedExport = async (next: InterviewReport) => {
-      const response = await fetch(
+      const response = await apiFetch(
         `${API_BASE}/api/sessions/${encodeURIComponent(sessionId)}/report/client-export`,
         { signal: controller.signal },
       );
@@ -128,7 +129,7 @@ export default function InterviewReportReview({
 
     const loadReport = async (attempt = 0): Promise<void> => {
       try {
-        const response = await fetch(
+        const response = await apiFetch(
           `${API_BASE}/api/sessions/${encodeURIComponent(sessionId)}/report`,
           { signal: controller.signal },
         );
@@ -187,7 +188,7 @@ export default function InterviewReportReview({
 
     const loadNotes = async () => {
       try {
-        const response = await fetch(
+        const response = await apiFetch(
           `${API_BASE}/api/sessions/${encodeURIComponent(sessionId)}/notes`,
           { signal: controller.signal },
         );
@@ -218,7 +219,7 @@ export default function InterviewReportReview({
     setError(null);
     setNotice(null);
     try {
-      const response = await fetch(
+      const response = await apiFetch(
         `${API_BASE}/api/sessions/${encodeURIComponent(sessionId)}/report`,
         {
           method: "PUT",
@@ -251,7 +252,7 @@ export default function InterviewReportReview({
     setError(null);
     setNotice(null);
     try {
-      const response = await fetch(
+      const response = await apiFetch(
         `${API_BASE}/api/sessions/${encodeURIComponent(sessionId)}/report/approve`,
         {
           method: "POST",
@@ -264,7 +265,7 @@ export default function InterviewReportReview({
       if (!approved || approved.status !== "approved") {
         throw new Error("A confirmação de aprovação é inválida.");
       }
-      const exportResponse = await fetch(
+      const exportResponse = await apiFetch(
         `${API_BASE}/api/sessions/${encodeURIComponent(sessionId)}/report/client-export`,
       );
       if (!exportResponse.ok) throw new Error("A versão aprovada não pôde ser carregada.");

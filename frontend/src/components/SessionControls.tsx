@@ -2,11 +2,12 @@
 
 import { useRef, useState } from "react";
 import type { SessionMode } from "@/types/ws";
+import { apiFetch, authBypassEnabled } from "@/lib/auth";
 
 const API_BASE = "http://localhost:8000";
 
 interface Props {
-  onSessionStart: (sessionId: string, mode: SessionMode) => void;
+  onSessionStart: (sessionId: string, mode: SessionMode, stopCapability?: string) => void;
   onSessionStop: () => Promise<void>;
   onBriefingReady?: (briefing: string) => void;
   isActive: boolean;
@@ -22,11 +23,11 @@ export default function SessionControls({
   sessionId,
   disabled = false,
 }: Props) {
-  const [mode, setMode] = useState<SessionMode>("meeting");
+  const [mode, setMode] = useState<SessionMode>(authBypassEnabled ? "meeting" : "interview");
   const [title, setTitle] = useState("");
   const [noticeGiven, setNoticeGiven] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [showInterviewPrep, setShowInterviewPrep] = useState(false);
+  const [showInterviewPrep, setShowInterviewPrep] = useState(!authBypassEnabled);
   const [candidateName, setCandidateName] = useState("");
   const [nextSteps, setNextSteps] = useState("");
   const [resumeFile, setResumeFile] = useState<File | null>(null);
@@ -68,7 +69,7 @@ export default function SessionControls({
         formData.append("file", resumeFile);
       }
 
-      const res = await fetch(`${API_BASE}/api/analyze`, {
+      const res = await apiFetch(`${API_BASE}/api/analyze`, {
         method: "POST",
         body: formData,
       });
@@ -96,7 +97,7 @@ export default function SessionControls({
     docType: string,
     text: string,
   ) => {
-    const response = await fetch(`${API_BASE}/api/sessions/${sid}/context`, {
+    const response = await apiFetch(`${API_BASE}/api/sessions/${sid}/context`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ doc_type: docType, text }),
@@ -111,7 +112,7 @@ export default function SessionControls({
     setLoading(true);
     try {
       const params = new URLSearchParams({ mode, title, notice_given: String(noticeGiven) });
-      const res = await fetch(`${API_BASE}/api/sessions?${params}`, {
+      const res = await apiFetch(`${API_BASE}/api/sessions?${params}`, {
         method: "POST",
       });
       if (!res.ok) throw new Error("Falha ao iniciar sessão");
@@ -119,7 +120,7 @@ export default function SessionControls({
       const sid = data.session_id;
       // The backend starts capture with the session. Make that state visible
       // before any follow-up context request can fail.
-      onSessionStart(sid, mode);
+      onSessionStart(sid, mode, data.stop_capability);
 
       // Upload documents if provided (interview mode)
       if (mode === "interview") {
@@ -131,7 +132,7 @@ export default function SessionControls({
           formData.append("file", resumeFile);
           formData.append("doc_type", "resume");
           uploads.push((async () => {
-            const response = await fetch(
+            const response = await apiFetch(
               `${API_BASE}/api/sessions/${sid}/documents`,
               {
               method: "POST",
@@ -267,23 +268,28 @@ export default function SessionControls({
             e.currentTarget.style.boxShadow = "none";
           }}
         />
-        <select
-          value={mode}
-          onChange={(e) => handleModeChange(e.target.value as SessionMode)}
-          style={{
-            padding: "8px 14px",
-            border: "1px solid #d2d2d7",
-            borderRadius: 10,
-            fontSize: 13,
-            outline: "none",
-            backgroundColor: "#fafafa",
-            color: "#1d1d1f",
-            cursor: "pointer",
-          }}
-        >
-          <option value="meeting">Reunião</option>
-          <option value="interview">Entrevista</option>
-        </select>
+        {authBypassEnabled ? (
+          <select
+            value={mode}
+            onChange={(e) => handleModeChange(e.target.value as SessionMode)}
+            aria-label="Modo da sessão"
+            style={{
+              padding: "8px 14px",
+              border: "1px solid #d2d2d7",
+              borderRadius: 10,
+              fontSize: 13,
+              outline: "none",
+              backgroundColor: "#fafafa",
+              color: "#1d1d1f",
+              cursor: "pointer",
+            }}
+          >
+            <option value="meeting">Reunião</option>
+            <option value="interview">Entrevista</option>
+          </select>
+        ) : (
+          <span style={{ fontSize: 13, color: "#515154" }}>Entrevista</span>
+        )}
         <button
           onClick={handleStart}
           disabled={!canStart}
