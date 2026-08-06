@@ -181,6 +181,16 @@ class FirestoreStorage:
 
         return sessions
 
+    async def get_session_record(self, session_id: str) -> dict | None:
+        """Read one durable session document without mutating it."""
+        db = await self._get_db()
+        snapshot = await db.collection("sessions").document(session_id).get()
+        if not snapshot.exists:
+            return None
+        data = snapshot.to_dict() or {}
+        data["id"] = snapshot.id
+        return data
+
     async def get_session_transcript(self, session_id: str) -> list[dict]:
         """Get all transcript segments for a session."""
         db = await self._get_db()

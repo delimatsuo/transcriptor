@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useWebSocket } from "@/hooks/useWebSocket";
 import ConnectionStatus from "@/components/ConnectionStatus";
 import SessionControls from "@/components/SessionControls";
@@ -8,10 +8,21 @@ import PreSessionView from "@/components/views/PreSessionView";
 import InterviewLiveView from "@/components/views/InterviewLiveView";
 import MeetingLiveView from "@/components/views/MeetingLiveView";
 import PostSessionView from "@/components/views/PostSessionView";
+import { reviewWarning as getReviewWarning } from "@/lib/sessionReview";
 import { requestSessionStop } from "@/lib/sessionStop";
-import type { SessionMode } from "@/types/ws";
+import type { SessionMode, SessionReview } from "@/types/ws";
 
 const API_BASE = "http://localhost:8000";
+
+function reviewLoadError(status: number): string {
+  if (status === 404) {
+    return "Esta entrevista não existe mais ou foi removida.";
+  }
+  if (status === 409) {
+    return "O registro persistido desta entrevista é inválido e não pode ser reaberto.";
+  }
+  return "Não foi possível reabrir esta entrevista persistida.";
+}
 
 export default function Home() {
   const [sessionId, setSessionId] = useState<string | null>(null);
@@ -19,7 +30,14 @@ export default function Home() {
   const [isActive, setIsActive] = useState(false);
   const [preInterviewBriefing, setPreInterviewBriefing] = useState("");
   const [stopError, setStopError] = useState<string | null>(null);
+  const [reviewError, setReviewError] = useState<string | null>(null);
+  const [persistedReviewWarning, setPersistedReviewWarning] = useState<
+    string | null
+  >(null);
+  const [reviewLoading, setReviewLoading] = useState(false);
   const disconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const reviewRequestRef = useRef<AbortController | null>(null);
+  const reviewRequestTokenRef = useRef(0);
 
   const {
     transcript,
@@ -30,10 +48,15 @@ export default function Home() {
     lastError,
     connect,
     disconnect,
+    hydrateReview,
   } = useWebSocket();
 
   const handleSessionStart = useCallback(
     (id: string, mode: SessionMode) => {
+      reviewRequestTokenRef.current += 1;
+      reviewRequestRef.current?.abort();
+      reviewRequestRef.current = null;
+      setReviewLoading(false);
       // Cancel any pending disconnect from a previous session
       if (disconnectTimerRef.current) {
         clearTimeout(disconnectTimerRef.current);
@@ -44,9 +67,92 @@ export default function Home() {
       setSessionMode(mode);
       setIsActive(true);
       setStopError(null);
+      setReviewError(null);
+      setPersistedReviewWarning(null);
+      window.history.replaceState({}, "", window.location.pathname);
       connect(id);
     },
     [connect, disconnect],
+  );
+
+  const handleOpenReview = useCallback(
+    async (id: string, updateLocation = true) => {
+      reviewRequestRef.current?.abort();
+      const controller = new AbortController();
+      const requestToken = reviewRequestTokenRef.current + 1;
+      reviewRequestTokenRef.current = requestToken;
+      reviewRequestRef.current = controller;
+      setReviewLoading(true);
+      setReviewError(null);
+      try {
+        const response = await fetch(
+          `${API_BASE}/api/sessions/${encodeURIComponent(id)}/review`,
+          { signal: controller.signal },
+        );
+        if (!response.ok) {
+          throw new Error(reviewLoadError(response.status));
+        }
+        const review = (await response.json()) as SessionReview;
+        if (
+          controller.signal.aborted ||
+          requestToken !== reviewRequestTokenRef.current
+        ) {
+          return;
+        }
+        const warning = getReviewWarning(review);
+        if (review.session.status !== "completed") {
+          setReviewError(
+            warning ?? "Esta entrevista não está disponível para revisão.",
+          );
+          return;
+        }
+
+        disconnect();
+        hydrateReview(review.transcript, review.summary);
+        setSessionId(review.session.id);
+        setSessionMode(review.session.mode);
+        setIsActive(false);
+        setStopError(null);
+        setPersistedReviewWarning(warning);
+        setPreInterviewBriefing("");
+
+        if (updateLocation) {
+          const url = new URL(window.location.href);
+          url.searchParams.set("review", review.session.id);
+          window.history.replaceState({}, "", `${url.pathname}${url.search}`);
+        }
+      } catch (error) {
+        if (
+          !controller.signal.aborted &&
+          requestToken === reviewRequestTokenRef.current
+        ) {
+          setReviewError(
+            error instanceof Error
+              ? error.message
+              : "Não foi possível reabrir esta entrevista persistida.",
+          );
+        }
+      } finally {
+        if (requestToken === reviewRequestTokenRef.current) {
+          reviewRequestRef.current = null;
+          setReviewLoading(false);
+        }
+      }
+    },
+    [disconnect, hydrateReview],
+  );
+
+  useEffect(() => {
+    const reviewId = new URLSearchParams(window.location.search).get("review");
+    if (reviewId) void handleOpenReview(reviewId, false);
+  }, [handleOpenReview]);
+
+  useEffect(
+    () => () => {
+      reviewRequestTokenRef.current += 1;
+      reviewRequestRef.current?.abort();
+    },
+    [],
   );
 
   const handleSessionStop = useCallback(async () => {
@@ -124,11 +230,12 @@ export default function Home() {
           onBriefingReady={setPreInterviewBriefing}
           isActive={isActive}
           sessionId={sessionId}
+          disabled={reviewLoading}
         />
       </header>
 
       {/* Error banner */}
-      {(stopError || lastError) && (
+      {(stopError || reviewError || lastError) && (
         <div
           style={{
             padding: "10px 28px",
@@ -140,13 +247,16 @@ export default function Home() {
             fontWeight: 500,
           }}
         >
-          {stopError || lastError}
+          {stopError || reviewError || lastError}
         </div>
       )}
 
       {/* Pre-session: centered welcome or briefing */}
       {!hasContent && (
-        <PreSessionView preInterviewBriefing={preInterviewBriefing} />
+        <PreSessionView
+          preInterviewBriefing={preInterviewBriefing}
+          onOpenReview={handleOpenReview}
+        />
       )}
 
       {/* Active interview: two-column layout */}
@@ -174,10 +284,19 @@ export default function Home() {
           summary={summary}
           isSummaryFinal={isSummaryFinal}
           isInterview={isInterview}
+          reviewWarning={persistedReviewWarning}
           onNewSession={() => {
+            reviewRequestTokenRef.current += 1;
+            reviewRequestRef.current?.abort();
+            reviewRequestRef.current = null;
+            setReviewLoading(false);
+            hydrateReview([], null);
             setSessionId(null);
             setIsActive(false);
             setStopError(null);
+            setReviewError(null);
+            setPersistedReviewWarning(null);
+            window.history.replaceState({}, "", window.location.pathname);
           }}
         />
       )}

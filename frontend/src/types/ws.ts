@@ -15,6 +15,18 @@ export type ConnectionHealth = "healthy" | "degraded" | "disconnected";
 export type ErrorSeverity = "warning" | "error" | "fatal";
 export type SessionMode = "meeting" | "interview";
 export type SessionStatus = "active" | "completed" | "incomplete";
+export type ReviewStatus =
+  | "available"
+  | "ready"
+  | "summary_unavailable"
+  | "transcript_unavailable"
+  | "incomplete"
+  | "active"
+  | "corrupt";
+export type RegenerationStatus =
+  | "not_needed"
+  | "blocked_source_context"
+  | "blocked_session_state";
 
 export interface TranscriptSegment {
   id: string;
@@ -49,9 +61,27 @@ export interface Session {
   ended_at: string | null;
   last_active: string;
   status: SessionStatus;
+  notice_given: boolean;
   speaker_map: Record<string, string>;
   summary: string | null;
   action_items: ActionItem[];
+}
+
+export interface RecentInterview {
+  id: string;
+  title: string;
+  started_at: string | null;
+  ended_at: string | null;
+  session_status: SessionStatus | null;
+  review_status: ReviewStatus;
+}
+
+export interface SessionReview {
+  session: Session;
+  transcript: TranscriptSegment[];
+  summary: string | null;
+  review_status: ReviewStatus;
+  regeneration_status: RegenerationStatus;
 }
 
 export interface TranscriptDelta {

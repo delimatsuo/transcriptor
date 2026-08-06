@@ -27,6 +27,10 @@ interface UseWebSocketReturn {
   lastError: string | null;
   connect: (sessionId: string) => void;
   disconnect: () => void;
+  hydrateReview: (
+    transcript: TranscriptSegment[],
+    summary: string | null,
+  ) => void;
 }
 
 export function useWebSocket(): UseWebSocketReturn {
@@ -212,6 +216,21 @@ export function useWebSocket(): UseWebSocketReturn {
     setConnectionHealth("disconnected");
   }, []);
 
+  const hydrateReview = useCallback(
+    (
+      persistedTranscript: TranscriptSegment[],
+      persistedSummary: string | null,
+    ) => {
+      setTranscript(persistedTranscript);
+      setSummary(persistedSummary ?? "");
+      setIsSummaryFinal(Boolean(persistedSummary));
+      setSuggestionHistory([]);
+      setLastError(null);
+      setConnectionHealth("disconnected");
+    },
+    [],
+  );
+
   // Cleanup on unmount
   useEffect(() => {
     return () => {
@@ -238,5 +257,6 @@ export function useWebSocket(): UseWebSocketReturn {
     lastError,
     connect: connectWs,
     disconnect,
+    hydrateReview,
   };
 }

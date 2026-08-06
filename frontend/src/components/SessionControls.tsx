@@ -11,6 +11,7 @@ interface Props {
   onBriefingReady?: (briefing: string) => void;
   isActive: boolean;
   sessionId: string | null;
+  disabled?: boolean;
 }
 
 export default function SessionControls({
@@ -19,6 +20,7 @@ export default function SessionControls({
   onBriefingReady,
   isActive,
   sessionId,
+  disabled = false,
 }: Props) {
   const [mode, setMode] = useState<SessionMode>("meeting");
   const [title, setTitle] = useState("");
@@ -54,7 +56,7 @@ export default function SessionControls({
   };
 
   const handleAnalyze = async () => {
-    if (!jdText.trim()) return;
+    if (disabled || !jdText.trim()) return;
     setAnalyzing(true);
     setAnalyzeError(null);
 
@@ -101,6 +103,7 @@ export default function SessionControls({
   };
 
   const handleStart = async () => {
+    if (disabled) return;
     setLoading(true);
     try {
       const params = new URLSearchParams({ mode, title, notice_given: String(noticeGiven) });
@@ -215,8 +218,9 @@ export default function SessionControls({
     );
   }
 
-  const canAnalyze = jdText.trim().length > 0 && !analyzing && !briefing;
-  const canStart = !loading && (mode !== "interview" || noticeGiven);
+  const canAnalyze =
+    !disabled && jdText.trim().length > 0 && !analyzing && !briefing;
+  const canStart = !disabled && !loading && (mode !== "interview" || noticeGiven);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
@@ -473,6 +477,7 @@ export default function SessionControls({
                 </span>
                 <button
                   onClick={handleAnalyze}
+                  disabled={disabled}
                   style={{
                     padding: "4px 12px",
                     backgroundColor: "white",
@@ -480,7 +485,8 @@ export default function SessionControls({
                     border: "1px solid #ff3b30",
                     borderRadius: 100,
                     fontSize: 11,
-                    cursor: "pointer",
+                    cursor: disabled ? "default" : "pointer",
+                    opacity: disabled ? 0.6 : 1,
                   }}
                 >
                   Tentar novamente

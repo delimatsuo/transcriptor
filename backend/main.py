@@ -53,6 +53,14 @@ from backend.speaker_correlation import SpeakerCorrelator
 from backend.startup_credentials import probe_application_default_credentials
 from backend.utils.sanitize import sanitize_participant_name
 from backend.sessions.manager import SessionManager
+from backend.sessions.review import (
+    PersistedReviewError,
+    build_recent_interview,
+    build_session_review,
+    corrupt_recent_interview,
+    deserialize_session,
+    deserialize_transcript,
+)
 from backend.stt.stream_manager import StreamManager
 from backend.storage.firestore import FirestoreStorage
 from backend.storage.gcs import GCSStorage
@@ -756,29 +764,100 @@ async def list_sessions():
     return {"sessions": sessions}
 
 
+async def _read_session(session_id: str):
+    """Read through process memory to Firestore without changing either store."""
+    assert session_mgr and firestore_storage
+    session = session_mgr.get_session(session_id)
+    if session is not None:
+        return session
+
+    record = await firestore_storage.get_session_record(session_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    try:
+        return deserialize_session(session_id, record)
+    except PersistedReviewError:
+        raise HTTPException(
+            status_code=409,
+            detail="Persisted session is invalid",
+        ) from None
+
+
+async def _read_transcript(session_id: str) -> list[TranscriptSegment]:
+    """Read transcript memory first, then reconstruct durable final segments."""
+    assert session_mgr and firestore_storage
+    segments = session_mgr.get_transcript(session_id)
+    if segments:
+        return segments
+
+    records = await firestore_storage.get_session_transcript(session_id)
+    try:
+        return deserialize_transcript(records)
+    except PersistedReviewError:
+        raise HTTPException(
+            status_code=409,
+            detail="Persisted transcript is invalid",
+        ) from None
+
+
+@app.get("/api/sessions/recent-interviews")
+async def list_recent_interviews():
+    """List durable interview review entries without starting any runtime work."""
+    assert firestore_storage
+    records = await firestore_storage.list_sessions()
+    interviews = []
+    for record in records:
+        if record.get("mode") != SessionMode.INTERVIEW.value:
+            continue
+        session_id = str(record.get("id", ""))
+        try:
+            session = deserialize_session(session_id, record)
+            interviews.append(build_recent_interview(session))
+        except PersistedReviewError:
+            interviews.append(corrupt_recent_interview(session_id))
+    return {"interviews": [item.model_dump(mode="json") for item in interviews]}
+
+
+@app.get("/api/sessions/{session_id}/review")
+async def get_session_review(session_id: str):
+    """Reopen one persisted interview without capture, writes, or model calls."""
+    assert firestore_storage
+    record = await firestore_storage.get_session_record(session_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    try:
+        session = deserialize_session(session_id, record)
+        if session.mode != SessionMode.INTERVIEW:
+            raise HTTPException(status_code=409, detail="Session is not an interview")
+        transcript = deserialize_transcript(
+            await firestore_storage.get_session_transcript(session_id)
+        )
+        review = build_session_review(session, transcript)
+    except PersistedReviewError:
+        raise HTTPException(status_code=409, detail="Persisted review is invalid") from None
+    return review.model_dump(mode="json")
+
+
 @app.get("/api/sessions/{session_id}")
 async def get_session(session_id: str):
     """Get session details."""
-    assert session_mgr
-    session = session_mgr.get_session(session_id)
-    if session is None:
-        raise HTTPException(status_code=404, detail="Session not found")
+    session = await _read_session(session_id)
     return session.model_dump()
 
 
 @app.get("/api/sessions/{session_id}/transcript")
 async def get_transcript(session_id: str):
     """Get session transcript."""
-    assert session_mgr
-    segments = session_mgr.get_transcript(session_id)
+    await _read_session(session_id)
+    segments = await _read_transcript(session_id)
     return {"segments": [s.model_dump() for s in segments]}
 
 
 @app.get("/api/sessions/{session_id}/transcript/download")
 async def download_transcript(session_id: str):
     """Download the full transcript as a plain text file."""
-    assert session_mgr
-    segments = session_mgr.get_transcript(session_id)
+    await _read_session(session_id)
+    segments = await _read_transcript(session_id)
     if not segments:
         return PlainTextResponse("No transcript available.", status_code=404)
 

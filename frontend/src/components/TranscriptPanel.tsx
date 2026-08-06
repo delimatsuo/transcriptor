@@ -7,6 +7,7 @@ interface Props {
   segments: TranscriptSegment[];
   speakerMap?: Record<string, string>;
   readOnly?: boolean;
+  emptyMessage?: string;
 }
 
 const SPEAKER_STYLES: Record<string, { color: string; bg: string; label: string }> = {
@@ -35,7 +36,12 @@ function getSpeakerStyle(speaker: string) {
   return { ...fallbackColors[idx], label: speaker };
 }
 
-export default function TranscriptPanel({ segments, speakerMap = {}, readOnly = false }: Props) {
+export default function TranscriptPanel({
+  segments,
+  speakerMap = {},
+  readOnly = false,
+  emptyMessage = "Aguardando fala...",
+}: Props) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const hasMountedRef = useRef(false);
@@ -102,9 +108,7 @@ export default function TranscriptPanel({ segments, speakerMap = {}, readOnly = 
             height: 120,
           }}
         >
-          <p style={{ color: "#86868b", fontSize: 15 }}>
-            Aguardando fala...
-          </p>
+          <p style={{ color: "#86868b", fontSize: 15 }}>{emptyMessage}</p>
         </div>
       )}
 

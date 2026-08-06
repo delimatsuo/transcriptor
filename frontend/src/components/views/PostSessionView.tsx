@@ -9,6 +9,7 @@ interface Props {
   summary: string;
   isSummaryFinal: boolean;
   isInterview: boolean;
+  reviewWarning?: string | null;
   onNewSession: () => void;
 }
 
@@ -17,6 +18,7 @@ export default function PostSessionView({
   summary,
   isSummaryFinal,
   isInterview,
+  reviewWarning = null,
   onNewSession,
 }: Props) {
   return (
@@ -84,6 +86,23 @@ export default function PostSessionView({
         </div>
       </div>
 
+      {reviewWarning && (
+        <div
+          role="alert"
+          style={{
+            margin: "16px 28px 0",
+            padding: "12px 16px",
+            borderRadius: 12,
+            backgroundColor: "rgba(255, 149, 0, 0.08)",
+            color: "#8a4b00",
+            fontSize: 13,
+            lineHeight: 1.5,
+          }}
+        >
+          {reviewWarning}
+        </div>
+      )}
+
       {/* Transcript (read-only) */}
       <div
         style={{
@@ -112,7 +131,11 @@ export default function PostSessionView({
             backgroundColor: "#fafafa",
           }}
         >
-          <TranscriptPanel segments={transcript} readOnly />
+          <TranscriptPanel
+            segments={transcript}
+            readOnly
+            emptyMessage="Nenhuma fala foi persistida para esta sessão."
+          />
         </div>
       </div>
 
