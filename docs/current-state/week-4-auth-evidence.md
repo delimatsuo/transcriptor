@@ -10,7 +10,7 @@ not hosted, deployment, provider, physical-device, or real-interview evidence.
 | Item | Value |
 | --- | --- |
 | Branch | `codex/week-4-auth` |
-| Source/test qualification commit | `35366bd6f862643d540851cf1b08abb0eec39aa2` |
+| Source/test qualification commit | `d15804497c70d4beee0eb0a41f799b12b7ac6c6b` |
 | PR head at last evidence capture | Verify against the live PR head before any hosted or device work; source qualification is bound to the commit above. |
 | Pull request | [#8](https://github.com/delimatsuo/transcriptor/pull/8), draft, stacked on `codex/week-3-evidence-report` |
 | Remote head at last evidence capture | Matched the PR head above |
@@ -20,7 +20,7 @@ not hosted, deployment, provider, physical-device, or real-interview evidence.
 - Startup performs `google.auth.default()` plus credential refresh before
   readiness, with a 10-second deadline and the exact loud remediation message;
   mocked refresh failure, stuck-refresh, and lifespan-order tests pass.
-- Backend: 200 tests passed locally, including 44 focused authorization-matrix
+- Backend: 209 tests passed locally, including 46 focused authorization-matrix
   tests. The matrix covers every `/api` route pattern, token admission, CORS
   rejection, cross-owner and child-scope failures, stop capabilities, WebSocket
   replay/expiry, raw review-record scope, and disabled extension behavior. The
@@ -92,6 +92,19 @@ not hosted, deployment, provider, physical-device, or real-interview evidence.
   the terminal session write succeeds; a transient Firestore failure therefore
   remains retryable after bearer-token loss, and successful durability revokes
   the capability.
+- Failed child writes set durable parent metadata to `transcriptDurability=pending`
+  on a best-effort path, replay all final children in a bounded batch before
+  terminal persistence, and keep incomplete reviews out of the ready state.
+- Active deletion is rejected; terminal deletion shares the stop lock, fences
+  late transcript callbacks, and cancels/awaits detached report work before the
+  cascade and tombstone.
+- A transcript callback durability failure stops STT recovery instead of
+  reconnecting every 0.5 seconds during a Firestore outage; the session remains
+  visibly incomplete and retryable.
+- Rolling summaries advance only through contiguous bounded transcript batches;
+  a backlog schedules follow-up batches without silently skipping older speech.
+- Vertex initialization and static-prompt model construction are serialized,
+  and configured output ceilings are honored by every feature callsite.
 - Unchanged transcript/suggestion/summary rendering is memoized and report
   polling backs off to a five-second maximum interval.
 
