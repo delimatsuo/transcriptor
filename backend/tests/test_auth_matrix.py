@@ -121,6 +121,23 @@ def test_api_auth_boundary_rejects_route_requests_but_leaves_health_probe_public
     assert _run_middleware("/healthz").status_code == 200
 
 
+@pytest.mark.parametrize(
+    "path",
+    sorted(
+        {
+            route.path
+            for route in main.app.routes
+            if getattr(route, "path", "").startswith("/api/")
+        }
+    ),
+)
+def test_every_api_route_pattern_is_inside_the_auth_boundary(path, monkeypatch):
+    monkeypatch.setattr(main, "settings", auth_settings())
+    response = _run_middleware(path)
+    assert response.status_code == 401
+    assert response.headers["www-authenticate"] == "Bearer"
+
+
 def test_cors_headers_survive_auth_401():
     async def request():
         transport = httpx.ASGITransport(app=main.app)
@@ -291,3 +308,26 @@ def test_extension_bridge_is_disabled_by_default(monkeypatch):
         assert exc_info.value.status_code == 404
     finally:
         main.extension_tokens.clear()
+
+
+def test_review_rejects_foreign_raw_record_before_deserialization(monkeypatch):
+    class FakeFirestore:
+        async def get_session_record(self, _session_id):
+            return {
+                "ownerId": "uid-b",
+                "orgId": "ella-internal",
+                "mode": object(),
+            }
+
+    monkeypatch.setattr(main, "firestore_storage", FakeFirestore())
+    auth_token = main.set_current_auth(
+        AuthContext("uid-a", "a@example.com", "ella-internal")
+    )
+    enforced_token = main.set_auth_enforced()
+    try:
+        with pytest.raises(HTTPException) as exc_info:
+            asyncio.run(main.get_session_review("foreign"))
+        assert exc_info.value.status_code == 404
+    finally:
+        main.reset_current_auth(auth_token)
+        main.reset_auth_enforced(enforced_token)

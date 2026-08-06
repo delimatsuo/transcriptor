@@ -1460,6 +1460,7 @@ async def get_session_review(session_id: str):
     record = await firestore_storage.get_session_record(session_id)
     if record is None:
         raise HTTPException(status_code=404, detail="Session not found")
+    _assert_persisted_session_access(record)
     try:
         session = deserialize_session(session_id, record)
         _assert_session_access(session)
