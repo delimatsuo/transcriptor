@@ -10,8 +10,8 @@ not hosted, deployment, provider, physical-device, or real-interview evidence.
 | Item | Value |
 | --- | --- |
 | Branch | `codex/week-4-auth` |
-| Source/test qualification commit | `2fdc06f617940c60829a3a1072b2d0de184c90f9` |
-| PR head at last evidence capture | `2fdc06f617940c60829a3a1072b2d0de184c90f9` |
+| Source/test qualification commit | `d331a32d6df7f196359b8d4708e7ef1b59db7d4b` |
+| PR head at last evidence capture | `d331a32d6df7f196359b8d4708e7ef1b59db7d4b` |
 | Pull request | [#8](https://github.com/delimatsuo/transcriptor/pull/8), draft, stacked on `codex/week-3-evidence-report` |
 | Remote head at last evidence capture | Matched the PR head above |
 
@@ -20,7 +20,7 @@ not hosted, deployment, provider, physical-device, or real-interview evidence.
 - Startup performs `google.auth.default()` plus credential refresh before
   readiness, with a 10-second deadline and the exact loud remediation message;
   mocked refresh failure and stuck-refresh tests pass.
-- Backend: 175 tests passed locally, including 43 focused authorization-matrix
+- Backend: 176 tests passed locally, including 43 focused authorization-matrix
   tests. The matrix covers every `/api` route pattern, token admission, CORS
   rejection, cross-owner and child-scope failures, stop capabilities, WebSocket
   replay/expiry, raw review-record scope, and disabled extension behavior. The
@@ -30,7 +30,7 @@ not hosted, deployment, provider, physical-device, or real-interview evidence.
   principal. The bypass is test-only and does not bypass backend authentication.
 - Dependency audit: `npm audit --audit-level=moderate` reports zero
   vulnerabilities.
-- GitHub Actions: [run 31113893558](https://github.com/delimatsuo/transcriptor/actions/runs/31113893558)
+- GitHub Actions: [run 31114392758](https://github.com/delimatsuo/transcriptor/actions/runs/31114392758)
   passed both backend and frontend jobs on the exact PR head above, with no
   action-runtime deprecation annotation.
 
@@ -50,6 +50,8 @@ not hosted, deployment, provider, physical-device, or real-interview evidence.
   duplicate work is coalesced and canceled on cleanup.
 - Rolling-summary transcript input is capped at 16,000 characters per update;
   the newest tail is retained because the prior summary carries earlier context.
+- Rolling-summary updates send only segments appended since the previous summary;
+  transcript indices are used because per-source STT sequence numbers reset.
 - Non-stream Gemini requests have a configurable 60-second client deadline;
   timeout cleanup releases the shared request queue.
 - Unchanged transcript/suggestion/summary rendering is memoized and report
