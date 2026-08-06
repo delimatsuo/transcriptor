@@ -116,6 +116,27 @@ def test_session_manager_normalizes_source_sequences_for_durable_order():
     assert "source_sequence_number" not in first.model_dump()
 
 
+def test_session_manager_word_count_uses_final_prefix_totals():
+    manager = SessionManager(Settings(google_cloud_project="test-project"))
+    session = manager.create_session()
+    manager.add_transcript_segment(
+        session.id,
+        TranscriptSegment(text="one two", sequence_number=1, is_final=True),
+    )
+    manager.add_transcript_segment(
+        session.id,
+        TranscriptSegment(text="interim words are ignored", sequence_number=1),
+    )
+    manager.add_transcript_segment(
+        session.id,
+        TranscriptSegment(text="three four five", sequence_number=2, is_final=True),
+    )
+
+    assert manager.get_transcript_word_count_since_index(session.id, from_index=1) == 3
+    assert manager.get_transcript_word_count(session.id, from_seq=1) == 3
+    assert manager.get_transcript_word_count_since_index(session.id, from_index=99) == 0
+
+
 def test_main_rolling_context_isolated_per_session():
     settings = Settings(google_cloud_project="test-project")
 

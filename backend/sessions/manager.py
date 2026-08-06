@@ -27,6 +27,10 @@ class SessionManager:
         self._sessions: dict[str, Session] = {}
         self._transcripts: dict[str, list[TranscriptSegment]] = {}
         self._transcript_sequence_counters: dict[str, int] = {}
+        # Prefix totals make rolling-summary cadence checks O(1) instead of
+        # rescanning the entire un-summarized suffix for every final segment.
+        # Entry zero is the total before the first transcript segment.
+        self._transcript_final_word_prefix: dict[str, list[int]] = {}
         self._heartbeat_tasks: dict[str, asyncio.Task] = {}
 
     def create_session(
@@ -47,6 +51,7 @@ class SessionManager:
         self._sessions[session.id] = session
         self._transcripts[session.id] = []
         self._transcript_sequence_counters[session.id] = 0
+        self._transcript_final_word_prefix[session.id] = [0]
 
         logger.info(
             "session_created",
@@ -75,12 +80,17 @@ class SessionManager:
         if session_id not in self._transcripts:
             self._transcripts[session_id] = []
             self._transcript_sequence_counters[session_id] = 0
+            self._transcript_final_word_prefix[session_id] = [0]
         if segment.source_sequence_number is None:
             segment.source_sequence_number = segment.sequence_number
         next_sequence = self._transcript_sequence_counters[session_id] + 1
         self._transcript_sequence_counters[session_id] = next_sequence
         segment.sequence_number = next_sequence
         self._transcripts[session_id].append(segment)
+        prefix = self._transcript_final_word_prefix[session_id]
+        prefix.append(
+            prefix[-1] + (len(segment.text.split()) if segment.is_final else 0)
+        )
 
     def get_recent_transcript_text(
         self, session_id: str, max_segments: int = 50
@@ -119,23 +129,21 @@ class SessionManager:
 
     def get_transcript_word_count(self, session_id: str, from_seq: int = 0) -> int:
         """Count words in transcript segments after a given sequence number."""
-        segments = self._transcripts.get(session_id, [])
-        count = 0
-        for seg in segments:
-            if seg.sequence_number > from_seq and seg.is_final:
-                count += len(seg.text.split())
-        return count
+        prefix = self._transcript_final_word_prefix.get(session_id)
+        if not prefix:
+            return 0
+        start = min(max(0, from_seq), len(prefix) - 1)
+        return prefix[-1] - prefix[start]
 
     def get_transcript_word_count_since_index(
         self, session_id: str, from_index: int = 0
     ) -> int:
         """Count final words appended after a session transcript list index."""
-        segments = self._transcripts.get(session_id, [])
-        return sum(
-            len(segment.text.split())
-            for segment in segments[max(0, from_index) :]
-            if segment.is_final
-        )
+        prefix = self._transcript_final_word_prefix.get(session_id)
+        if not prefix:
+            return 0
+        start = min(max(0, from_index), len(prefix) - 1)
+        return prefix[-1] - prefix[start]
 
     async def start_heartbeat(self, session_id: str) -> None:
         """Start a heartbeat task that updates last_active every 30s."""
