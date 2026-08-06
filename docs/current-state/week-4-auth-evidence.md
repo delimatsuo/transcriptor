@@ -11,9 +11,9 @@ not hosted, deployment, provider, physical-device, or real-interview evidence.
 | --- | --- |
 | Branch | `codex/week-4-auth` |
 | Source/test qualification commit | `91a65f3dd9aa74ef54fa777916df5eb4b54421c2` |
-| Current PR head | The docs/config-only descendant of that qualification commit; verify with `git rev-parse HEAD` and the PR head before use |
+| PR head at last evidence capture | `37ca09d887bdd7c99bc7301cdc7c018b37b3e3e4` |
 | Pull request | [#8](https://github.com/delimatsuo/transcriptor/pull/8), draft, stacked on `codex/week-3-evidence-report` |
-| Remote head | Matches the local commit above |
+| Remote head at last evidence capture | Matched the PR head above |
 
 ## Source and test evidence
 
@@ -26,8 +26,8 @@ not hosted, deployment, provider, physical-device, or real-interview evidence.
   principal. The bypass is test-only and does not bypass backend authentication.
 - Dependency audit: `npm audit --audit-level=moderate` reports zero
   vulnerabilities.
-- GitHub Actions: [run 31108211107](https://github.com/delimatsuo/transcriptor/actions/runs/31108211107)
-  passed both backend and frontend jobs on the exact head. The only annotation
+- GitHub Actions: [run 31108620256](https://github.com/delimatsuo/transcriptor/actions/runs/31108620256)
+  passed both backend and frontend jobs on the exact head at that capture. The only annotation
   is an upstream Node 20 action-runtime deprecation warning.
 
 ## Efficiency and cost controls
