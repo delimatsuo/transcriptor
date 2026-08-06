@@ -755,6 +755,78 @@ class GenerationStorage:
     save_summary = AsyncMock()
 
 
+def test_compatibility_meeting_summary_uses_rolling_context_and_bounded_tail(monkeypatch):
+    class MeetingManager:
+        def __init__(self):
+            self.session = Session(
+                id=SESSION_ID,
+                mode=SessionMode.MEETING,
+                status=SessionStatus.COMPLETED,
+                ended_at=NOW,
+            )
+            self.segments = [
+                TranscriptSegment(
+                    id="old",
+                    text="old coverage",
+                    speaker="Entrevistador",
+                    sequence_number=1,
+                    is_final=True,
+                ),
+                TranscriptSegment(
+                    id="tail",
+                    text="final exchange",
+                    speaker="Candidato",
+                    sequence_number=2,
+                    is_final=True,
+                ),
+            ]
+            self.recent_args = None
+
+        def get_session(self, _session_id):
+            return self.session
+
+        def get_recent_transcript_text(self, _session_id, *, max_segments):
+            self.recent_args = max_segments
+            return "[Candidato]: final exchange"
+
+        def get_transcript(self, _session_id):
+            return self.segments
+
+        def set_summary(self, _session_id, summary):
+            self.session.summary = summary
+
+    class MeetingStorage:
+        save_session = AsyncMock()
+        save_summary = AsyncMock()
+
+    manager = MeetingManager()
+    storage = MeetingStorage()
+    gemini = type(
+        "Gemini",
+        (),
+        {"generate": AsyncMock(return_value="final summary")},
+    )()
+    rolling = type("Rolling", (), {"current_summary": "earlier coverage"})()
+    monkeypatch.setattr(backend_main, "session_mgr", manager)
+    monkeypatch.setattr(backend_main, "firestore_storage", storage)
+    monkeypatch.setattr(backend_main, "gemini_client", gemini)
+    monkeypatch.setattr(backend_main.ws_manager, "broadcast", AsyncMock())
+    previous_context = backend_main.context_window
+    backend_main.context_windows.clear()
+    backend_main.context_windows[SESSION_ID] = rolling
+
+    try:
+        asyncio.run(backend_main._generate_final_summary(SESSION_ID))
+    finally:
+        backend_main.context_windows.clear()
+        backend_main.context_window = previous_context
+
+    assert manager.recent_args == 50
+    user_message = gemini.generate.await_args.kwargs["user_message"]
+    assert "## Rolling Summary\nearlier coverage" in user_message
+    assert "## Recent Transcript\n[Candidato]: final exchange" in user_message
+
+
 def test_final_generation_uses_durable_sources_json_mode_and_persists_failure(monkeypatch):
     manager = GenerationManager()
     storage = GenerationStorage()

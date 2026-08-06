@@ -892,14 +892,26 @@ async def _generate_final_summary(session_id: str) -> None:
             summary = render_internal_summary(report)
             transcript = session_mgr.get_transcript(session_id)
         else:
+            # Meeting mode is retained for direct/backend compatibility, but
+            # its final summary must not rebuild an entire long transcript.
+            # The rolling summary carries older coverage; only a bounded tail
+            # is needed to capture the final exchange without an unbounded
+            # provider request or event-loop allocation.
             transcript_text = session_mgr.get_recent_transcript_text(
                 session_id,
-                max_segments=9999,
+                max_segments=50,
             )
             if not transcript_text:
                 return
             prompt = FINAL_SUMMARY_PROMPT
-            user_message = f"## Transcript\n{transcript_text}"
+            rolling = _context_window_for(session_id)
+            if rolling and rolling.current_summary:
+                user_message = (
+                    f"## Rolling Summary\n{rolling.current_summary}\n\n"
+                    f"## Recent Transcript\n{transcript_text}"
+                )
+            else:
+                user_message = f"## Recent Transcript\n{transcript_text}"
             summary = await gemini_client.generate(
                 system_instruction=prompt,
                 user_message=user_message,
