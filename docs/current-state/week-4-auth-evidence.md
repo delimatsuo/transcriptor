@@ -16,17 +16,18 @@ not hosted, deployment, provider, physical-device, or real-interview evidence.
 | CI trigger hardening commit | `f4e19d2` (checked-in workflow also declares Week 4 branch pushes) |
 | WebSocket delivery hardening commit | `254a22e` (bounded concurrent sends evict slow peers without stalling STT callbacks) |
 | Terminal replay cleanup commit | `39fb0b6` (durable terminal cleanup releases the WebSocket replay ring) |
+| Latest locally and CI-qualified head | `9579e29` |
 | PR head at last evidence capture | Verify against the live PR head before any hosted or device work; source qualification is bound to the commit above. |
 | Pull request | [#8](https://github.com/delimatsuo/transcriptor/pull/8), draft, stacked on `codex/week-3-evidence-report` |
 | Remote head at last evidence capture | Matched the PR head above |
-| Exact-head CI run | Manual dispatch is enabled; the latest run must be rebound to the final remote head before hosted/device work |
+| Exact-head CI run | [31126018737](https://github.com/delimatsuo/transcriptor/actions/runs/31126018737), passed backend and frontend jobs on `9579e29` |
 
 ## Source and test evidence
 
 - Startup performs `google.auth.default()` plus credential refresh before
   readiness, with a 10-second deadline and the exact loud remediation message;
   mocked refresh failure, stuck-refresh, and lifespan-order tests pass.
-- Backend: 209 tests passed locally, including 46 focused authorization-matrix
+- Backend: 211 tests passed locally, including 46 focused authorization-matrix
   tests. The matrix covers every `/api` route pattern, token admission, CORS
   rejection, cross-owner and child-scope failures, stop capabilities, WebSocket
   replay/expiry, raw review-record scope, and disabled extension behavior. The
@@ -36,12 +37,11 @@ not hosted, deployment, provider, physical-device, or real-interview evidence.
   principal. The bypass is test-only and does not bypass backend authentication.
 - Dependency audit: `npm audit --audit-level=moderate` reports zero
   vulnerabilities.
-- GitHub Actions: manual exact-head dispatch is enabled and the checked-in
-  workflow declares Week 4 branch pushes, but the repository runner has left
-  both jobs queued and the latest dispatch API returned HTTP 500. The stacked
-  PR's base branch has an older workflow that did not automatically trigger
-  this PR. Local exact-source qualification is complete; historical runs are
-  not used as green evidence for the current source.
+- GitHub Actions: exact-head run
+  [31126018737](https://github.com/delimatsuo/transcriptor/actions/runs/31126018737)
+  passed both backend and frontend jobs on `9579e29`. The checked-in workflow
+  now declares manual dispatch, Week 4 branch pushes, and the stacked-PR base;
+  the base branch's older workflow did not automatically trigger this PR.
 
 ## Efficiency and cost controls
 
