@@ -10,6 +10,7 @@ import pytest
 from google.auth.exceptions import RefreshError
 
 from backend import startup_credentials
+from backend.config import Settings
 
 
 def test_probe_refreshes_default_credentials(monkeypatch, capsys):
@@ -93,3 +94,54 @@ def test_probe_times_out_without_waiting_for_stuck_refresh(monkeypatch, capsys):
     assert elapsed < 0.5
     assert refresh_finished.is_set()
     assert capsys.readouterr().err == f"{startup_credentials.ADC_ERROR_MESSAGE}\n"
+
+
+def test_lifespan_probes_adc_before_readiness(monkeypatch):
+    """The app must not yield a ready lifespan before the ADC probe succeeds."""
+    from backend import main
+
+    events: list[str] = []
+    settings = Settings(google_cloud_project="test-project")
+
+    async def fake_probe():
+        events.append("adc_probe")
+
+    def fake_initialize(_settings):
+        events.append("firebase")
+
+    class FakeSessionManager:
+        def __init__(self, _settings):
+            events.append("session_manager")
+
+        def detect_orphaned_sessions(self):
+            return []
+
+    class FakeStorage:
+        def __init__(self, _settings):
+            events.append("storage")
+
+    class FakeGemini:
+        def __init__(self, _settings):
+            events.append("gemini")
+
+    class FakeContextWindow:
+        def __init__(self, _settings, _gemini):
+            events.append("context_window")
+
+    monkeypatch.setattr(main, "get_settings", lambda: settings)
+    monkeypatch.setattr(main, "probe_application_default_credentials", fake_probe)
+    monkeypatch.setattr(main, "initialize_firebase_admin", fake_initialize)
+    monkeypatch.setattr(main, "SessionManager", FakeSessionManager)
+    monkeypatch.setattr(main, "FirestoreStorage", FakeStorage)
+    monkeypatch.setattr(main, "GCSStorage", FakeStorage)
+    monkeypatch.setattr(main, "GeminiClient", FakeGemini)
+    monkeypatch.setattr(main, "ContextWindowManager", FakeContextWindow)
+
+    async def run_lifespan():
+        async with main.lifespan(main.app):
+            events.append("ready")
+
+    asyncio.run(run_lifespan())
+
+    assert events.index("adc_probe") < events.index("ready")
+    assert events.index("adc_probe") < events.index("firebase")
