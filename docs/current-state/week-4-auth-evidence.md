@@ -10,7 +10,8 @@ not hosted, deployment, provider, physical-device, or real-interview evidence.
 | Item | Value |
 | --- | --- |
 | Branch | `codex/week-4-auth` |
-| Commit | `91a65f3dd9aa74ef54fa777916df5eb4b54421c2` |
+| Source/test qualification commit | `91a65f3dd9aa74ef54fa777916df5eb4b54421c2` |
+| Current PR head | The docs/config-only descendant of that qualification commit; verify with `git rev-parse HEAD` and the PR head before use |
 | Pull request | [#8](https://github.com/delimatsuo/transcriptor/pull/8), draft, stacked on `codex/week-3-evidence-report` |
 | Remote head | Matches the local commit above |
 
