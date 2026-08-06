@@ -10,8 +10,8 @@ not hosted, deployment, provider, physical-device, or real-interview evidence.
 | Item | Value |
 | --- | --- |
 | Branch | `codex/week-4-auth` |
-| Source/test qualification commit | `93b41630cf96d0bc0a89c6894ac5286ed1628b80` |
-| PR head at last evidence capture | `93b41630cf96d0bc0a89c6894ac5286ed1628b80` |
+| Source/test qualification commit | `3bb4e3974008cbf67a9d6746307d1de74dd51156` |
+| PR head at last evidence capture | `3bb4e3974008cbf67a9d6746307d1de74dd51156` |
 | Pull request | [#8](https://github.com/delimatsuo/transcriptor/pull/8), draft, stacked on `codex/week-3-evidence-report` |
 | Remote head at last evidence capture | Matched the PR head above |
 
@@ -31,7 +31,7 @@ not hosted, deployment, provider, physical-device, or real-interview evidence.
 - Dependency audit: `npm audit --audit-level=moderate` reports zero
   vulnerabilities.
 - GitHub Actions: exact executable-tree run
-  [31121348391](https://github.com/delimatsuo/transcriptor/actions/runs/31121348391)
+  [31121647153](https://github.com/delimatsuo/transcriptor/actions/runs/31121647153)
   is queued after repeated runner-service stalls; local source qualification is
   complete and the prior unchanged-source run passed both jobs.
 
@@ -67,6 +67,8 @@ not hosted, deployment, provider, physical-device, or real-interview evidence.
 - Final report generation fails closed before the provider call when durable
   context plus transcript exceeds the configurable 120,000-character budget;
   it records `report_input_too_large` rather than silently truncating evidence.
+- Vertex AI location is explicit through `LLM_LOCATION` (default
+  `us-central1`); changing it requires the provider/privacy region gate.
 - Non-stream Gemini requests have a configurable 60-second client deadline;
   timeout cleanup releases the shared request queue.
 - Unchanged transcript/suggestion/summary rendering is memoized and report
