@@ -30,10 +30,10 @@ not hosted, deployment, provider, physical-device, or real-interview evidence.
   principal. The bypass is test-only and does not bypass backend authentication.
 - Dependency audit: `npm audit --audit-level=moderate` reports zero
   vulnerabilities.
-- GitHub Actions: exact executable-tree run
-  [31121684183](https://github.com/delimatsuo/transcriptor/actions/runs/31121684183)
-  is queued after repeated runner-service stalls; local source qualification is
-  complete and the prior unchanged-source run passed both jobs.
+- GitHub Actions: current-head checks are pending after repeated runner-service
+  stalls. Local exact-source qualification is complete, and prior unchanged-
+  source run [31119758788](https://github.com/delimatsuo/transcriptor/actions/runs/31119758788)
+  passed both jobs; no pending or canceled run is presented as green evidence.
 
 ## Efficiency and cost controls
 
