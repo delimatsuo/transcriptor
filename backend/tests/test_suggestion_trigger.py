@@ -18,8 +18,8 @@ def test_candidate_trigger_uses_effective_source_label(monkeypatch):
 
     candidate = SimpleNamespace(
         is_final=True,
-        speaker="Entrevistador",
-        speaker_override="Candidato",
+        speaker="Candidato",
+        speaker_override="Candidata",
     )
     interviewer = SimpleNamespace(
         is_final=True,

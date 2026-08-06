@@ -528,8 +528,10 @@ def _is_candidate_final_segment(segment: TranscriptSegment) -> bool:
     """Return whether a final segment came from the configured candidate channel."""
     if settings is None or not segment.is_final:
         return False
-    speaker = segment.speaker_override or segment.speaker
-    return speaker == settings.stt_speaker_label_other
+    # The extension may override the display label with a participant name
+    # (for example, "Candidata").  Source labels remain the stable channel
+    # identity for spend control.
+    return segment.speaker == settings.stt_speaker_label_other
 
 
 async def _generate_rolling_summary(session_id: str) -> None:
