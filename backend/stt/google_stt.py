@@ -59,6 +59,10 @@ class GoogleSTTStream:
             model=self.settings.stt_model,
             features=cloud_speech.RecognitionFeatures(
                 enable_automatic_punctuation=True,
+                # Rotation evidence and durable transcript anchors need the
+                # provider's audio offsets. Callback wall time measures STT
+                # finalization cadence and can falsely look like lost audio.
+                enable_word_time_offsets=True,
             ),
         )
 
