@@ -55,6 +55,28 @@ def test_pending_flushes_in_order_before_live_chunk():
     assert len(mgr._pending_audio) == 0
     assert mgr._stream_audio_origins["stream-2"] == 0.0
     assert mgr._audio_timeline_seconds == 1.5
+    assert mgr.audio_delivery_intervals == [("stream-2", 0.0, 1.5)]
+
+
+def test_delivery_intervals_are_contiguous_across_rotation():
+    mgr = StreamManager(
+        Settings(google_cloud_project="test-project", sample_rate=10, channels=1)
+    )
+    mgr._running = True
+    first = FakeStream(active=True, stream_id="stream-1")
+    mgr._current_stream = first
+    asyncio.run(mgr.send_audio(b"0" * 10))
+
+    first._active = False
+    asyncio.run(mgr.send_audio(b"1" * 10))
+    second = FakeStream(active=True, stream_id="stream-2")
+    mgr._current_stream = second
+    asyncio.run(mgr.send_audio(b"2" * 10))
+
+    assert mgr.audio_delivery_intervals == [
+        ("stream-1", 0.0, 0.5),
+        ("stream-2", 0.5, 1.5),
+    ]
 
 
 def test_pending_buffer_is_bounded():
@@ -93,6 +115,19 @@ def test_provider_word_offsets_map_to_stream_audio_origin():
 
     assert start == 270.25
     assert end == 272.25
+
+
+def test_provider_result_end_maps_without_word_offsets():
+    start, end = _absolute_result_times(
+        stream_audio_origin=270.0,
+        result=SimpleNamespace(result_end_offset=timedelta(seconds=12.5)),
+        alternative=SimpleNamespace(words=[]),
+        fallback_offset=999.0,
+        text="1234567890",
+    )
+
+    assert start == 282.0
+    assert end == 282.5
 
 
 def test_result_time_falls_back_to_callback_when_provider_offsets_are_absent():

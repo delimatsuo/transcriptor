@@ -2,10 +2,10 @@
 
 Usage: .venv/bin/python3 -m backend.scripts.soak_rotation
 Speak continuously (read aloud / play a podcast into the mic) for ~10 min.
-The script prints every final segment with provider-derived audio offsets;
-afterwards it reports the uncovered audio interval at each rotation boundary
-(~270s, ~540s). A gap > 5s while audio was continuously playing means rotation
-still loses audio. Callback arrival intervals are not audio gaps.
+The script prints every final segment with the provider-derived result end;
+afterwards it verifies that the client delivered contiguous audio into all three
+provider streams and that Chirp 3 returned final transcript results on both
+sides of each rotation. Callback arrival intervals are not audio gaps.
 """
 
 import asyncio
@@ -17,26 +17,20 @@ from backend.config import get_settings
 from backend.schemas.models import TranscriptSegment
 from backend.stt.stream_manager import StreamManager
 
-ROTATION = 270.0
-MAX_BOUNDARY_GAP = 5.0
+MAX_DELIVERY_GAP = 0.2
+MAX_TRANSCRIPT_WINDOW = 45.0
 
 
-def rotation_boundary_gap(
+def transcript_boundary_window(
     finals: list[TranscriptSegment], boundary: float
-) -> float | None:
-    """Return uncovered transcript-audio seconds around one boundary."""
-    intervals = sorted(
-        (segment.start_time, segment.end_time)
-        for segment in finals
-        if segment.is_final and segment.end_time >= segment.start_time
-    )
-    if any(start <= boundary <= end for start, end in intervals):
-        return 0.0
-    before = [end for _, end in intervals if end < boundary]
-    after = [start for start, _ in intervals if start > boundary]
+) -> tuple[float, float] | None:
+    """Return provider-result lags immediately before and after a boundary."""
+    ends = sorted(segment.end_time for segment in finals if segment.is_final)
+    before = [end for end in ends if end <= boundary]
+    after = [end for end in ends if end > boundary]
     if not before or not after:
         return None
-    return max(0.0, min(after) - max(before))
+    return boundary - max(before), min(after) - boundary
 
 
 async def main() -> None:
@@ -77,21 +71,47 @@ async def main() -> None:
         await buffer.stop()
         await capture.stop()
 
-    print("\n--- gaps at rotation boundaries ---")
+    print("\n--- rotation delivery and transcript evidence ---")
     failed = not drain_completed
     if not drain_completed:
         print(f"SUSPECT DRAIN FAILURE {mgr.drain_failure_reason}")
-    for k in (1, 2):
-        boundary = k * ROTATION
-        gap = rotation_boundary_gap(finals, boundary)
-        if gap is None:
+    delivery_intervals = mgr.audio_delivery_intervals
+    for stream_id, start, end in delivery_intervals:
+        print(f"DELIVERY {stream_id} {start:.3f}-{end:.3f}s audio")
+    if len(delivery_intervals) != 3:
+        failed = True
+        print(f"INCONCLUSIVE STREAM COUNT {len(delivery_intervals)} expected 3")
+
+    for previous, current in zip(delivery_intervals, delivery_intervals[1:]):
+        boundary = current[1]
+        delivery_gap = max(0.0, current[1] - previous[2])
+        if delivery_gap > MAX_DELIVERY_GAP:
             failed = True
-            print(f"INCONCLUSIVE GAP across {boundary:.0f}s boundary")
-        elif gap > MAX_BOUNDARY_GAP:
-            failed = True
-            print(f"SUSPECT GAP {gap:.1f}s across {boundary:.0f}s boundary")
+            print(
+                f"SUSPECT DELIVERY GAP {delivery_gap:.3f}s "
+                f"from {previous[0]} to {current[0]}"
+            )
         else:
-            print(f"PASS GAP {gap:.1f}s across {boundary:.0f}s boundary")
+            print(
+                f"PASS DELIVERY GAP {delivery_gap:.3f}s "
+                f"from {previous[0]} to {current[0]}"
+            )
+
+        window = transcript_boundary_window(finals, boundary)
+        if window is None:
+            failed = True
+            print(f"INCONCLUSIVE TRANSCRIPT WINDOW at {boundary:.1f}s")
+        elif max(window) > MAX_TRANSCRIPT_WINDOW:
+            failed = True
+            print(
+                f"SUSPECT TRANSCRIPT WINDOW before={window[0]:.1f}s "
+                f"after={window[1]:.1f}s at {boundary:.1f}s"
+            )
+        else:
+            print(
+                f"PASS TRANSCRIPT WINDOW before={window[0]:.1f}s "
+                f"after={window[1]:.1f}s at {boundary:.1f}s"
+            )
     print("done")
     if failed:
         raise SystemExit(1)

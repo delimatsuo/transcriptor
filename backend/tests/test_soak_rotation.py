@@ -1,9 +1,9 @@
-"""Regression tests for rotation-boundary audio-gap measurement."""
+"""Regression tests for rotation delivery and transcript-window evidence."""
 
 import pytest
 
 from backend.schemas.models import TranscriptSegment
-from backend.scripts.soak_rotation import rotation_boundary_gap
+from backend.scripts.soak_rotation import transcript_boundary_window
 
 
 def final_segment(start: float, end: float) -> TranscriptSegment:
@@ -18,26 +18,27 @@ def final_segment(start: float, end: float) -> TranscriptSegment:
     )
 
 
-def test_boundary_inside_final_segment_has_no_gap():
-    assert rotation_boundary_gap([final_segment(268.0, 272.0)], 270.0) == 0.0
-
-
-def test_boundary_gap_uses_provider_audio_intervals():
-    gap = rotation_boundary_gap(
+def test_transcript_window_uses_provider_result_ends():
+    window = transcript_boundary_window(
         [final_segment(260.0, 268.5), final_segment(274.25, 280.0)],
         270.0,
     )
 
-    assert gap == pytest.approx(5.75)
+    assert window == pytest.approx((1.5, 10.0))
 
 
-def test_adjacent_audio_intervals_report_small_gap():
-    gap = rotation_boundary_gap(
-        [final_segment(260.0, 269.5), final_segment(270.25, 280.0)],
+def test_transcript_window_selects_nearest_results_on_each_side():
+    window = transcript_boundary_window(
+        [
+            final_segment(250.0, 260.0),
+            final_segment(260.0, 269.5),
+            final_segment(270.25, 280.0),
+            final_segment(280.0, 290.0),
+        ],
         270.0,
     )
 
-    assert gap == pytest.approx(0.75)
+    assert window == pytest.approx((0.5, 10.0))
 
 
 @pytest.mark.parametrize(
@@ -49,4 +50,4 @@ def test_adjacent_audio_intervals_report_small_gap():
     ],
 )
 def test_boundary_without_both_sides_is_inconclusive(segments):
-    assert rotation_boundary_gap(segments, 270.0) is None
+    assert transcript_boundary_window(segments, 270.0) is None

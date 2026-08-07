@@ -258,6 +258,41 @@ def test_transcript_callback_failure_stops_reconnect_loop(monkeypatch):
     assert stream_count == 1
 
 
+def test_provider_response_failure_stops_reconnect_loop(monkeypatch):
+    class ResponseFailureStream(FinalOnCloseStream):
+        instances: list["ResponseFailureStream"] = []
+
+        async def start(self):
+            self._accepting_audio = True
+            self.request_opened = True
+            raise RuntimeError("provider rejected request")
+            if False:  # pragma: no cover - makes this an async generator
+                yield None
+
+    ResponseFailureStream.instances.clear()
+    monkeypatch.setattr(stream_manager, "GoogleSTTStream", ResponseFailureStream)
+
+    async def run():
+        manager = stream_manager.StreamManager(
+            Settings(google_cloud_project="test-project")
+        )
+        await manager.start()
+        for _ in range(100):
+            if manager.drain_failure_reason is not None:
+                break
+            await asyncio.sleep(0)
+        await asyncio.sleep(0.6)
+        stream_count = len(ResponseFailureStream.instances)
+        await manager.stop()
+        return manager, stream_count
+
+    manager, stream_count = asyncio.run(run())
+
+    assert manager.drain_failure_reason == "response_error"
+    assert manager._running is False
+    assert stream_count == 1
+
+
 def test_final_firestore_failure_propagates_to_completion_contract(monkeypatch):
     segment = TranscriptSegment(text="final", is_final=True)
 

@@ -106,6 +106,7 @@ class StreamManager:
         # audio chunk it receives, including buffered rotation audio.
         self._audio_timeline_seconds: float = 0.0
         self._stream_audio_origins: dict[str, float] = {}
+        self._stream_audio_ends: dict[str, float] = {}
 
         # Audio arriving while no stream is active (rotation/recovery window)
         # is buffered here and flushed, in order, on the next active send.
@@ -132,6 +133,7 @@ class StreamManager:
         self._last_emitted_end_time = 0.0
         self._audio_timeline_seconds = 0.0
         self._stream_audio_origins.clear()
+        self._stream_audio_ends.clear()
         self._drain_completed = None
         self._drain_failure_reason = None
 
@@ -248,6 +250,21 @@ class StreamManager:
     def drain_failure_reason(self) -> str | None:
         return self._drain_failure_reason
 
+    @property
+    def audio_delivery_intervals(self) -> list[tuple[str, float, float]]:
+        """Return provider-stream audio intervals on the session timeline."""
+        return sorted(
+            [
+                (
+                    stream_id,
+                    origin,
+                    self._stream_audio_ends.get(stream_id, origin),
+                )
+                for stream_id, origin in self._stream_audio_origins.items()
+            ],
+            key=lambda interval: interval[1],
+        )
+
     async def send_audio(self, audio_bytes: bytes) -> None:
         """Send audio to the current stream, buffering across rotation gaps."""
         bytes_per_second = (
@@ -276,6 +293,8 @@ class StreamManager:
             while self._pending_audio:
                 await self._current_stream.send_audio(self._pending_audio.popleft())
             await self._current_stream.send_audio(audio_bytes)
+            if stream_id:
+                self._stream_audio_ends[stream_id] = self._audio_timeline_seconds
         elif self._running:
             if len(self._pending_audio) == self._pending_audio.maxlen:
                 self._audio_dropped = True
@@ -435,18 +454,24 @@ class StreamManager:
 
             except asyncio.CancelledError:
                 return
-            except Exception:
+            except Exception as exc:
                 self._ever_stream_opened = (
                     self._ever_stream_opened
                     or getattr(stream, "request_opened", False)
                 )
                 self.mark_failed("response_error")
-                logger.warning(
-                    "stt_stream_error_recovering",
+                logger.exception(
+                    "stt_stream_error",
                     stream_id=stream.stream_id,
+                    error_type=type(exc).__name__,
+                    error=str(exc),
                 )
-                await stream.stop()
-                if self._running:
-                    await asyncio.sleep(0.5)
-                    continue
+                self._running = False
+                try:
+                    await stream.stop()
+                except Exception:
+                    logger.exception(
+                        "stt_stream_stop_after_response_error",
+                        stream_id=stream.stream_id,
+                    )
                 return
