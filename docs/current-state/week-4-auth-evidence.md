@@ -1,47 +1,48 @@
 # Week 4 authenticated-tenancy evidence
 
-**Reviewed:** 2026-08-06
+**Reviewed:** 2026-08-07
 
-**Status:** Source and test qualified on the Week 4 draft branch. This record is
-not hosted, deployment, provider, physical-device, or real-interview evidence.
+**Status:** Source, CI, hosted cleanup/index readback, synthetic provider soak,
+and physical macOS source-isolation are qualified on the exact current head.
+Windows, hosted tenant isolation (no active runtime), deployment, and
+real-interview evidence remain open.
 
 ## Exact artifact
 
 | Item | Value |
 | --- | --- |
 | Branch | `codex/week-4-auth` |
-| Source/test qualification commit | `d15804497c70d4beee0eb0a41f799b12b7ac6c6b` |
+| Source/test qualification commit | `785cdffa6649f5dda39fbf46cc2b0319c92ec34c` |
 | Latest lifecycle hardening commit | `66591bf` (deletion clears in-process interview context, detached warning work, capabilities, and WebSocket replay state) |
 | Latest generation-fence commit | `15f561d` (late callbacks and provider generations cannot publish or persist after deletion fencing) |
 | CI trigger hardening commit | `f4e19d2` (checked-in workflow also declares Week 4 branch pushes) |
 | WebSocket delivery hardening commit | `254a22e` (bounded concurrent sends evict slow peers without stalling STT callbacks) |
 | Terminal replay cleanup commit | `39fb0b6` (durable terminal cleanup releases the WebSocket replay ring) |
-| Latest locally and CI-qualified head | `9579e29` |
-| PR head at last evidence capture | Verify against the live PR head before any hosted or device work; source qualification is bound to the commit above. |
+| Latest locally and CI-qualified head | `785cdffa6649f5dda39fbf46cc2b0319c92ec34c` |
+| PR head at last evidence capture | `785cdffa6649f5dda39fbf46cc2b0319c92ec34c` |
 | Pull request | [#8](https://github.com/delimatsuo/transcriptor/pull/8), draft, stacked on `codex/week-3-evidence-report` |
 | Remote head at last evidence capture | Matched the PR head above |
-| Exact-head CI run | [31126018737](https://github.com/delimatsuo/transcriptor/actions/runs/31126018737), passed backend and frontend jobs on `9579e29` |
+| Exact-head CI run | [31182899947](https://github.com/delimatsuo/transcriptor/actions/runs/31182899947), passed backend and frontend jobs on `785cdff` |
 
 ## Source and test evidence
 
 - Startup performs `google.auth.default()` plus credential refresh before
   readiness, with a 10-second deadline and the exact loud remediation message;
   mocked refresh failure, stuck-refresh, and lifespan-order tests pass.
-- Backend: 211 tests passed locally, including 46 focused authorization-matrix
+- Backend: 224 tests passed locally, including 46 focused authorization-matrix
   tests. The matrix covers every `/api` route pattern, token admission, CORS
   rejection, cross-owner and child-scope failures, stop capabilities, WebSocket
   replay/expiry, raw review-record scope, and disabled extension behavior. The
   inventory adds deterministic content-free ownership-scope tests.
-- Frontend: 45 unit tests passed; TypeScript and production build passed.
+- Frontend: 45 unit tests passed; TypeScript and production build passed. Exact-head CI reran frontend tests, typecheck, and build on `785cdff`.
 - Browser rehearsal: 19 Playwright tests passed with the fixed synthetic
   principal. The bypass is test-only and does not bypass backend authentication.
 - Dependency audit: `npm audit --audit-level=moderate` reports zero
   vulnerabilities.
 - GitHub Actions: exact-head run
-  [31126018737](https://github.com/delimatsuo/transcriptor/actions/runs/31126018737)
-  passed both backend and frontend jobs on `9579e29`. The checked-in workflow
-  now declares manual dispatch, Week 4 branch pushes, and the stacked-PR base;
-  the base branch's older workflow did not automatically trigger this PR.
+  [31182899947](https://github.com/delimatsuo/transcriptor/actions/runs/31182899947)
+  passed both backend and frontend jobs on `785cdff`. The checked-in workflow
+  declares manual dispatch, Week 4 branch pushes, and the stacked-PR base.
 
 ## Efficiency and cost controls
 
@@ -131,14 +132,25 @@ quota enforcement or live-provider cost savings.
 
 ## Remaining release gates
 
-- Deploy and verify the declared Firestore owner/org/startedAt composite index in
-  the authorized hosted project using the non-authorizing
-  [hosted-gate checklist](../launch/week-4-hosted-gate-checklist.md).
-- Complete the same-SHA macOS audio soak and physical Windows routing/owner gate.
-- Resolve the distinction between the historical containment inventory and the
-  owner-authorized purge report with a fresh authorized cloud readback before
-  any migration; quarantine or owner-approved-backfill any records missing
-  ownership and never auto-claim them. The read-only inventory command is
+- Hosted cleanup and index readback passed under the owner-approved corporate
+  ADC in `transcriptor-490222`: zero remaining sessions/objects, five exact
+  deletion tombstones (161 child documents and one GCS blob), and the checked-in
+  `sessions(ownerId ASC, orgId ASC, startedAt DESC)` index uniquely `READY`.
+- The privacy-safe synthetic Chirp 3 rotation soak passed for 600 seconds with
+  three streams, clean drain, and zero client delivery gaps at both rotations.
+- The physical macOS source-isolation gate passed on `785cdff` after explicit
+  Vocaster One Host Microphone channel-4 configuration: system-only speech
+  produced 170 BlackHole final characters and zero Vocaster wrong-channel text;
+  microphone-only speech produced 51 Vocaster final characters and zero
+  BlackHole wrong-channel text. No raw audio or transcript content was retained
+  in evidence.
+- Complete the physical Windows routing/owner gate, or record the owner's
+  macOS-first launch plus a committed Windows fast-follow date. No local Windows
+  device/VM was found, and no hosted Week 4 runtime exists for tenant-isolation
+  testing.
+- The exact hosted readback is live evidence for deletion/index state only; it
+  does not prove hosted tenant isolation, deployment, provider quota, or
+  real-interview behavior. The read-only inventory command remains
   `backend/scripts/inventory_legacy_scope.py` (version
   `week4-auth-legacy-scope-v1`).
 - Keep Firebase/Firestore/provider access, deployment, first-user interviews,
