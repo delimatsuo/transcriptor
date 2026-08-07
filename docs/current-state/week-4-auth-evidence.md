@@ -2,27 +2,28 @@
 
 **Reviewed:** 2026-08-07
 
-**Status:** Source, CI, hosted cleanup/index readback, synthetic provider soak,
-and physical macOS source-isolation are qualified on the exact current head.
-Windows, hosted tenant isolation (no active runtime), deployment, and
-real-interview evidence remain open.
+**Status:** Source, CI, hosted cleanup/index readback, and synthetic provider
+soak are qualified. Physical macOS source-isolation is currently **FAIL** due
+to nondeterministic hardware routing despite a prior passing run; Windows,
+hosted tenant isolation (no active runtime), deployment, and real-interview
+evidence remain open.
 
 ## Exact artifact
 
 | Item | Value |
 | --- | --- |
 | Branch | `codex/week-4-auth` |
-| Source/test qualification commit | `785cdffa6649f5dda39fbf46cc2b0319c92ec34c` |
+| Source/test qualification commit | `785cdffa6649f5dda39fbf46cc2b0319c92ec34c` (audio behavior) |
 | Latest lifecycle hardening commit | `66591bf` (deletion clears in-process interview context, detached warning work, capabilities, and WebSocket replay state) |
 | Latest generation-fence commit | `15f561d` (late callbacks and provider generations cannot publish or persist after deletion fencing) |
 | CI trigger hardening commit | `f4e19d2` (checked-in workflow also declares Week 4 branch pushes) |
 | WebSocket delivery hardening commit | `254a22e` (bounded concurrent sends evict slow peers without stalling STT callbacks) |
 | Terminal replay cleanup commit | `39fb0b6` (durable terminal cleanup releases the WebSocket replay ring) |
-| Latest locally and CI-qualified head | `785cdffa6649f5dda39fbf46cc2b0319c92ec34c` |
-| PR head at last evidence capture | `785cdffa6649f5dda39fbf46cc2b0319c92ec34c` |
+| Latest locally and CI-qualified head | `d7ba4d54e322c64d74e4611e0e3e45055e05c3ac` |
+| PR head at last evidence capture | `d7ba4d54e322c64d74e4611e0e3e45055e05c3ac` |
 | Pull request | [#8](https://github.com/delimatsuo/transcriptor/pull/8), draft, stacked on `codex/week-3-evidence-report` |
 | Remote head at last evidence capture | Matched the PR head above |
-| Exact-head CI run | [31182899947](https://github.com/delimatsuo/transcriptor/actions/runs/31182899947), passed backend and frontend jobs on `785cdff` |
+| Exact-head CI run | [31184393839](https://github.com/delimatsuo/transcriptor/actions/runs/31184393839), passed backend and frontend jobs on `d7ba4d5` |
 
 ## Source and test evidence
 
@@ -138,12 +139,17 @@ quota enforcement or live-provider cost savings.
   `sessions(ownerId ASC, orgId ASC, startedAt DESC)` index uniquely `READY`.
 - The privacy-safe synthetic Chirp 3 rotation soak passed for 600 seconds with
   three streams, clean drain, and zero client delivery gaps at both rotations.
-- The physical macOS source-isolation gate passed on `785cdff` after explicit
-  Vocaster One Host Microphone channel-4 configuration: system-only speech
-  produced 170 BlackHole final characters and zero Vocaster wrong-channel text;
-  microphone-only speech produced 51 Vocaster final characters and zero
-  BlackHole wrong-channel text. No raw audio or transcript content was retained
-  in evidence.
+- The first physical macOS source-isolation run passed on the audio behavior
+  commit `785cdff` after explicit Vocaster One Host Microphone channel-4
+  configuration: system-only speech produced 170 BlackHole final characters
+  and zero Vocaster wrong-channel text; microphone-only speech produced 51
+  Vocaster final characters and zero BlackHole wrong-channel text.
+- A repeat on the docs-qualified exact head `d7ba4d5` **FAILED** the same gate:
+  system-only speech produced 163 BlackHole final characters and 165
+  wrong-channel Vocaster characters; microphone-only speech produced 142
+  Vocaster characters and zero BlackHole leakage. Both phases drained and RMS
+  was non-silent, with no raw audio or transcript content retained in evidence.
+  The physical route is therefore nondeterministic and not release-safe.
 - Complete the physical Windows routing/owner gate, or record the owner's
   macOS-first launch plus a committed Windows fast-follow date. No local Windows
   device/VM was found, and no hosted Week 4 runtime exists for tenant-isolation
