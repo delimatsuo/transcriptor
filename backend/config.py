@@ -117,6 +117,14 @@ class Settings(BaseSettings):
         default="",
         description="Name substring for the microphone device. Empty = system default mic.",
     )
+    microphone_input_channel: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Zero-based input channel to capture from the microphone device; "
+            "Vocaster One Host Microphone is channel 4."
+        ),
+    )
     sample_rate: int = Field(default=16000, description="Audio sample rate in Hz")
     channels: int = Field(default=1, description="Audio channels (mono)")
     audio_chunk_duration_ms: int = Field(

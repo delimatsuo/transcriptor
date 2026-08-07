@@ -432,6 +432,7 @@ async def _run_single_audio_stream(
     capture_list: list[AudioCapture],
     buffer_list: list[AudioBuffer],
     sm_list: list[StreamManager],
+    input_channel: int = 0,
 ) -> None:
     """Single audio stream: capture → STT → broadcast.
 
@@ -442,7 +443,11 @@ async def _run_single_audio_stream(
 
     audio_queue: asyncio.Queue = asyncio.Queue(maxsize=settings.buffer_max_chunks)
     capture = AudioCapture(
-        settings, audio_queue, device_name=device_name, label=source_label,
+        settings,
+        audio_queue,
+        device_name=device_name,
+        label=source_label,
+        input_channel=input_channel,
     )
     buffer = AudioBuffer(settings, audio_queue)
 
@@ -523,6 +528,7 @@ async def _run_audio_pipeline(session_id: str) -> None:
                 capture_list=captures,
                 buffer_list=buffers,
                 sm_list=sms,
+                input_channel=0,
             ),
             _run_single_audio_stream(
                 session_id=session_id,
@@ -531,6 +537,7 @@ async def _run_audio_pipeline(session_id: str) -> None:
                 capture_list=captures,
                 buffer_list=buffers,
                 sm_list=sms,
+                input_channel=settings.microphone_input_channel,
             ),
         )
     finally:

@@ -8,8 +8,9 @@ from backend.scripts import preflight_audio
 
 
 class _FakeInputStream:
-    def __init__(self, *, device: int, **_: object) -> None:
+    def __init__(self, *, device: int, channels: int = 1, **_: object) -> None:
         self.device = device
+        self.channels = channels
 
     def __enter__(self) -> "_FakeInputStream":
         return self
@@ -18,7 +19,7 @@ class _FakeInputStream:
         return None
 
     def read(self, _frames: int) -> tuple[np.ndarray, None]:
-        return np.array([[0.25]], dtype=np.float32), None
+        return np.full((1, self.channels), 0.25, dtype=np.float32), None
 
 
 def test_blank_microphone_uses_and_identifies_actual_default_device(

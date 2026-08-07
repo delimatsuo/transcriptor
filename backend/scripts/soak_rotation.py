@@ -53,6 +53,7 @@ async def main() -> None:
         queue,
         device_name=settings.microphone_device_name,
         label="soak",
+        input_channel=settings.microphone_input_channel,
     )
     buffer = AudioBuffer(settings, queue)
     mgr = StreamManager(settings, on_transcript=on_transcript, source_label="soak")
