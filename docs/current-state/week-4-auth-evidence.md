@@ -1,12 +1,11 @@
 # Week 4 authenticated-tenancy evidence
 
-**Reviewed:** 2026-08-07
+**Reviewed:** 2026-08-10
 
-**Status:** Source, CI, hosted cleanup/index readback, and synthetic provider
-soak are qualified. Physical macOS source-isolation is currently **FAIL** due
-to nondeterministic hardware routing despite a prior passing run; Windows,
-hosted tenant isolation (no active runtime), deployment, and real-interview
-evidence remain open.
+**Status:** Source, CI, hosted cleanup/index readback, synthetic provider soak,
+and the repaired exact-SHA physical macOS source-isolation gate are qualified.
+Windows, hosted tenant isolation (no active runtime), deployment, and
+real-interview evidence remain open.
 
 ## Exact artifact
 
@@ -19,11 +18,11 @@ evidence remain open.
 | CI trigger hardening commit | `f4e19d2` (checked-in workflow also declares Week 4 branch pushes) |
 | WebSocket delivery hardening commit | `254a22e` (bounded concurrent sends evict slow peers without stalling STT callbacks) |
 | Terminal replay cleanup commit | `39fb0b6` (durable terminal cleanup releases the WebSocket replay ring) |
-| Latest locally and CI-qualified head | `d7ba4d54e322c64d74e4611e0e3e45055e05c3ac` |
-| PR head at last evidence capture | `d7ba4d54e322c64d74e4611e0e3e45055e05c3ac` |
+| Latest locally and CI-qualified head | `257760ce1b83a42d72af15eb8bf45466f7afc7d9` |
+| PR head at last evidence capture | `257760ce1b83a42d72af15eb8bf45466f7afc7d9` |
 | Pull request | [#8](https://github.com/delimatsuo/transcriptor/pull/8), draft, stacked on `codex/week-3-evidence-report` |
 | Remote head at last evidence capture | Matched the PR head above |
-| Exact-head CI run | [31184393839](https://github.com/delimatsuo/transcriptor/actions/runs/31184393839), passed backend and frontend jobs on `d7ba4d5` |
+| Exact-head CI run | [31184828672](https://github.com/delimatsuo/transcriptor/actions/runs/31184828672), passed backend and frontend jobs on `257760c` |
 
 ## Source and test evidence
 
@@ -149,7 +148,17 @@ quota enforcement or live-provider cost savings.
   wrong-channel Vocaster characters; microphone-only speech produced 142
   Vocaster characters and zero BlackHole leakage. Both phases drained and RMS
   was non-silent, with no raw audio or transcript content retained in evidence.
-  The physical route is therefore nondeterministic and not release-safe.
+  That result is retained as historical evidence for the stale route and is
+  superseded by the repaired exact-SHA route below.
+- A repaired exact-SHA physical Mac run passed on `257760c` after replacing the
+  stale aggregate with `Transcriptor Output`, containing the connected AirPods
+  Max and BlackHole 2ch. The owner used **Input = Vocaster One USB** and
+  **Output = Transcriptor Output**. System-only speech produced `164`
+  BlackHole final characters, `0` wrong-channel microphone characters, and
+  peak RMS `0.286854`. The microphone-only phase produced `66` microphone
+  final characters, `0` wrong-channel system characters, and peak RMS
+  `0.067442`. Both phases drained, with no raw audio or transcript content
+  retained in evidence.
 - Complete the physical Windows routing/owner gate, or record the owner's
   macOS-first launch plus a committed Windows fast-follow date. No local Windows
   device/VM was found, and no hosted Week 4 runtime exists for tenant-isolation
