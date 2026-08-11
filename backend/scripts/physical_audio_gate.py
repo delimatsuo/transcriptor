@@ -613,14 +613,14 @@ def _parser() -> argparse.ArgumentParser:
 
 
 async def _run(args: argparse.Namespace) -> tuple[dict[str, object], bool]:
-    if platform.system() != "Darwin":
-        raise RuntimeError("physical_audio_gate currently supports macOS only")
     if args.confirm_provider_audio and not args.send_to_provider:
         raise RuntimeError("--confirm-provider-audio requires --send-to-provider")
     if args.send_to_provider and not args.confirm_provider_audio:
         raise RuntimeError(
             "provider audio requires explicit --confirm-provider-audio acknowledgement"
         )
+    if platform.system() != "Darwin":
+        raise RuntimeError("physical_audio_gate currently supports macOS only")
 
     artifact = _git_artifact(args.expected_sha)
     settings = get_settings()
