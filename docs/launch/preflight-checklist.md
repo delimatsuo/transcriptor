@@ -70,6 +70,39 @@ canais de captura estiverem ativos **e isolados entre si**.
    fones), o macOS pode mover a saída do sistema para fora do Dispositivo de
    Saída Múltipla — o passo 1 deve ser reconferido SEMPRE que o hardware de
    áudio mudar (log do backend acusa `audio_device_silent label=Candidato`).
+
+   **Gate físico reproduzível no macOS:** para evidência de release, não use
+   instruções enviadas por chat para sincronizar a fala. Execute uma fase por
+   processo com o harness abaixo, sempre a partir de um worktree limpo no SHA
+   exato. O próprio processo anuncia quando falar, rejeita picos isolados,
+   fecha e drena totalmente cada stream do STT e imprime somente métricas sem
+   texto transcrito ou áudio bruto:
+
+   ```bash
+   # Saída normal do Mac = AirPods; fale após o aviso audível.
+   .venv/bin/python3 -m backend.scripts.physical_audio_gate \
+     --phase microphone \
+     --expected-sha "$(git rev-parse HEAD)" \
+     --send-to-provider \
+     --confirm-provider-audio
+
+   # Saída do Mac = Transcriptor Output; não fale nesta fase.
+   .venv/bin/python3 -m backend.scripts.physical_audio_gate \
+     --phase system-audio \
+     --expected-sha "$(git rev-parse HEAD)" \
+     --send-to-provider \
+     --confirm-provider-audio
+   ```
+
+   A flag de confirmação significa que o áudio desta janela será enviado ao
+   Google Cloud Speech-to-Text no projeto configurado; nada é salvo em disco e
+   o conteúdo reconhecido não é impresso. A fase ativa exige sinal sustentado,
+   callbacks sem erro, pelo menos 20 caracteres finais e drenagem completa; a
+   fonte isolada exige zero caracteres finais. Rode cada fase duas vezes.
+   Qualquer troca de fonte,
+   índice, taxa de amostragem, código ou Git index invalida a evidência e exige
+   novo vínculo ao SHA.
+
 6. No início da entrevista, apresente o aviso de transcrição, obtenha a
    confirmação verbal e registre a caixa de ciência antes de iniciar a sessão.
    Se a pessoa não concordar, siga sem transcrição.
