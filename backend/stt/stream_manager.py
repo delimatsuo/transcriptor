@@ -100,7 +100,11 @@ class StreamManager:
         self._drain_failure_reason: str | None = None
 
         # Track last emitted end_time to avoid duplicate segments during overlap
-        self._last_emitted_end_time: float = 0.0
+        # None means no final has been emitted yet. A real first final may map
+        # to 0.0 (for example, a provider response without usable offsets that
+        # arrives before the fallback clock advances), so 0.0 cannot also be
+        # the "already emitted" sentinel.
+        self._last_emitted_end_time: float | None = None
         # Session audio time advances from accepted LINEAR16 chunks, not STT
         # callback wall time. Each provider stream is anchored to the first
         # audio chunk it receives, including buffered rotation audio.
@@ -130,7 +134,7 @@ class StreamManager:
         self._ever_stream_opened = False
         self._audio_dropped = False
         self._sequence_number = 0
-        self._last_emitted_end_time = 0.0
+        self._last_emitted_end_time = None
         self._audio_timeline_seconds = 0.0
         self._stream_audio_origins.clear()
         self._stream_audio_ends.clear()
@@ -398,7 +402,11 @@ class StreamManager:
                             text=text,
                         )
 
-                        if is_final and end_time <= self._last_emitted_end_time:
+                        if (
+                            is_final
+                            and self._last_emitted_end_time is not None
+                            and end_time <= self._last_emitted_end_time
+                        ):
                             logger.debug(
                                 "overlap_segment_skipped",
                                 text=text[:50],

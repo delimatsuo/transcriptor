@@ -161,6 +161,42 @@ def test_stop_half_closes_input_and_awaits_one_final_callback(monkeypatch):
     assert received[0].is_final is True
 
 
+def test_stop_emits_first_final_at_zero_fallback_time(monkeypatch):
+    """The first final is not an overlap merely because its end time is zero."""
+    FinalOnCloseStream.instances.clear()
+    monkeypatch.setattr(stream_manager, "GoogleSTTStream", FinalOnCloseStream)
+    monkeypatch.setattr(
+        stream_manager,
+        "_absolute_result_times",
+        lambda **_kwargs: (0.0, 0.0),
+    )
+    received = []
+
+    async def on_transcript(segment):
+        received.append(segment)
+
+    async def run():
+        manager = stream_manager.StreamManager(
+            Settings(
+                google_cloud_project="test-project",
+                stt_graceful_drain_timeout_seconds=0.5,
+            ),
+            on_transcript=on_transcript,
+        )
+        await manager.start()
+        await _wait_until_active(manager)
+        drained = await manager.stop()
+        return manager, drained
+
+    manager, drained = asyncio.run(run())
+
+    assert drained is True
+    assert manager.drain_completed is True
+    assert len(received) == 1
+    assert received[0].end_time == 0.0
+    assert received[0].is_final is True
+
+
 def test_stop_timeout_is_bounded_and_cancels_response_task(monkeypatch):
     NeverFinishesStream.instances.clear()
     monkeypatch.setattr(stream_manager, "GoogleSTTStream", NeverFinishesStream)
