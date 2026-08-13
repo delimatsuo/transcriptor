@@ -129,7 +129,9 @@ Candidate implementation direction:
 
 - ScreenCaptureKit for system audio.
 - AVAudioEngine or the appropriate Core Audio path for microphone audio.
-- A virtual-audio device only as a documented fallback.
+- No virtual-audio-device fallback in a supported build. Any retained legacy
+  path is an isolated development harness under ADR 0003 and cannot satisfy
+  this spike's native-capture evidence.
 
 The spike report must document the final API choice and supported OS constraints rather than treating this candidate direction as predetermined.
 

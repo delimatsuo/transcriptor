@@ -2,7 +2,12 @@
 
 **Date:** 2026-08-03
 
-**Status:** Approved scope pending owner review of this document. Supersedes the delivery sequencing in `docs/plans/2026-07-15-native-companion-and-note-first-interviews.md` §"Phases 2–5" for the launch window only; the governing plan's product vision and target architecture remain authoritative for the commercial track.
+**Status:** Superseded historical record as of 2026-08-13. ADR 0003 and
+`docs/plans/2026-08-13-native-capture-launch-roadmap.md` replace this
+document's launch sequencing. Its local Python, BlackHole, VB-CABLE, physical
+gate, and four-to-six-week assumptions are not current launch requirements or
+authority. Retain the document for decision traceability and audit reusable
+implementation work independently before carrying it forward.
 
 **Inputs:** Six-expert independent panel (product strategy, Windows platform, systems architecture, privacy/compliance, UX, delivery skepticism) plus an adversarial moderator synthesis that re-verified load-bearing claims against the repo. Full reports: `docs/superpowers/reviews/2026-08-03-launch-scope-panel/`.
 

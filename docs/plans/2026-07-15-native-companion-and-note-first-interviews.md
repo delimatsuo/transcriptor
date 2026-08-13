@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-15
 
-**Status:** Architecture direction accepted. Phase 0B and Phase 1A offline conformance are complete; Phase 1A passed at `9f3f3a0`. Phases 1B-1D remain blocked.
+**Status:** Architecture direction accepted. Phase 0B and Phase 1A offline conformance are complete; Phase 1A passed at `9f3f3a0`. Phases 1B-1D remain blocked. ADR 0003 now governs the native-only launch boundary, limited macOS pilot, and native Windows requirement before broad launch.
 
 **Scope:** Governing plan and gate definition; no implementation is authorized by this document
 
@@ -61,7 +61,10 @@ The companion guides the user through:
 6. Consent and notification expectations.
 7. A short test transcription that proves both local and remote audio paths.
 
-The user must never need to configure BlackHole for the default path. A virtual device may remain a documented compatibility fallback.
+The user must never need to configure BlackHole for the supported path. Under
+ADR 0003, retained virtual-device code is an isolated development harness
+only; it is not a documented release fallback and cannot satisfy pilot or
+launch qualification.
 
 ### 4.2 Interview preparation
 
@@ -396,7 +399,14 @@ Exit gate:
 - Recruiter notes remain distinguishable from model-generated content.
 - Evaluation shows that notes materially influence the correct report sections without rewriting quoted evidence.
 
-### Phase 4: External beta hardening
+### Phase 4: Broad-launch hardening after native platform pilots
+
+ADR 0003 supersedes the former external-beta-before-Windows sequence. Current
+gate order is defined by
+`docs/plans/2026-08-13-native-capture-launch-roadmap.md`: limited native macOS
+pilot, native Windows qualification and named Windows pilot, then broad launch.
+The requirements below remain applicable hardening work but do not define an
+independent release sequence.
 
 Work:
 
@@ -411,14 +421,13 @@ Exit gate:
 
 - Release checklist is satisfied with direct evidence.
 - Privacy claims match observed application and vendor behavior.
-- Capture success and transcript/report quality meet approved beta SLOs.
+- Capture success and transcript/report quality meet approved release SLOs.
 - Support can diagnose and recover failed sessions without accessing raw audio.
 
-### Phase 5: Expansion
+### Phase 5: Post-launch expansion
 
 Candidates for later prioritization:
 
-- Windows companion using native loopback capture.
 - Optional on-device STT for regulated or offline customers.
 - ATS/CRM integrations.
 - Organization templates and policy controls.
@@ -495,13 +504,20 @@ The migration should reuse valuable product work rather than rewrite the entire 
 
 1. Keep the current Next.js interview experience as the initial workspace.
 2. Define an audio-source boundary in the backend so local `sounddevice` capture can be removed from the cloud execution path.
-3. Introduce the versioned companion/gateway protocol alongside the current local pipeline behind a feature flag.
-4. Disable local FLAC recording by default before any privacy claim or external beta.
+3. Introduce the versioned companion/gateway protocol while keeping the
+   current local pipeline in a separately built development-only harness. A
+   supported artifact must not contain a runtime-selectable virtual-device
+   path.
+4. Disable local FLAC recording by default before any pilot or launch privacy
+   claim.
 5. Add owner/organization fields and authorization before exposing hosted session endpoints.
 6. Move in-memory session recovery to durable events and idempotent projections.
 7. Migrate interview suggestions and summaries to consume durable transcript/note events.
 8. Keep the Meet extension on a separate optional adapter path.
-9. Remove the legacy local Python capture path only after the native companion meets parity and rollback criteria.
+9. Remove the legacy local Python capture path after native replacement
+   evidence covers its necessary development uses. Roll back a supported
+   release only to the last qualified native artifact, never to virtual-device
+   capture.
 
 ## 14. Proposed implementation sequence
 
@@ -522,13 +538,14 @@ Each item should remain a small, reviewable pull request with its own verificati
 13. Add competency coverage and evidence-linked reports.
 14. Run the full internal-alpha gate.
 15. Add optional Meet enrichment only after the provider-independent path passes.
-16. Prepare external beta deployment and operational runbooks.
+16. Prepare broad-launch deployment and operational runbooks only after the
+    named native macOS and Windows pilot gates in ADR 0003 pass.
 
 ## 15. Risks and mitigations
 
 | Risk | Mitigation |
 | --- | --- |
-| macOS permissions or capture APIs behave differently across OS versions | Maintain an OS-version test matrix, explicit diagnostics, and a documented virtual-device fallback. |
+| Native permissions or capture APIs behave differently across OS versions | Maintain named macOS and Windows test matrices, explicit diagnostics, and fail closed to a no-recording workflow on an unsupported device. Release-artifact checks must prove no packaged/runtime-activatable virtual capture, onboarding, support, or rollback entry exists. |
 | The native-app effort expands into a full rewrite | Keep the native layer thin and reuse the Next.js workspace and cloud intelligence. |
 | Network loss causes missing transcript content | Use bounded buffering, ordered event IDs, acknowledgements, and a durable text/event outbox. |
 | Raw audio remains after a crash | Default to memory-only audio and verify the filesystem in automated forced-termination tests. |

@@ -1,12 +1,12 @@
 # Documentation and Configuration Status
 
-**Reviewed:** 2026-07-15
+**Reviewed:** 2026-08-13
 
 **Purpose:** Prevent historical records, prototype configuration, generated memory, and target architecture from being mistaken for one another.
 
 ## Review coverage
 
-The 2026-07-15 reconciliation reviewed every project-owned Markdown document at the repository root and under `docs/`, plus active deployment, environment, container, Firestore-rule, dependency-manifest, and extension-manifest surfaces that could contradict those documents. Vendored documentation under `.venv/` and `frontend/node_modules/` is third-party dependency material and is outside the product-documentation hierarchy.
+The 2026-07-15 reconciliation reviewed every project-owned Markdown document at the repository root and under `docs/`, plus active deployment, environment, container, Firestore-rule, dependency-manifest, and extension-manifest surfaces that could contradict those documents. The 2026-08-13 update adds the native-only launch boundary, reclassifies the 2026-08-03 virtual-device interim launch sequence as superseded, and leaves its reusable implementation claims subject to exact-artifact salvage audit. Vendored documentation under `.venv/` and `frontend/node_modules/` is third-party dependency material and is outside the product-documentation hierarchy.
 
 `AGENTS.md` was reviewed but not edited because it is generated memory context rather than a maintained product document. Its entries are observations, not approvals or current status. The canonical status in this file and `README.md` governs.
 
@@ -16,6 +16,7 @@ The 2026-07-15 reconciliation reviewed every project-owned Markdown document at 
 - **Normative target:** Requirements implementation must satisfy; not a claim about current behavior.
 - **Phase plan:** Execution proposal gated by its own status and prerequisites.
 - **Historical:** Records prior setup or decisions; does not authorize current action.
+- **Superseded historical:** A former decision retained for traceability but no longer valid for current sequencing or authorization.
 - **Prototype configuration:** Describes or controls current prototype behavior; not production-ready.
 - **Generated/non-normative:** Tool-owned context that may change automatically.
 - **Generated dependency metadata:** Build/dependency state, not product architecture.
@@ -28,6 +29,9 @@ The 2026-07-15 reconciliation reviewed every project-owned Markdown document at 
 | `docs/plans/2026-07-15-native-companion-and-note-first-interviews.md` | Canonical governing plan | Approved direction; Phase 1A passed, 1B-1D blocked | Architecture changes require plan/ADR updates |
 | `docs/architecture/0001-native-companion-cloud-stt.md` | Normative target | Device capture plus cloud STT decision | Does not authorize implementation or deployment |
 | `docs/architecture/0002-companion-stream-protocol.md` | Normative target | Audio custody, acknowledgement, release, retry, and exact-gap semantics | Required before hosted audio; does not authorize implementation |
+| `docs/architecture/0003-native-capture-launch-boundary.md` | Canonical launch decision | Supported launch uses native macOS and Windows capture; limited Mac pilot precedes broad launch; virtual devices are dev-only | Governs launch scope but grants no implementation or live authority |
+| `docs/plans/2026-08-13-native-capture-launch-roadmap.md` | Current gated sequencing | PR/native salvage audit, protocol closure, gateway, macOS, pilot, Windows, and broad-launch gates | Each gate requires its own current authority and evidence |
+| `docs/superpowers/specs/2026-08-03-launch-vision-and-scope-design.md` | Superseded historical | Former four-to-six-week local Python and virtual-device interim launch plan | Retain for traceability; do not use for current launch sequencing or authorization |
 | `docs/privacy/data-flow-retention-contract.md` | Normative target | Required privacy/data lifecycle | Explicitly not a claim about current prototype behavior |
 | `docs/product/companion-web-state-contract.md` | Normative target | Capture authority and user-visible state semantics | Required before protocol/UI implementation |
 | `docs/plans/2026-07-15-phase-1-native-capture-spike.md` | Phase plan | 1A offline passed at `9f3f3a0`; 1B-1D blocked | Later gates require their named evidence, review, and separate authorization |
@@ -69,8 +73,10 @@ There is no target conflict when the boundary is stated correctly:
 ### BlackHole versus native capture
 
 - BlackHole is part of the current prototype.
-- Native system-audio capture is the approved default target.
-- BlackHole may remain a compatibility fallback only.
+- Native system-audio capture is the required supported launch path.
+- BlackHole/VB-CABLE may remain only in an isolated development harness while
+  replacement evidence is built. They are not supported release fallbacks and
+  cannot satisfy pilot or launch evidence.
 
 ### Local FLAC versus no persistent raw audio
 
@@ -82,7 +88,8 @@ There is no target conflict when the boundary is stated correctly:
 
 - The variable exists but is not enforced.
 - It is not evidence of deletion or a current retention policy.
-- Approved retention values remain unresolved before external beta.
+- Approved retention values remain unresolved before any consented pilot or
+  broad launch.
 
 ### Firestore “own data” comment versus rule behavior
 
@@ -107,4 +114,4 @@ The immediate P0 is contained with direct evidence:
 - Both legacy buckets enforce Public Access Prevention.
 - Vertex AI in-memory caching is disabled in the legacy project.
 
-Phase 0B and Phase 1A offline protocol conformance are complete. Billing, the inactive service/data/provider boundary, source preservation, clean worktree, protected branches, and approval-gated GitHub environments are configured. The isolated project has private empty Firestore/GCS resources, an empty secret container, a disabled runtime identity, verified-disabled STT data logging, verified-disabled Vertex cache, and a BRL 250 monthly project budget. At implementation tip `9f3f3a0`, 54 Python and 4 Swift tests pass twice, including 60/90-minute bounded-memory runs, and the artifact/scope scan is clean. Phases 1B-1D remain blocked behind their named evidence, review, and separate authorization. See `docs/current-state/phase-1a-conformance-evidence.md`.
+Phase 0B and Phase 1A offline protocol conformance are complete. Billing, the inactive service/data/provider boundary, source preservation, clean worktree, protected branches, and approval-gated GitHub environments are configured. The isolated project has private empty Firestore/GCS resources, an empty secret container, a disabled runtime identity, verified-disabled STT data logging, verified-disabled Vertex cache, and a BRL 250 monthly project budget. At implementation tip `9f3f3a0`, 54 Python and 4 Swift tests pass twice, including 60/90-minute bounded-memory runs, and the artifact/scope scan is clean. ADR 0003 now requires native capture for any supported launch and separates a limited native Mac pilot from broad macOS-plus-Windows launch. The gateway, hosted, physical-device, integrated, pilot, and launch layers remain blocked behind their named evidence, review, and separate authorization. See `docs/current-state/phase-1a-conformance-evidence.md` and `docs/plans/2026-08-13-native-capture-launch-roadmap.md`.

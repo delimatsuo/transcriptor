@@ -1,6 +1,6 @@
 # ADR 0001: Native Companion with Cloud Speech-to-Text
 
-**Status:** Architecture decision accepted. Phase 1A offline conformance passed at `9f3f3a0`; Phases 1B-1D remain blocked.
+**Status:** Architecture decision accepted. Phase 1A offline conformance passed at `9f3f3a0`; Phases 1B-1D remain blocked. ADR 0003 narrows launch to native capture and treats virtual-device code as a development-only transitional harness.
 
 **Date:** 2026-07-15
 
@@ -14,7 +14,12 @@ This ADR describes the approved target direction. It is not a claim about curren
 
 ## Decision
 
-T.A.R.S. will use a macOS-first native companion to capture microphone and system audio at the device level. The first product release will stream transient audio to an authenticated cloud service that uses Google Cloud Speech-to-Text. Raw audio will not be persisted by T.A.R.S. by default.
+T.A.R.S. will use native companions to capture microphone and system audio at
+the device level. Qualification is macOS-first and may lead to a limited named
+macOS pilot; under ADR 0003, broad supported launch also requires native
+Windows parity. The product streams transient audio to an authenticated cloud
+service that uses Google Cloud Speech-to-Text. Raw audio will not be persisted
+by T.A.R.S. by default.
 
 The product remains executive-search-first. The existing Next.js interview workspace and Python cloud intelligence are reused where practical. Provider-specific extensions remain optional enrichment rather than a capture dependency.
 
@@ -119,7 +124,7 @@ Rejected as the long-term product architecture. It is useful for prototype valid
 
 ### Use mandatory BlackHole capture
 
-Rejected as the default user experience. It adds setup and routing failure modes. It remains a compatibility fallback if native capture cannot support a specific environment.
+Rejected as the default user experience. It adds setup and routing failure modes. ADR 0003 supersedes the former compatibility-fallback posture for supported releases: retained virtual-device code is development-only and cannot satisfy pilot or launch qualification.
 
 ### Require on-device STT in the first release
 
