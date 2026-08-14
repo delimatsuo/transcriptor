@@ -9,9 +9,9 @@ blocked by the unavailable .NET SDK on this host.
   from publication commit `8398fa8b345e326320e54d2a598977e47ee67fa7`, tree
   `419feca4702be389c8f85129e0face1afe912419`.
 - Source implementation checkpoint: commit
-  `83cd3292e14551a8ddfee76e1729d5618b042038`, tree
-  `dc80300c942d94950cc2e865c72318c30f74ce80`.
-- Parent source/evidence commit: `827f2f411c7294b35f95e59bdcb3af3924600e02`.
+  `bc2c22a9d2d3c9f840ade771ac82b2faca0f1e52`, tree
+  `61687a51dbc3f7513df3417895db4ee6ccd49965`.
+- Parent source/evidence commit: `1986f70248d1d2d4e6d72ab9f3c6aa55aafb71b6`.
 - Worktree: `/private/tmp/transcriptor-native-g2a-source`.
 - Branch: `codex/native-g2a-source`.
 - Worktree was clean at the source checkpoint. No protected checkout, PR #8,
@@ -30,18 +30,20 @@ and quota limits, complete-list `covr_` terminal identities, self-contained
 `seg_` transcript identities, terminal claims, provider runtime-epoch and
 egress-fence single-use effects, positive provider/owner quiescence, deletion
 fencing, late callback rejection, and mixed-rate 60/90/120-minute synthetic
-bounded runs.
+bounded runs. Forwarded coverage cannot be replaced by a gap, and transcript
+segments require forwarded atomic coverage.
 
 ## Verification
 
 - `git diff --check`: passed.
-- Full inherited Phase 1A guarded wrapper: **67 Python tests and 6 Swift tests
+- Full inherited Phase 1A guarded wrapper: **69 Python tests and 6 Swift tests
   passed twice**, networking denied and scrubbed environment.
-- G2-A Python runner: **13 tests passed** in the offline guarded environment.
+- G2-A Python runner: **15 tests passed** in the offline guarded environment.
 - Shared Python/Swift canonical v2 vectors: passed, including atomic coverage,
   terminal coverage, and transcript segment identities.
-- G2 artifact scan: passed with zero artifacts, forbidden imports, and
-  out-of-scope paths.
+- G2 artifact scan: passed against the exact authorization range
+  `8398fa8b345e326320e54d2a598977e47ee67fa7..HEAD`, with zero artifacts,
+  forbidden imports, and out-of-scope paths.
 - C# vector runner: source is present and dependency-free, but execution is
   unavailable because this host has no `.NET` SDK. No package install or
   network fetch was attempted. G2 exit evidence therefore remains blocked.
