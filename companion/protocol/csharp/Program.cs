@@ -7,8 +7,9 @@ using System.Text;
 readonly record struct StreamKey(string SessionId, string StreamId, ulong CaptureGeneration, string Source);
 readonly record struct Atomic(StreamKey Key, ulong Sequence, ulong FirstSample, ulong LastSampleExclusive)
 {
-    public string Id => "acov_" + Hex(Sha256(IdentityPrefix("tars-atomic-coverage-v2", Key) +
-        Encoding.UTF8.GetBytes($"\0{Sequence}\0{FirstSample}\0{LastSampleExclusive}")));
+    public string Id => "acov_" + Hex(Sha256(Concat(
+        IdentityPrefix("tars-atomic-coverage-v2", Key),
+        Encoding.UTF8.GetBytes($"\0{Sequence}\0{FirstSample}\0{LastSampleExclusive}"))));
 }
 
 static byte[] IdentityPrefix(string prefix, StreamKey key) => Encoding.UTF8.GetBytes(
@@ -16,6 +17,7 @@ static byte[] IdentityPrefix(string prefix, StreamKey key) => Encoding.UTF8.GetB
 
 static byte[] Sha256(byte[] bytes) => SHA256.HashData(bytes);
 static string Hex(byte[] bytes) => Convert.ToHexString(bytes).ToLowerInvariant();
+static byte[] Concat(params byte[][] chunks) => chunks.SelectMany(chunk => chunk).ToArray();
 
 static void AppendU32(List<byte> output, uint value)
 {
