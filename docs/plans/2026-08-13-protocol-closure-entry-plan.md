@@ -15,7 +15,7 @@ document.
 - `docs/privacy/data-flow-retention-contract.md`
 - `docs/reviews/2026-08-13-pr8-native-launch-salvage-audit.md`
 - `docs/reviews/2026-08-13-n11dc-native-launch-salvage-audit.md`
-- `docs/reviews/2026-08-14-g2a0-second-pass-review.md`
+- `docs/reviews/2026-08-14-g2a0-final-attestation.md`
 
 ## 1. Purpose
 
@@ -450,7 +450,7 @@ these governing artifacts must be reviewed together:
 - `docs/architecture/0003-native-capture-launch-boundary.md`;
 - `docs/plans/2026-08-13-native-capture-launch-roadmap.md`; and
 - `docs/privacy/data-flow-retention-contract.md`; and
-- `docs/reviews/2026-08-14-g2a0-second-pass-review.md`.
+- `docs/reviews/2026-08-14-g2a0-final-attestation.md`.
 
 The amendment must name durable discard and local emergency/privacy-timeout
 zeroization as terminal privacy releases distinct from successful provider
