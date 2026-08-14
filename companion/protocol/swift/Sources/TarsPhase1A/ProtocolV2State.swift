@@ -29,8 +29,7 @@ public struct V2CustodyBudget: Sendable {
     public let sampleRateHertz: Int
     public let channelCount: Int
     private var entries: [String: V2CustodyReservation] = [:]
-    private var effectIds: [String: String] = [:]
-    private var effectOwnerIds: [String: String] = [:]
+    private var effectTokens: [String: V2EffectToken] = [:]
     public private(set) var released: [String: String] = [:]
     public private(set) var discardGapIds: [String: String] = [:]
     public private(set) var gapObligations: [String: String] = [:]
@@ -101,7 +100,7 @@ public struct V2CustodyBudget: Sendable {
     }
 
     public mutating func acknowledgeForwarded(_ eventId: String, journalCommitted: Bool) throws {
-        guard effectIds[eventId] == nil else {
+        guard effectTokens[eventId] == nil else {
             throw ProtocolV2ValidationError.invalid("registered provider effect requires effect-bound forwarding")
         }
         guard journalCommitted else {
@@ -112,8 +111,7 @@ public struct V2CustodyBudget: Sendable {
     }
 
     public mutating func acknowledgeEffectForwarded(_ eventId: String, effect: V2EffectFence) throws {
-        guard effectIds[eventId] == effect.effectId,
-              effectOwnerIds[eventId] == effect.ownerId,
+        guard effectTokens[eventId] == effect.token,
               effect.journalCommitted else {
             throw ProtocolV2ValidationError.invalid("effect-bound forwarding requires the original immutable journal")
         }
@@ -125,7 +123,7 @@ public struct V2CustodyBudget: Sendable {
     }
 
     public mutating func acknowledgeDurableDiscard(_ eventId: String, gapId: String) throws {
-        guard !gapId.isEmpty, !forwarded.contains(eventId), effectIds[eventId] == nil,
+        guard !gapId.isEmpty, !forwarded.contains(eventId), effectTokens[eventId] == nil,
               !effectPendingReleases.contains(eventId) else {
             throw ProtocolV2ValidationError.invalid("durable discard conflicts with forwarding")
         }
@@ -144,12 +142,12 @@ public struct V2CustodyBudget: Sendable {
     ) throws {
         if released[eventId] == "durable_discard",
            discardGapIds[eventId] == gapId,
+           effectTokens[eventId] == effect.token,
            effect.cancelledWithoutInvoke {
             return
         }
         guard !gapId.isEmpty, entries[eventId] != nil,
-              effectIds[eventId] == effect.effectId,
-              effectOwnerIds[eventId] == effect.ownerId,
+              effectTokens[eventId] == effect.token,
               !effectPendingReleases.contains(eventId),
               let token = effect.token else {
             throw ProtocolV2ValidationError.invalid("prepared-effect discard is stale, active, or foreign")
@@ -161,20 +159,19 @@ public struct V2CustodyBudget: Sendable {
     }
 
     public mutating func registerEffect(eventId: String, effect: V2EffectFence) throws {
-        guard let ownerId = effect.ownerId,
+        guard effect.ownerId != nil,
               entries[eventId] != nil, released[eventId] == nil,
               gapObligations[eventId] == nil, effect.state == .prepared,
-              effect.token != nil else {
+              let token = effect.token else {
             throw ProtocolV2ValidationError.invalid("provider effect requires live unreleased custody")
         }
-        if let existing = effectIds[eventId] {
-            guard existing == effect.effectId, effectOwnerIds[eventId] == ownerId else {
+        if let existing = effectTokens[eventId] {
+            guard existing == token else {
                 throw ProtocolV2ValidationError.invalid("range already has a different provider effect")
             }
             return
         }
-        effectIds[eventId] = effect.effectId
-        effectOwnerIds[eventId] = ownerId
+        effectTokens[eventId] = token
     }
 
     public mutating func invokeEffect(
@@ -182,8 +179,8 @@ public struct V2CustodyBudget: Sendable {
         effect: inout V2EffectFence,
         token: V2EffectToken
     ) throws {
-        guard entries[eventId] != nil, effectIds[eventId] == effect.effectId,
-              effectOwnerIds[eventId] == effect.ownerId,
+        guard entries[eventId] != nil, effectTokens[eventId] == effect.token,
+              effectTokens[eventId] == token,
               effect.state == .prepared, effect.ownerId != nil else {
             throw ProtocolV2ValidationError.invalid("provider invocation requires registered live custody")
         }
@@ -196,7 +193,7 @@ public struct V2CustodyBudget: Sendable {
             throw ProtocolV2ValidationError.invalid("local privacy release is invalid")
         }
         try release(eventId, outcome: reason)
-        if effectIds[eventId] != nil {
+        if effectTokens[eventId] != nil {
             effectPendingReleases.insert(eventId)
         } else {
             gapObligations[eventId] = reason
@@ -208,8 +205,7 @@ public struct V2CustodyBudget: Sendable {
         effect: V2EffectFence,
         outcome: V2PendingEffectOutcome
     ) throws {
-        guard effectPendingReleases.contains(eventId), effectIds[eventId] == effect.effectId,
-              effectOwnerIds[eventId] == effect.ownerId else {
+        guard effectPendingReleases.contains(eventId), effectTokens[eventId] == effect.token else {
             throw ProtocolV2ValidationError.invalid("pending effect resolution is stale or foreign")
         }
         switch outcome {
@@ -363,11 +359,56 @@ public struct V2TokenBucket: Sendable {
     }
 }
 
+private final class V2OpaqueCapability: @unchecked Sendable {}
+
 public struct V2EffectToken: Equatable, Sendable {
     public let effectId: String
     public let runtimeEpoch: UInt64
     public let egressFence: UInt64
     public let ownerId: String
+    private let capability: V2OpaqueCapability
+
+    fileprivate init(effectId: String, runtimeEpoch: UInt64, egressFence: UInt64, ownerId: String) {
+        self.effectId = effectId
+        self.runtimeEpoch = runtimeEpoch
+        self.egressFence = egressFence
+        self.ownerId = ownerId
+        capability = V2OpaqueCapability()
+    }
+
+    public static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.capability === rhs.capability
+    }
+}
+
+public struct V2EffectQuiescenceToken: Equatable, Sendable {
+    public let effectId: String
+    public let runtimeEpoch: UInt64
+    public let egressFence: UInt64
+    public let actorId: String
+    private let capability: V2OpaqueCapability
+
+    fileprivate init(effectId: String, runtimeEpoch: UInt64, egressFence: UInt64, actorId: String) {
+        self.effectId = effectId
+        self.runtimeEpoch = runtimeEpoch
+        self.egressFence = egressFence
+        self.actorId = actorId
+        capability = V2OpaqueCapability()
+    }
+
+    public static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.capability === rhs.capability
+    }
+}
+
+public struct V2EffectQuiescenceTokens: Sendable {
+    public let provider: V2EffectQuiescenceToken
+    public let owner: V2EffectQuiescenceToken
+
+    fileprivate init(provider: V2EffectQuiescenceToken, owner: V2EffectQuiescenceToken) {
+        self.provider = provider
+        self.owner = owner
+    }
 }
 
 public enum V2EffectState: String, Sendable {
@@ -391,6 +432,8 @@ public struct V2EffectFence: Sendable {
     public private(set) var providerClosed = false
     public private(set) var ownerTerminated = false
     public private(set) var cancelledWithoutInvoke = false
+    private var providerQuiescenceToken: V2EffectQuiescenceToken?
+    private var ownerQuiescenceToken: V2EffectQuiescenceToken?
 
     public init(effectId: String) throws {
         guard !effectId.isEmpty else {
@@ -462,27 +505,58 @@ public struct V2EffectFence: Sendable {
         state = .journaled
     }
 
-    public mutating func recover(runtimeEpoch: UInt64, egressFence: UInt64) throws {
+    public mutating func recover(
+        runtimeEpoch: UInt64,
+        egressFence: UInt64,
+        providerActorId: String,
+        ownerActorId: String
+    ) throws -> V2EffectQuiescenceTokens {
         guard state != .terminal,
-              runtimeEpoch > self.runtimeEpoch, egressFence > self.egressFence else {
+              runtimeEpoch > self.runtimeEpoch, egressFence > self.egressFence,
+              !providerActorId.isEmpty, ownerActorId == ownerId else {
             throw ProtocolV2ValidationError.invalid("recovery epoch and fence must advance")
         }
         self.runtimeEpoch = runtimeEpoch
         self.egressFence = egressFence
         providerClosed = false
         ownerTerminated = false
+        let provider = V2EffectQuiescenceToken(
+            effectId: effectId,
+            runtimeEpoch: runtimeEpoch,
+            egressFence: egressFence,
+            actorId: providerActorId
+        )
+        let owner = V2EffectQuiescenceToken(
+            effectId: effectId,
+            runtimeEpoch: runtimeEpoch,
+            egressFence: egressFence,
+            actorId: ownerActorId
+        )
+        providerQuiescenceToken = provider
+        ownerQuiescenceToken = owner
         state = .effectQuiescenceRequired
+        return V2EffectQuiescenceTokens(provider: provider, owner: owner)
     }
 
-    public mutating func acknowledgeProviderClose() throws {
-        guard state == .effectQuiescenceRequired else {
+    public mutating func acknowledgeProviderClose(
+        _ presented: V2EffectQuiescenceToken,
+        actorId: String
+    ) throws {
+        guard state == .effectQuiescenceRequired,
+              presented == providerQuiescenceToken,
+              actorId == presented.actorId else {
             throw ProtocolV2ValidationError.invalid("provider close must acknowledge the current recovery fence")
         }
         providerClosed = true
     }
 
-    public mutating func acknowledgeOwnerTermination() throws {
-        guard state == .effectQuiescenceRequired else {
+    public mutating func acknowledgeOwnerTermination(
+        _ presented: V2EffectQuiescenceToken,
+        actorId: String
+    ) throws {
+        guard state == .effectQuiescenceRequired,
+              presented == ownerQuiescenceToken,
+              actorId == presented.actorId else {
             throw ProtocolV2ValidationError.invalid("owner termination must acknowledge the current recovery fence")
         }
         ownerTerminated = true

@@ -158,11 +158,26 @@ internal static class Program
         internal long Custody => custody;
     }
 
+    private sealed class OpaqueCapability { }
+
     private readonly record struct EffectToken(
         string EffectId,
         ulong RuntimeEpoch,
         ulong EgressFence,
-        string OwnerId);
+        string OwnerId,
+        OpaqueCapability Capability);
+
+    private readonly record struct EffectQuiescenceToken(
+        string EffectId,
+        ulong RuntimeEpoch,
+        ulong EgressFence,
+        string Role,
+        string ActorId,
+        OpaqueCapability Capability);
+
+    private readonly record struct EffectQuiescenceTokens(
+        EffectQuiescenceToken Provider,
+        EffectQuiescenceToken Owner);
 
     private sealed class EffectFence
     {
@@ -174,6 +189,8 @@ internal static class Program
         private EffectToken? token;
         private bool providerClosed;
         private bool ownerTerminated;
+        private EffectQuiescenceToken? providerQuiescenceToken;
+        private EffectQuiescenceToken? ownerQuiescenceToken;
 
         internal EffectFence(string effectId)
         {
@@ -200,7 +217,7 @@ internal static class Program
                 throw new InvalidOperationException("effect already has a durable owner");
             }
             ownerId = owner;
-            token = new EffectToken(effectId, runtimeEpoch, egressFence, owner);
+            token = new EffectToken(effectId, runtimeEpoch, egressFence, owner, new OpaqueCapability());
             return token.Value;
         }
 
@@ -246,27 +263,39 @@ internal static class Program
             state = "journaled";
         }
 
-        internal void Recover(ulong epoch, ulong fence)
+        internal EffectQuiescenceTokens Recover(
+            ulong epoch,
+            ulong fence,
+            string providerActorId,
+            string ownerActorId)
         {
-            if (state == "terminal" || epoch <= runtimeEpoch || fence <= egressFence)
+            if (state == "terminal" || epoch <= runtimeEpoch || fence <= egressFence ||
+                string.IsNullOrEmpty(providerActorId) || ownerActorId != ownerId)
                 throw new InvalidOperationException("recovery epoch or fence is invalid");
             runtimeEpoch = epoch;
             egressFence = fence;
             providerClosed = false;
             ownerTerminated = false;
+            providerQuiescenceToken = new EffectQuiescenceToken(
+                effectId, epoch, fence, "provider", providerActorId, new OpaqueCapability());
+            ownerQuiescenceToken = new EffectQuiescenceToken(
+                effectId, epoch, fence, "owner", ownerActorId, new OpaqueCapability());
             state = "effect_quiescence_required";
+            return new EffectQuiescenceTokens(providerQuiescenceToken.Value, ownerQuiescenceToken.Value);
         }
 
-        internal void AcknowledgeProviderClose()
+        internal void AcknowledgeProviderClose(EffectQuiescenceToken presented, string actorId)
         {
-            if (state != "effect_quiescence_required")
+            if (state != "effect_quiescence_required" || !providerQuiescenceToken.HasValue ||
+                presented != providerQuiescenceToken.Value || actorId != presented.ActorId)
                 throw new InvalidOperationException("provider close must acknowledge the current recovery fence");
             providerClosed = true;
         }
 
-        internal void AcknowledgeOwnerTermination()
+        internal void AcknowledgeOwnerTermination(EffectQuiescenceToken presented, string actorId)
         {
-            if (state != "effect_quiescence_required")
+            if (state != "effect_quiescence_required" || !ownerQuiescenceToken.HasValue ||
+                presented != ownerQuiescenceToken.Value || actorId != presented.ActorId)
                 throw new InvalidOperationException("owner termination must acknowledge the current recovery fence");
             ownerTerminated = true;
         }
@@ -389,7 +418,9 @@ internal static class Program
         internal void CancelPreparedEffectAndDiscard(string eventId, EffectFence effect, string gapId)
         {
             if (released.GetValueOrDefault(eventId) == "durable_discard" &&
-                gapIds.GetValueOrDefault(eventId) == gapId && effect.CancelledWithoutInvoke)
+                gapIds.GetValueOrDefault(eventId) == gapId &&
+                effects.TryGetValue(eventId, out EffectFence? replayRegistered) &&
+                ReferenceEquals(replayRegistered, effect) && effect.CancelledWithoutInvoke)
             {
                 return;
             }
@@ -743,7 +774,7 @@ internal static class Program
         RunStateMatrix();
         RunLongDurationMatrix();
 
-        Console.WriteLine("{\"phase\":\"2A-csharp-vectors\",\"successful\":true,\"vectorsRun\":48}");
+        Console.WriteLine("{\"phase\":\"2A-csharp-vectors\",\"successful\":true,\"vectorsRun\":53}");
     }
 
     private static void RunStateMatrix()
@@ -753,6 +784,9 @@ internal static class Program
         EffectToken token = firstEffect.Prepare("owner-a");
         if (firstEffect.Prepare("owner-a") != token)
             throw new InvalidOperationException("effect owner retry is not idempotent");
+        var forgedToken = new EffectToken(
+            token.EffectId, token.RuntimeEpoch, token.EgressFence, token.OwnerId, new OpaqueCapability());
+        ExpectReject(() => firstEffect.Invoke(forgedToken));
         secondEffect.Prepare("owner-a");
         ExpectReject(() => secondEffect.Invoke(token));
         ExpectReject(() => firstEffect.Prepare("owner-b"));
@@ -762,15 +796,17 @@ internal static class Program
         if (firstEffect.JournalCommitted)
             throw new InvalidOperationException("provider return advanced forwarding before journal");
         firstEffect.CommitJournal(token);
-        ExpectReject(firstEffect.AcknowledgeProviderClose);
-        ExpectReject(firstEffect.AcknowledgeOwnerTermination);
-        firstEffect.Recover(1, 1);
+        EffectQuiescenceTokens staleQuiescence = firstEffect.Recover(1, 1, "provider-a", "owner-a");
+        EffectQuiescenceTokens currentQuiescence = firstEffect.Recover(2, 2, "provider-b", "owner-a");
+        ExpectReject(() => firstEffect.AcknowledgeProviderClose(staleQuiescence.Provider, "provider-a"));
+        ExpectReject(() => firstEffect.AcknowledgeOwnerTermination(staleQuiescence.Owner, "owner-a"));
+        ExpectReject(() => firstEffect.AcknowledgeProviderClose(currentQuiescence.Provider, "provider-a"));
         ExpectReject(firstEffect.Terminalize);
-        firstEffect.AcknowledgeProviderClose();
+        firstEffect.AcknowledgeProviderClose(currentQuiescence.Provider, "provider-b");
         ExpectReject(firstEffect.Terminalize);
-        firstEffect.AcknowledgeOwnerTermination();
+        firstEffect.AcknowledgeOwnerTermination(currentQuiescence.Owner, "owner-a");
         firstEffect.Terminalize();
-        ExpectReject(() => firstEffect.Recover(2, 2));
+        ExpectReject(() => firstEffect.Recover(3, 3, "provider-c", "owner-a"));
         if (firstEffect.State != "terminal" || firstEffect.InvokeCount != 1 || !firstEffect.JournalCommitted)
             throw new InvalidOperationException("effect fencing state mismatch");
 
@@ -805,6 +841,11 @@ internal static class Program
         ExpectReject(() => preparedDiscard.Invoke(preparedDiscardToken));
         ExpectReject(() => preparedDiscard.Callback(preparedDiscardToken));
         ExpectReject(() => custody.InvokeEffect("prepared-discard", preparedDiscard, preparedDiscardToken));
+        var foreignCancelled = new EffectFence("effect-prepared-discard");
+        EffectToken foreignCancelledToken = foreignCancelled.Prepare("owner-a");
+        foreignCancelled.CancelPrepared(foreignCancelledToken);
+        ExpectReject(() => custody.CancelPreparedEffectAndDiscard(
+            "prepared-discard", foreignCancelled, "gap-deletion"));
         if (!preparedDiscard.CancelledWithoutInvoke || custody.GapFor("prepared-discard") != "gap-deletion")
             throw new InvalidOperationException("prepared effect cancellation/discard mismatch");
 
@@ -852,9 +893,10 @@ internal static class Program
         custody.RegisterEffect("pending-ambiguous", pendingAmbiguous);
         custody.InvokeEffect("pending-ambiguous", pendingAmbiguous, ambiguousToken);
         custody.LocalPrivacyRelease("pending-ambiguous", "deletion_local");
-        pendingAmbiguous.Recover(1, 1);
-        pendingAmbiguous.AcknowledgeProviderClose();
-        pendingAmbiguous.AcknowledgeOwnerTermination();
+        EffectQuiescenceTokens ambiguousQuiescence = pendingAmbiguous.Recover(
+            1, 1, "provider-a", "owner-a");
+        pendingAmbiguous.AcknowledgeProviderClose(ambiguousQuiescence.Provider, "provider-a");
+        pendingAmbiguous.AcknowledgeOwnerTermination(ambiguousQuiescence.Owner, "owner-a");
         pendingAmbiguous.Terminalize();
         custody.ResolvePendingEffect("pending-ambiguous", pendingAmbiguous, "ambiguous_effect");
         if (custody.GapFor("pending-ambiguous") != "ambiguous_effect" || custody.IsForwarded("pending-ambiguous"))

@@ -134,7 +134,7 @@ class ProtocolV2RejectionMatrixTests(unittest.TestCase):
         effect = ProviderEffectFence("effect")
         token = effect.prepare("owner")
         effect.invoke(token)
-        effect.recovery_epoch(1, 1)
+        effect.recovery_epoch(1, 1, provider_actor_id="provider", owner_actor_id="owner")
         with self.assertRaises(ProtocolV2Violation):
             effect.provider_ack(token)
         deletion = DeletionFence()

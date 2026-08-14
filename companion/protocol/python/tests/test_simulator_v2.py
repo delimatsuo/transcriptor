@@ -9,6 +9,7 @@ from tars_phase2.simulator import (
     DeletionFence,
     DeletionState,
     DerivedDisplayState,
+    EffectToken,
     EffectState,
     HierarchicalIngressQuota,
     LifecycleProjection,
@@ -50,6 +51,8 @@ class ProtocolV2SimulatorTests(unittest.TestCase):
         with self.assertRaises(ProtocolV2Violation):
             deletion.acknowledge_worker("unregistered-worker", generation)
         with self.assertRaises(ProtocolV2Violation):
+            deletion.acknowledge_worker("worker", 1.0)
+        with self.assertRaises(ProtocolV2Violation):
             deletion.start_deleting()
         deletion.acknowledge_effect("effect", generation)
         with self.assertRaises(ProtocolV2Violation):
@@ -57,6 +60,10 @@ class ProtocolV2SimulatorTests(unittest.TestCase):
         deletion.start_deleting()
 
         restarted = DeletionFence.restore(deletion.snapshot())
+        invalid_snapshot = deletion.snapshot()
+        invalid_snapshot["generation"] = 1.0
+        with self.assertRaises(ProtocolV2Violation):
+            DeletionFence.restore(invalid_snapshot)
         absent = {name: True for name in restarted.stores}
         self.assertTrue(restarted.record_absence_pass(1, absent))
         failed = dict(absent)
@@ -82,6 +89,9 @@ class ProtocolV2SimulatorTests(unittest.TestCase):
         self.assertEqual(effect.prepare("owner-a"), token)
         with self.assertRaises(ProtocolV2Violation):
             effect.prepare("owner-b")
+        forged = EffectToken(token.runtime_epoch, token.egress_fence, token.owner_id, token.effect_id)
+        with self.assertRaises(ProtocolV2Violation):
+            effect.invoke(forged)
         effect.invoke(token)
         self.assertEqual(effect.invoke_count, 1)
         with self.assertRaises(ProtocolV2Violation):
@@ -91,27 +101,46 @@ class ProtocolV2SimulatorTests(unittest.TestCase):
         effect.commit_journal(token)
         self.assertTrue(effect.forwarded)
         with self.assertRaises(ProtocolV2Violation):
-            effect.acknowledge_provider_close()
+            effect.acknowledge_provider_close(None, actor_id="provider-a")
         with self.assertRaises(ProtocolV2Violation):
-            effect.acknowledge_owner_termination()
+            effect.acknowledge_owner_termination(None, actor_id="owner-a")
 
         restarted = ProviderEffectFence.restore(effect.snapshot())
-        restarted.recovery_epoch(1, 1)
+        stale_provider, stale_owner = restarted.recovery_epoch(
+            1, 1, provider_actor_id="provider-a", owner_actor_id="owner-a"
+        )
+        provider_quiescence, owner_quiescence = restarted.recovery_epoch(
+            2, 2, provider_actor_id="provider-b", owner_actor_id="owner-a"
+        )
         self.assertEqual(restarted.state, EffectState.EFFECT_QUIESCENCE_REQUIRED)
         self.assertTrue(restarted.forwarded)
         with self.assertRaises(ProtocolV2Violation):
             restarted.callback(token)
         with self.assertRaises(ProtocolV2Violation):
             restarted.prepare("recovery-owner")
-        restarted.acknowledge_provider_close()
+        with self.assertRaises(ProtocolV2Violation):
+            restarted.acknowledge_provider_close(stale_provider, actor_id="provider-a")
+        with self.assertRaises(ProtocolV2Violation):
+            restarted.acknowledge_owner_termination(stale_owner, actor_id="owner-a")
+        with self.assertRaises(ProtocolV2Violation):
+            restarted.acknowledge_provider_close(provider_quiescence, actor_id="provider-a")
+        restarted.acknowledge_provider_close(provider_quiescence, actor_id="provider-b")
         with self.assertRaises(ProtocolV2Violation):
             restarted.terminalize()
-        restarted.acknowledge_owner_termination()
+        restarted.acknowledge_owner_termination(owner_quiescence, actor_id="owner-a")
         restarted.terminalize()
         self.assertEqual(restarted.state, EffectState.TERMINAL)
         self.assertEqual(restarted.invoke_count, 1)
         with self.assertRaises(ProtocolV2Violation):
-            restarted.recovery_epoch(2, 2)
+            restarted.recovery_epoch(
+                3, 3, provider_actor_id="provider-c", owner_actor_id="owner-a"
+            )
+        with self.assertRaises(ProtocolV2Violation):
+            ProviderEffectFence("numeric", runtime_epoch=True)
+        invalid_snapshot = effect.snapshot()
+        invalid_snapshot["invoke_count"] = 1.5
+        with self.assertRaises(ProtocolV2Violation):
+            ProviderEffectFence.restore(invalid_snapshot)
 
     def test_quota_rejects_before_custody_allocation_and_burns_attempt_tokens(self):
         quota = TokenBucketQuota(QuotaLimits(2, 2, 100, 100, 100, 100, 500))
@@ -248,6 +277,8 @@ class ProtocolV2SimulatorTests(unittest.TestCase):
             self.assertEqual(custody.retained_frames, 0)
         with self.assertRaises(ProtocolV2Violation):
             RawCustodyBuffer(8_000, 1).advance_clock(0.5)
+        with self.assertRaises(ProtocolV2Violation):
+            RawCustodyBuffer(True, 1)
 
     def test_local_privacy_release_fences_pending_provider_effect(self):
         payload = bytes(range(160)) * 2
@@ -271,6 +302,13 @@ class ProtocolV2SimulatorTests(unittest.TestCase):
             prepared.callback(prepared_token)
         with self.assertRaises(ProtocolV2Violation):
             custody.invoke_effect("prepared-discard", prepared, prepared_token)
+        foreign_cancelled = ProviderEffectFence("effect-prepared-discard")
+        foreign_cancelled_token = foreign_cancelled.prepare("owner-a")
+        foreign_cancelled.cancel_prepared(foreign_cancelled_token)
+        with self.assertRaises(ProtocolV2Violation):
+            custody.cancel_prepared_effect_and_discard(
+                "prepared-discard", foreign_cancelled, "gap-deletion"
+            )
 
         custody = RawCustodyBuffer(8_000, 1)
         custody.reserve(
@@ -317,9 +355,11 @@ class ProtocolV2SimulatorTests(unittest.TestCase):
         custody.register_effect("ambiguous", effect)
         custody.invoke_effect("ambiguous", effect, token)
         custody.local_privacy_release("ambiguous", "deletion_local")
-        effect.recovery_epoch(1, 1)
-        effect.acknowledge_provider_close()
-        effect.acknowledge_owner_termination()
+        provider_quiescence, owner_quiescence = effect.recovery_epoch(
+            1, 1, provider_actor_id="provider-a", owner_actor_id="owner-a"
+        )
+        effect.acknowledge_provider_close(provider_quiescence, actor_id="provider-a")
+        effect.acknowledge_owner_termination(owner_quiescence, actor_id="owner-a")
         effect.terminalize()
         custody.resolve_pending_effect("ambiguous", effect, "ambiguous_effect")
         self.assertEqual(custody.gap_obligations["ambiguous"], "ambiguous_effect")

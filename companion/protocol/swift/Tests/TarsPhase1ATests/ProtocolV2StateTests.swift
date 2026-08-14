@@ -145,18 +145,29 @@ final class ProtocolV2StateTests: XCTestCase {
         XCTAssertFalse(effect.journalCommitted)
         try effect.commitJournal(token)
         XCTAssertTrue(effect.journalCommitted)
-        XCTAssertThrowsError(try effect.acknowledgeProviderClose())
-        XCTAssertThrowsError(try effect.acknowledgeOwnerTermination())
-        try effect.recover(runtimeEpoch: 1, egressFence: 1)
+        let stale = try effect.recover(
+            runtimeEpoch: 1, egressFence: 1,
+            providerActorId: "provider-a", ownerActorId: "owner-a"
+        )
+        let current = try effect.recover(
+            runtimeEpoch: 2, egressFence: 2,
+            providerActorId: "provider-b", ownerActorId: "owner-a"
+        )
+        XCTAssertThrowsError(try effect.acknowledgeProviderClose(stale.provider, actorId: "provider-a"))
+        XCTAssertThrowsError(try effect.acknowledgeOwnerTermination(stale.owner, actorId: "owner-a"))
+        XCTAssertThrowsError(try effect.acknowledgeProviderClose(current.provider, actorId: "provider-a"))
         XCTAssertThrowsError(try effect.terminalize())
-        try effect.acknowledgeProviderClose()
+        try effect.acknowledgeProviderClose(current.provider, actorId: "provider-b")
         XCTAssertThrowsError(try effect.terminalize())
-        try effect.acknowledgeOwnerTermination()
+        try effect.acknowledgeOwnerTermination(current.owner, actorId: "owner-a")
         try effect.terminalize()
         XCTAssertEqual(effect.state, .terminal)
         XCTAssertEqual(effect.invokeCount, 1)
         XCTAssertTrue(effect.journalCommitted)
-        XCTAssertThrowsError(try effect.recover(runtimeEpoch: 2, egressFence: 2))
+        XCTAssertThrowsError(try effect.recover(
+            runtimeEpoch: 3, egressFence: 3,
+            providerActorId: "provider-c", ownerActorId: "owner-a"
+        ))
     }
 
     func testLocalPrivacyReleaseFencesPendingProviderEffect() throws {
@@ -173,6 +184,11 @@ final class ProtocolV2StateTests: XCTestCase {
         let preparedToken = try prepared.prepare(ownerId: "owner-a")
         try preparedCustody.registerEffect(eventId: "prepared-discard", effect: prepared)
         XCTAssertThrowsError(try preparedCustody.acknowledgeDurableDiscard("prepared-discard", gapId: "gap-deletion"))
+        var sameIdentity = try V2EffectFence(effectId: "effect-prepared-discard")
+        _ = try sameIdentity.prepare(ownerId: "owner-a")
+        XCTAssertThrowsError(try preparedCustody.cancelPreparedEffectAndDiscard(
+            eventId: "prepared-discard", effect: &sameIdentity, gapId: "gap-deletion"
+        ))
         try preparedCustody.cancelPreparedEffectAndDiscard(
             eventId: "prepared-discard", effect: &prepared, gapId: "gap-deletion"
         )
@@ -185,6 +201,12 @@ final class ProtocolV2StateTests: XCTestCase {
         XCTAssertThrowsError(try prepared.callback(preparedToken))
         XCTAssertThrowsError(try preparedCustody.invokeEffect(
             eventId: "prepared-discard", effect: &prepared, token: preparedToken
+        ))
+        var foreignCancelled = try V2EffectFence(effectId: "effect-prepared-discard")
+        let foreignCancelledToken = try foreignCancelled.prepare(ownerId: "owner-a")
+        try foreignCancelled.cancelPrepared(foreignCancelledToken)
+        XCTAssertThrowsError(try preparedCustody.cancelPreparedEffectAndDiscard(
+            eventId: "prepared-discard", effect: &foreignCancelled, gapId: "gap-deletion"
         ))
 
         var custody = try V2CustodyBudget(sampleRateHertz: 8_000, channelCount: 1)
@@ -226,9 +248,12 @@ final class ProtocolV2StateTests: XCTestCase {
         try custody.registerEffect(eventId: "ambiguous", effect: effect)
         try custody.invokeEffect(eventId: "ambiguous", effect: &effect, token: ambiguousToken)
         try custody.localPrivacyRelease("ambiguous", reason: "deletion_local")
-        try effect.recover(runtimeEpoch: 1, egressFence: 1)
-        try effect.acknowledgeProviderClose()
-        try effect.acknowledgeOwnerTermination()
+        let quiescence = try effect.recover(
+            runtimeEpoch: 1, egressFence: 1,
+            providerActorId: "provider-a", ownerActorId: "owner-a"
+        )
+        try effect.acknowledgeProviderClose(quiescence.provider, actorId: "provider-a")
+        try effect.acknowledgeOwnerTermination(quiescence.owner, actorId: "owner-a")
         try effect.terminalize()
         try custody.resolvePendingEffect(eventId: "ambiguous", effect: effect, outcome: .ambiguousEffect)
         XCTAssertEqual(custody.gapObligations["ambiguous"], "ambiguous_effect")
