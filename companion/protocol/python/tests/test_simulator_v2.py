@@ -142,6 +142,72 @@ class ProtocolV2SimulatorTests(unittest.TestCase):
         with self.assertRaises(ProtocolV2Violation):
             ProviderEffectFence.restore(invalid_snapshot)
 
+    def test_effect_restore_never_recreates_execution_authority(self):
+        prepared = ProviderEffectFence("effect-prepared")
+        prepared.prepare("owner-a")
+        snapshot = prepared.snapshot()
+        self.assertNotIn("token", snapshot)
+        restarted = ProviderEffectFence.restore(snapshot)
+        self.assertEqual(restarted.state, EffectState.EFFECT_QUIESCENCE_REQUIRED)
+        self.assertIsNone(restarted.token)
+        with self.assertRaises(ProtocolV2Violation):
+            restarted.invoke(None)
+        forged = EffectToken(0, 0, "owner-a", "effect-prepared")
+        with self.assertRaises(ProtocolV2Violation):
+            restarted.invoke(forged)
+
+        serialized_capability = dict(snapshot)
+        serialized_capability["token"] = {
+            "runtime_epoch": 0, "egress_fence": 0,
+            "owner_id": "owner-a", "effect_id": "effect-prepared",
+        }
+        with self.assertRaises(ProtocolV2Violation):
+            ProviderEffectFence.restore(serialized_capability)
+
+        ownerless = ProviderEffectFence("effect-ownerless").snapshot()
+        with self.assertRaises(ProtocolV2Violation):
+            ProviderEffectFence.restore(ownerless)
+
+        for changes in (
+            {"state": "prepared", "invoke_count": 1},
+            {"state": "journaled", "journal_committed": False},
+            {"state": "invoking", "invoke_count": 0},
+            {"state": "terminal", "provider_close_ack": False, "owner_termination_ack": False},
+        ):
+            invalid = dict(snapshot)
+            invalid.update(changes)
+            with self.subTest(changes=changes), self.assertRaises(ProtocolV2Violation):
+                ProviderEffectFence.restore(invalid)
+
+    def test_deletion_restore_requires_durable_state_proof(self):
+        deletion = DeletionFence(
+            workers={"worker"}, callbacks={"callback"}, connections={"connection"},
+            effects={"effect"}, stores={"primary", "backup"},
+        )
+        generation = deletion.request()
+        quiescing = deletion.snapshot()
+        for state in ("deleting", "deleted"):
+            invalid = dict(quiescing)
+            invalid["state"] = state
+            with self.subTest(state=state), self.assertRaises(ProtocolV2Violation):
+                DeletionFence.restore(invalid)
+
+        deletion.acknowledge_worker("worker", generation)
+        deletion.acknowledge_callback("callback", generation)
+        deletion.acknowledge_connection("connection", generation)
+        deletion.acknowledge_effect("effect", generation)
+        deletion.start_deleting()
+        deleting = deletion.snapshot()
+        false_absence = dict(deleting)
+        false_absence["absence_passes"] = {"1": {"primary": True, "backup": False}}
+        with self.assertRaises(ProtocolV2Violation):
+            DeletionFence.restore(false_absence)
+
+        deleted_without_proof = dict(deleting)
+        deleted_without_proof["state"] = "deleted"
+        with self.assertRaises(ProtocolV2Violation):
+            DeletionFence.restore(deleted_without_proof)
+
     def test_quota_rejects_before_custody_allocation_and_burns_attempt_tokens(self):
         quota = TokenBucketQuota(QuotaLimits(2, 2, 100, 100, 100, 100, 500))
         self.assertTrue(quota.reserve(0, events=1, payload_bytes=50, metadata_bytes=20, custody_bytes=200))

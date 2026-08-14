@@ -270,7 +270,8 @@ internal static class Program
             string ownerActorId)
         {
             if (state == "terminal" || epoch <= runtimeEpoch || fence <= egressFence ||
-                string.IsNullOrEmpty(providerActorId) || ownerActorId != ownerId)
+                string.IsNullOrEmpty(providerActorId) || ownerId is null ||
+                string.IsNullOrEmpty(ownerActorId) || ownerActorId != ownerId)
                 throw new InvalidOperationException("recovery epoch or fence is invalid");
             runtimeEpoch = epoch;
             egressFence = fence;
@@ -774,13 +775,16 @@ internal static class Program
         RunStateMatrix();
         RunLongDurationMatrix();
 
-        Console.WriteLine("{\"phase\":\"2A-csharp-vectors\",\"successful\":true,\"vectorsRun\":53}");
+        Console.WriteLine("{\"phase\":\"2A-csharp-vectors\",\"successful\":true,\"vectorsRun\":55}");
     }
 
     private static void RunStateMatrix()
     {
         var firstEffect = new EffectFence("effect-1");
         var secondEffect = new EffectFence("effect-2");
+        var ownerlessEffect = new EffectFence("effect-ownerless");
+        ExpectReject(() => ownerlessEffect.Recover(1, 1, "provider-a", null!));
+        ExpectReject(() => ownerlessEffect.Recover(1, 1, "provider-a", ""));
         EffectToken token = firstEffect.Prepare("owner-a");
         if (firstEffect.Prepare("owner-a") != token)
             throw new InvalidOperationException("effect owner retry is not idempotent");

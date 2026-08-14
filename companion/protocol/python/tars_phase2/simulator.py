@@ -204,7 +204,7 @@ class ProviderEffectFence:
         return None
 
     def _check_token(self, token: EffectToken) -> None:
-        if token is not self.token:
+        if self.token is None or not isinstance(token, EffectToken) or token is not self.token:
             raise ProtocolV2Violation("stale or foreign effect token")
         if token.runtime_epoch != self.runtime_epoch or token.egress_fence != self.egress_fence:
             raise ProtocolV2Violation("effect token is stale after recovery")
@@ -220,12 +220,6 @@ class ProviderEffectFence:
             "egress_fence": self.egress_fence,
             "state": self.state.value,
             "owner_id": self.owner_id,
-            "token": None if self.token is None else {
-                "runtime_epoch": self.token.runtime_epoch,
-                "egress_fence": self.token.egress_fence,
-                "owner_id": self.token.owner_id,
-                "effect_id": self.token.effect_id,
-            },
             "provider_close_ack": self.provider_close_ack,
             "owner_termination_ack": self.owner_termination_ack,
             "invoke_count": self.invoke_count,
@@ -244,25 +238,16 @@ class ProviderEffectFence:
         )
         if not isinstance(snapshot["state"], str):
             raise ProtocolV2Violation("effect snapshot state must be a string")
-        restored.state = EffectState(snapshot["state"])
+        try:
+            restored.state = EffectState(snapshot["state"])
+        except ValueError as error:
+            raise ProtocolV2Violation("effect snapshot state is unknown") from error
         owner_id = snapshot.get("owner_id")
-        if owner_id is not None and (not isinstance(owner_id, str) or not owner_id):
-            raise ProtocolV2Violation("effect snapshot owner is invalid")
+        if not isinstance(owner_id, str) or not owner_id:
+            raise ProtocolV2Violation("restored effect requires a durable owner")
         restored.owner_id = owner_id
-        raw_token = snapshot.get("token")
-        if raw_token is not None:
-            if not isinstance(raw_token, Mapping):
-                raise ProtocolV2Violation("effect snapshot token is invalid")
-            token_owner = raw_token["owner_id"]
-            token_effect = raw_token["effect_id"]
-            if token_owner != owner_id or token_effect != restored.effect_id:
-                raise ProtocolV2Violation("effect snapshot token binding is invalid")
-            restored.token = EffectToken(
-                _require_uint64(raw_token["runtime_epoch"], "token runtime epoch"),
-                _require_uint64(raw_token["egress_fence"], "token egress fence"),
-                token_owner,
-                token_effect,
-            )
+        if snapshot.get("token") is not None:
+            raise ProtocolV2Violation("effect execution capability must not be serialized")
         restored.provider_close_ack = _require_bool(snapshot["provider_close_ack"], "provider close ack")
         restored.owner_termination_ack = _require_bool(snapshot["owner_termination_ack"], "owner termination ack")
         restored.invoke_count = _require_uint64(snapshot["invoke_count"], "invoke count")
@@ -270,7 +255,20 @@ class ProviderEffectFence:
         restored.cancelled_without_invoke = _require_bool(
             snapshot.get("cancelled_without_invoke", False), "cancelled without invoke"
         )
-        if restored.state is EffectState.EFFECT_QUIESCENCE_REQUIRED:
+        restored._validate_restored_state()
+        if restored.state in (
+            EffectState.PREPARED,
+            EffectState.INVOKING,
+            EffectState.PROVIDER_RETURNED,
+            EffectState.JOURNALED,
+            EffectState.AMBIGUOUS,
+            EffectState.EFFECT_QUIESCENCE_REQUIRED,
+        ) and restored.owner_id is not None:
+            # Process-local provider execution and quiescence capabilities are
+            # intentionally absent after restart. Any durably owned effect is
+            # fenced until a later recovery epoch mints fresh quiescence-only
+            # capabilities; it can never regain an execution token.
+            restored.state = EffectState.EFFECT_QUIESCENCE_REQUIRED
             restored.provider_close_ack = False
             restored.owner_termination_ack = False
         elif restored.state is not EffectState.TERMINAL and (
@@ -278,6 +276,43 @@ class ProviderEffectFence:
         ):
             raise ProtocolV2Violation("active effect snapshot contains unauthenticated quiescence")
         return restored
+
+    def _validate_restored_state(self) -> None:
+        if self.invoke_count > 1:
+            raise ProtocolV2Violation("effect snapshot violates single-use invocation")
+        if self.cancelled_without_invoke:
+            if (
+                self.state is not EffectState.TERMINAL
+                or self.invoke_count != 0
+                or self.journal_committed
+                or self.provider_close_ack
+                or self.owner_termination_ack
+            ):
+                raise ProtocolV2Violation("cancelled effect snapshot is inconsistent")
+            return
+        if self.state is EffectState.PREPARED:
+            valid = self.invoke_count == 0 and not self.journal_committed
+        elif self.state in (EffectState.INVOKING, EffectState.PROVIDER_RETURNED, EffectState.AMBIGUOUS):
+            valid = self.invoke_count == 1 and not self.journal_committed
+        elif self.state is EffectState.JOURNALED:
+            valid = self.invoke_count == 1 and self.journal_committed
+        elif self.state is EffectState.EFFECT_QUIESCENCE_REQUIRED:
+            valid = self.invoke_count in (0, 1) and (not self.journal_committed or self.invoke_count == 1)
+        elif self.state is EffectState.TERMINAL:
+            valid = (
+                self.invoke_count in (0, 1)
+                and (not self.journal_committed or self.invoke_count == 1)
+                and self.provider_close_ack
+                and self.owner_termination_ack
+            )
+        else:
+            valid = False
+        if not valid:
+            raise ProtocolV2Violation("effect snapshot state is inconsistent")
+        if self.state not in (EffectState.EFFECT_QUIESCENCE_REQUIRED, EffectState.TERMINAL) and (
+            self.provider_close_ack or self.owner_termination_ack
+        ):
+            raise ProtocolV2Violation("active effect snapshot contains unauthenticated quiescence")
 
 
 class DeletionFence:
@@ -398,6 +433,7 @@ class DeletionFence:
         ):
             raise ProtocolV2Violation("deletion resume is stale or out of order")
         self.state = DeletionState.DELETING
+        self.failed_pass = None
 
     def reject_late_callback(self, generation: int) -> None:
         if (
@@ -459,20 +495,23 @@ class DeletionFence:
         if not isinstance(snapshot, Mapping):
             raise ProtocolV2Violation("deletion snapshot must be a mapping")
         restored = cls(
-            workers=set(snapshot["workers"]),
-            callbacks=set(snapshot["callbacks"]),
-            connections=set(snapshot["connections"]),
-            effects=set(snapshot["effects"]),
-            stores=set(snapshot["stores"]),
+            workers=cls._restore_identifier_set(snapshot["workers"], "workers"),
+            callbacks=cls._restore_identifier_set(snapshot["callbacks"], "callbacks"),
+            connections=cls._restore_identifier_set(snapshot["connections"], "connections"),
+            effects=cls._restore_identifier_set(snapshot["effects"], "effects"),
+            stores=cls._restore_identifier_set(snapshot["stores"], "stores"),
         )
         if not isinstance(snapshot["state"], str):
             raise ProtocolV2Violation("deletion snapshot state must be a string")
-        restored.state = DeletionState(snapshot["state"])
+        try:
+            restored.state = DeletionState(snapshot["state"])
+        except ValueError as error:
+            raise ProtocolV2Violation("deletion snapshot state is unknown") from error
         restored.generation = _require_uint64(snapshot["generation"], "deletion generation")
-        restored.worker_acks = cls._identifiers(set(snapshot["worker_acks"]))
-        restored.callback_acks = cls._identifiers(set(snapshot["callback_acks"]))
-        restored.connection_acks = cls._identifiers(set(snapshot["connection_acks"]))
-        restored.effect_acks = cls._identifiers(set(snapshot["effect_acks"]))
+        restored.worker_acks = cls._restore_identifier_set(snapshot["worker_acks"], "worker acknowledgements")
+        restored.callback_acks = cls._restore_identifier_set(snapshot["callback_acks"], "callback acknowledgements")
+        restored.connection_acks = cls._restore_identifier_set(snapshot["connection_acks"], "connection acknowledgements")
+        restored.effect_acks = cls._restore_identifier_set(snapshot["effect_acks"], "effect acknowledgements")
         if (
             not restored.worker_acks.issubset(restored.workers)
             or not restored.callback_acks.issubset(restored.callbacks)
@@ -487,17 +526,68 @@ class DeletionFence:
         for number, results in raw_passes.items():
             if number not in ("1", "2") or not isinstance(results, Mapping):
                 raise ProtocolV2Violation("deletion absence pass identity is invalid")
-            if set(results) != restored.stores or any(not isinstance(value, bool) for value in results.values()):
+            if (
+                set(results) != restored.stores
+                or any(not isinstance(key, str) for key in results)
+                or any(value is not True for value in results.values())
+            ):
                 raise ProtocolV2Violation("deletion absence pass result is invalid")
             restored.absence_passes[int(number)] = dict(results)
         failed_pass = snapshot.get("failed_pass")
-        if failed_pass is not None and (isinstance(failed_pass, bool) or failed_pass not in (1, 2)):
+        if failed_pass is not None and (
+            isinstance(failed_pass, bool) or not isinstance(failed_pass, int) or failed_pass not in (1, 2)
+        ):
             raise ProtocolV2Violation("deletion failed pass is invalid")
         restored.failed_pass = failed_pass
         restored.late_callback_rejections = _require_uint64(
             snapshot["late_callback_rejections"], "late callback rejection count"
         )
+        restored._validate_restored_state()
         return restored
+
+    @classmethod
+    def _restore_identifier_set(cls, value: Any, name: str) -> set[str]:
+        if (
+            not isinstance(value, list)
+            or any(not isinstance(identifier, str) or not identifier for identifier in value)
+            or len(value) != len(set(value))
+        ):
+            raise ProtocolV2Violation(f"deletion snapshot {name} are invalid")
+        return cls._identifiers(set(value))
+
+    def _validate_restored_state(self) -> None:
+        all_quiescent = (
+            self.workers == self.worker_acks
+            and self.callbacks == self.callback_acks
+            and self.connections == self.connection_acks
+            and self.effects == self.effect_acks
+        )
+        pass_ids = set(self.absence_passes)
+        if 2 in pass_ids and 1 not in pass_ids:
+            raise ProtocolV2Violation("deletion absence passes are out of order")
+        if self.state is DeletionState.ACTIVE:
+            valid = (
+                self.generation == 0
+                and not any((self.worker_acks, self.callback_acks, self.connection_acks, self.effect_acks))
+                and not pass_ids
+                and self.failed_pass is None
+            )
+        elif self.state is DeletionState.DELETE_QUIESCING:
+            valid = self.generation > 0 and not pass_ids and self.failed_pass is None
+        elif self.state is DeletionState.DELETING:
+            valid = self.generation > 0 and all_quiescent and pass_ids in (set(), {1}, {1, 2}) and self.failed_pass is None
+        elif self.state is DeletionState.DELETION_FAILED:
+            valid = (
+                self.generation > 0
+                and all_quiescent
+                and ((self.failed_pass == 1 and not pass_ids) or (self.failed_pass == 2 and pass_ids == {1}))
+            )
+        elif self.state is DeletionState.DELETED:
+            valid = self.generation > 0 and all_quiescent and pass_ids == {1, 2} and self.failed_pass is None
+        else:
+            valid = False
+        if not valid:
+            raise ProtocolV2Violation("deletion snapshot state is inconsistent")
 
 
 @dataclass(frozen=True)
