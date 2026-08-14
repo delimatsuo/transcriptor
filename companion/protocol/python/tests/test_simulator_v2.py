@@ -259,6 +259,13 @@ class ProtocolV2SimulatorTests(unittest.TestCase):
             custody.acknowledge_durable_discard("forwarded", "gap-forbidden")
         with self.assertRaises(ProtocolV2Violation):
             custody.resolve_pending_effect("forwarded", effect, "durable_discard")
+        foreign = ProviderEffectFence("effect-forwarded")
+        foreign_token = foreign.prepare("owner-b")
+        foreign.invoke(foreign_token)
+        foreign.provider_ack(foreign_token)
+        foreign.commit_journal(foreign_token)
+        with self.assertRaises(ProtocolV2Violation):
+            custody.resolve_pending_effect("forwarded", foreign, "forwarded")
         effect.provider_ack(token)
         effect.commit_journal(token)
         custody.resolve_pending_effect("forwarded", effect, "forwarded")

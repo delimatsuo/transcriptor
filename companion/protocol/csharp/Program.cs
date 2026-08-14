@@ -271,7 +271,7 @@ internal static class Program
         private readonly Dictionary<string, CustodyItem> items = new(StringComparer.Ordinal);
         private readonly Dictionary<string, string> released = new(StringComparer.Ordinal);
         private readonly Dictionary<string, string> gapIds = new(StringComparer.Ordinal);
-        private readonly Dictionary<string, string> effectIds = new(StringComparer.Ordinal);
+        private readonly Dictionary<string, EffectFence> effects = new(StringComparer.Ordinal);
         private readonly HashSet<string> pendingEffectReleases = new(StringComparer.Ordinal);
         private readonly HashSet<string> forwarded = new(StringComparer.Ordinal);
         private long lastClockMs;
@@ -325,7 +325,7 @@ internal static class Program
 
         internal void Forward(string eventId, bool journalCommitted)
         {
-            if (effectIds.ContainsKey(eventId))
+            if (effects.ContainsKey(eventId))
                 throw new InvalidOperationException("registered provider effect requires effect-bound forwarding");
             if (!journalCommitted)
                 throw new InvalidOperationException("forwarding release requires journal");
@@ -335,7 +335,8 @@ internal static class Program
 
         internal void ForwardEffect(string eventId, EffectFence effect)
         {
-            if (effectIds.GetValueOrDefault(eventId) != effect.EffectId || !effect.JournalCommitted)
+            if (!effects.TryGetValue(eventId, out EffectFence? registered) ||
+                !ReferenceEquals(registered, effect) || !effect.JournalCommitted)
                 throw new InvalidOperationException("effect-bound forwarding requires the original immutable journal");
             if (pendingEffectReleases.Contains(eventId))
                 throw new InvalidOperationException("locally released custody requires pending-effect resolution");
@@ -360,17 +361,18 @@ internal static class Program
             {
                 throw new InvalidOperationException("provider effect requires live unreleased custody and a durable owner");
             }
-            if (effectIds.TryGetValue(eventId, out string? existing))
+            if (effects.TryGetValue(eventId, out EffectFence? existing))
             {
-                if (existing == effect.EffectId) return;
+                if (ReferenceEquals(existing, effect)) return;
                 throw new InvalidOperationException("range already has a different provider effect");
             }
-            effectIds[eventId] = effect.EffectId;
+            effects[eventId] = effect;
         }
 
         internal void InvokeEffect(string eventId, EffectFence effect, EffectToken token)
         {
-            if (!items.ContainsKey(eventId) || effectIds.GetValueOrDefault(eventId) != effect.EffectId)
+            if (!items.ContainsKey(eventId) || !effects.TryGetValue(eventId, out EffectFence? registered) ||
+                !ReferenceEquals(registered, effect))
                 throw new InvalidOperationException("provider invocation requires registered live custody");
             effect.Invoke(token);
         }
@@ -383,13 +385,14 @@ internal static class Program
                 throw new InvalidOperationException("local privacy release is invalid");
             }
             Release(eventId, reason);
-            if (effectIds.ContainsKey(eventId)) pendingEffectReleases.Add(eventId);
+            if (effects.ContainsKey(eventId)) pendingEffectReleases.Add(eventId);
             else gapIds[eventId] = reason;
         }
 
         internal void ResolvePendingEffect(string eventId, EffectFence effect, string outcome)
         {
-            if (!pendingEffectReleases.Contains(eventId) || effectIds.GetValueOrDefault(eventId) != effect.EffectId)
+            if (!pendingEffectReleases.Contains(eventId) ||
+                !effects.TryGetValue(eventId, out EffectFence? registered) || !ReferenceEquals(registered, effect))
                 throw new InvalidOperationException("pending effect resolution is stale or foreign");
             if (outcome == "forwarded")
             {
@@ -689,7 +692,7 @@ internal static class Program
         RunStateMatrix();
         RunLongDurationMatrix();
 
-        Console.WriteLine("{\"phase\":\"2A-csharp-vectors\",\"successful\":true,\"vectorsRun\":43}");
+        Console.WriteLine("{\"phase\":\"2A-csharp-vectors\",\"successful\":true,\"vectorsRun\":44}");
     }
 
     private static void RunStateMatrix()
@@ -761,6 +764,12 @@ internal static class Program
         ExpectReject(() => custody.RegisterEffect("pending-forwarded", new EffectFence("replacement")));
         ExpectReject(() => custody.Discard("pending-forwarded", "gap-forbidden"));
         ExpectReject(() => custody.ResolvePendingEffect("pending-forwarded", pendingForwarded, "durable_discard"));
+        var foreignPending = new EffectFence("effect-pending-forwarded");
+        EffectToken foreignPendingToken = foreignPending.Prepare("owner-b");
+        foreignPending.Invoke(foreignPendingToken);
+        foreignPending.ProviderReturned(foreignPendingToken);
+        foreignPending.CommitJournal(foreignPendingToken);
+        ExpectReject(() => custody.ResolvePendingEffect("pending-forwarded", foreignPending, "forwarded"));
         pendingForwarded.ProviderReturned(pendingToken);
         pendingForwarded.CommitJournal(pendingToken);
         custody.ResolvePendingEffect("pending-forwarded", pendingForwarded, "forwarded");

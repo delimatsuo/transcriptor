@@ -30,6 +30,7 @@ public struct V2CustodyBudget: Sendable {
     public let channelCount: Int
     private var entries: [String: V2CustodyReservation] = [:]
     private var effectIds: [String: String] = [:]
+    private var effectOwnerIds: [String: String] = [:]
     public private(set) var released: [String: String] = [:]
     public private(set) var discardGapIds: [String: String] = [:]
     public private(set) var gapObligations: [String: String] = [:]
@@ -111,7 +112,9 @@ public struct V2CustodyBudget: Sendable {
     }
 
     public mutating func acknowledgeEffectForwarded(_ eventId: String, effect: V2EffectFence) throws {
-        guard effectIds[eventId] == effect.effectId, effect.journalCommitted else {
+        guard effectIds[eventId] == effect.effectId,
+              effectOwnerIds[eventId] == effect.ownerId,
+              effect.journalCommitted else {
             throw ProtocolV2ValidationError.invalid("effect-bound forwarding requires the original immutable journal")
         }
         guard !effectPendingReleases.contains(eventId) else {
@@ -134,18 +137,20 @@ public struct V2CustodyBudget: Sendable {
     }
 
     public mutating func registerEffect(eventId: String, effect: V2EffectFence) throws {
-        guard entries[eventId] != nil, released[eventId] == nil,
+        guard let ownerId = effect.ownerId,
+              entries[eventId] != nil, released[eventId] == nil,
               gapObligations[eventId] == nil, effect.state == .prepared,
-              effect.ownerId != nil, effect.token != nil else {
+              effect.token != nil else {
             throw ProtocolV2ValidationError.invalid("provider effect requires live unreleased custody")
         }
         if let existing = effectIds[eventId] {
-            guard existing == effect.effectId else {
+            guard existing == effect.effectId, effectOwnerIds[eventId] == ownerId else {
                 throw ProtocolV2ValidationError.invalid("range already has a different provider effect")
             }
             return
         }
         effectIds[eventId] = effect.effectId
+        effectOwnerIds[eventId] = ownerId
     }
 
     public mutating func invokeEffect(
@@ -154,6 +159,7 @@ public struct V2CustodyBudget: Sendable {
         token: V2EffectToken
     ) throws {
         guard entries[eventId] != nil, effectIds[eventId] == effect.effectId,
+              effectOwnerIds[eventId] == effect.ownerId,
               effect.state == .prepared, effect.ownerId != nil else {
             throw ProtocolV2ValidationError.invalid("provider invocation requires registered live custody")
         }
@@ -178,7 +184,8 @@ public struct V2CustodyBudget: Sendable {
         effect: V2EffectFence,
         outcome: V2PendingEffectOutcome
     ) throws {
-        guard effectPendingReleases.contains(eventId), effectIds[eventId] == effect.effectId else {
+        guard effectPendingReleases.contains(eventId), effectIds[eventId] == effect.effectId,
+              effectOwnerIds[eventId] == effect.ownerId else {
             throw ProtocolV2ValidationError.invalid("pending effect resolution is stale or foreign")
         }
         switch outcome {
