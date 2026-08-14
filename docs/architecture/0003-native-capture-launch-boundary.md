@@ -1,8 +1,10 @@
 # ADR 0003: Native-Capture Launch Boundary
 
-**Status:** Accepted for planning on 2026-08-13. This decision grants no
-implementation, cloud, provider, device, pilot, release, or deployment
-authority.
+**Status:** Accepted for planning on 2026-08-13 with an owner-authorized G2-A0
+documentation amendment candidate. The amendment becomes operative only after
+renewed exact-tree architecture and security/privacy approval. This decision
+grants no implementation, cloud, provider, device, pilot, release, or
+deployment authority.
 
 **Date:** 2026-08-13
 
@@ -68,7 +70,17 @@ erase useful implementation evidence from the Week 1 through Week 4 branches.
 - microphone and system-audio permissions;
 - independent microphone and system-audio capture;
 - device and route health, timestamps, framing, and per-source sequence;
-- bounded in-memory raw-audio custody;
+- bounded in-memory raw-audio custody with no T.A.R.S.-controlled durable raw-
+  audio artifact. This does not claim physical erasure from allocator copies,
+  TLS/parser buffers, OS swap, crash/core tooling, or provider/network buffers;
+  hosted and pilot claims remain blocked until those surfaces receive direct
+  G3A/G4 evidence;
+- provider-forwarded raw-audio release only after `audio.forwarded`, with a
+  discard claim that wins before provider preparation, the named local
+  `local_privacy_discard`, `audio.discard.durable`, and emergency/privacy-timeout
+  zeroization producing visible gaps when no effect is pending; an existing
+  effect retains its original forwarded/ambiguous outcome rather than being
+  attributed to discard;
 - authoritative physical capture, pause, stop, and degraded-state events;
 - secure storage of short-lived enrollment credentials; and
 - content-free diagnostics.
@@ -80,7 +92,7 @@ erase useful implementation evidence from the Week 1 through Week 4 branches.
 - one active fenced capture lease per session;
 - schema, ordering, size, rate, duration, concurrency, and quota enforcement;
 - bounded transient gateway custody and Google STT stream lifecycle;
-- content-free forwarding journals and protocol watermarks;
+- content-free forwarding journals and protocol interval sets/derived prefixes;
 - idempotent transcript-or-gap persistence;
 - retention, deletion, audit, provider configuration, and kill controls; and
 - content-free operational observability.
@@ -101,30 +113,103 @@ Credential Manager or DPAPI-backed storage.
 Only companion-originated events may assert that physical capture started,
 paused, resumed, stopped, or lost a source.
 
+The gateway owns durable transport, coverage, deletion, and terminal-release
+state, including the durable gap acknowledgement and provider-effect outcome.
+The companion owns physical capture state and the local `local_privacy_discard`
+zeroization action; that local action never asserts durable coverage or provider
+forwarding. The web workspace derives its display state from all axes and may
+not turn a companion event into a claim of durable coverage or completion.
+
 ## Recruiter state contract required for pilot
 
-The companion and web workspace must share one observable state model:
+The companion and web workspace share one observable state model composed from
+three authoritative axes rather than one actor-owned top-level lifecycle:
 
-1. `setup_required`
-2. `checking_permissions_and_devices`
-3. `ready_both_sources`
-4. `starting`
-5. `recording`
-6. `degraded`
-7. `reconnecting`
-8. `paused`
-9. `stopping`
-10. `finalizing`
-11. `completed`
-12. `completed_with_gaps`
+1. Companion `physicalCaptureState`: `setup_required`,
+   `checking_permissions_and_devices`, `ready_both_sources`, `starting`,
+   `recording`, `degraded`, `reconnecting`, `paused`, `stopping`, or `stopped`.
+2. Gateway `transportState`: `disconnected`, `admitting`, `forwarding`,
+   `draining`, `fenced`, `effect_quiescence_required`, or `closed`.
+3. Gateway `coverageState`: `not_started`, `open`, `finalizing`, `completed`,
+   `completed_with_gaps`, `delete_quiescing`, `deleting`, `deleted`, or
+   `deletion_failed`.
+
+`physicalCaptureState` carries two companion-owned source-health sub-axes,
+`microphoneHealth` and `systemAudioHealth`, each `unknown`, `healthy`,
+`permission_missing`, `permission_revoked`, `device_unavailable`, `overflow`,
+or `failed`, plus the last captured sequence/sample. `coverageState` owns
+durable finalization and deletion; `transportState` owns connectivity,
+acknowledgement interval sets, and derived prefixes. No axis may synthesize
+another axis's authority.
+
+The web derives display labels such as `finalizing`, `completed`, and
+`completed_with_gaps` only from a versioned precedence table over these axes.
+Deletion overrides all other labels. A companion event cannot assert durable
+coverage, completion, or deletion.
+
+The v2 precedence table is:
+
+1. `deleted` when coverage is `deleted`.
+2. `deletion_failed` when coverage is `deletion_failed`; show retryable failure
+   and never the deleted treatment.
+3. `deleting` or `delete_quiescing` whenever deletion has begun; show the
+   deletion treatment even if capture or transport reports a stale older state.
+   If effect quiescence is unproven, expose `effect_quiescence_required` as a
+   non-success substate and never show `deleted`.
+4. `effect_quiescence_required` whenever the gateway cannot prove provider
+   effect egress fencing and stream/owner quiescence outside deletion; show a
+   non-success fenced/degraded treatment and never `completed`, `deleted`, or a
+   safe replacement retry.
+5. `finalizing` when physical capture is `stopped` and coverage is `open` or
+   `finalizing`; `completed_with_gaps` when coverage is terminal with a gap.
+6. `completed` only when physical capture is `stopped`, transport is `closed`,
+   coverage is `completed`, and every captured range has a terminal outcome.
+7. `degraded` when either source health is failed/unknown or coverage has a
+   known/unknown gap while capture remains active; identify the affected source.
+8. `reconnecting`, `paused`, `stopping`, `recording`, or setup labels follow
+   the companion physical state only when no higher-precedence state applies.
+
+The existing product state contract's “Discard pending audio” action is
+interpreted as this explicit local privacy action: it clears unforwarded bytes
+immediately, records the exact or unknown boundary locally, and makes a
+best-effort `audio.discard.requested`; the later `audio.discard.durable` event
+confirms gateway gap persistence but is not a prerequisite for local
+zeroization. The product contract must be reconciled to this v2 interpretation
+before any UI implementation; this amendment does not authorize that source or
+UI work.
+
+G3C must deliver that reconciliation as a separately versioned docs-only
+artifact with its own exact commit/tree, Product UI/UX and accessibility review,
+and a fault/copy matrix. It must map every legacy state and label to the v2
+precedence table, distinguish local clearing from durable discard and pending
+provider effects, define `delete_quiescing`/`deletion_failed` and browser-close
+behavior, and bind English/pt-BR accessible copy before any UI implementation.
 
 Start fails closed until authentication, current disclosure acknowledgement,
 permissions, and live health checks for both required sources pass. Recording
 shows persistent per-channel health. Source loss never silently degrades into
 a successful state. Pause and stop remain pending until the companion reports
-its authoritative boundary. Finalization ends only when every known captured
-range has one non-overlapping durable transcript or gap outcome; an unknowable
-end boundary is reported honestly.
+its authoritative boundary. Deletion atomically increments the deletion
+generation, publishes an egress barrier, and fences admission/effects first,
+then closes or cancels provider streams, sends companion stop, and performs
+immediate local privacy zeroization. A runtime epoch and non-serializable
+effect token prevent a replacement process from resuming an old call. Gateway finalization
+ends only when every known
+captured range has one non-overlapping durable transcript or gap outcome; an
+unknowable end boundary is reported honestly. `session.delete.requested` first
+enters `delete_quiescing`, fences new admission/reconnect/provider effects and
+content writes, and waits for positive quiescence of every worker, connection,
+prepared or invoking provider effect, and late-callback lane. Failure to prove
+the egress fence or provider-close acknowledgement remains
+`effect_quiescence_required`/`delete_quiescing` and is not success. Lease expiry
+or heartbeat loss alone is not quiescence. Late callbacks fail before content
+persistence. The first generation-fenced inventory covers session records,
+enrollment/lease records, retry commitments, forwarding intents/journals,
+transcripts, coverage/gaps, blobs, caches, outboxes, logs/crash/support
+artifacts, indexes, exports, provider-enrichment records, provider retention
+surfaces, and backups within approved scope. An unavailable store or
+unverified provider-retention surface keeps the state retryably
+`deletion_failed`; only an independent second absence pass may emit `deleted`.
 
 ## Consent and candidate-data boundary
 
@@ -146,10 +231,19 @@ parallel after their respective plans and authority are approved. The
 observable protocol semantics are shared and frozen before the tracks diverge:
 
 - server-derived tenancy and fenced session authority;
-- admission, provider-forwarding, and durable-transcript watermarks;
-- raw-audio release only after contiguous provider forwarding;
+- admission, provider-forwarding, and durable-transcript interval sets plus
+  derived prefixes;
+- `audio.forwarded` as the only successful provider-forwarding release
+  authority;
+- a discard CAS that wins before provider preparation creates a durable gap;
+  named `local_privacy_discard`, durable discard, and emergency/privacy-timeout
+  zeroization never attribute an already-pending provider effect to the discard
+  acknowledgement, while the original owner may produce a forwarded or
+  ambiguous-effect outcome;
 - exactly one transcript-or-gap outcome per known coverage range;
 - authoritative capture, pause, stop, and finalization state; and
+- deletion-generation/effect fencing before positive provider-effect quiescence
+  and late-callback rejection;
 - content-free logs and diagnostics.
 
 Hosted integration is blocked until gateway authentication, authorization,
@@ -256,8 +350,11 @@ Schedule pressure alone is not a revisit trigger.
 ## Approval boundary
 
 This ADR records product and architecture direction. It authorizes the
-documentation-only roadmap and read-only salvage audits. It does not authorize
+documentation-only roadmap, read-only salvage audits, and the owner-authorized
+G2-A0 documentation amendment. It does not authorize
 source implementation, changes to either dirty worktree, cloud or provider
 mutation, credential use, physical capture, ambient or human audio, candidate
 data, pilot activity, push, PR mutation, merge, deployment, or release. Each
-roadmap gate requires its own current authority and exact evidence.
+roadmap gate requires its own current authority and exact evidence. The G2-A0
+amendment itself is non-operative until the four-document exact tree receives
+renewed architecture and security/privacy approval.
