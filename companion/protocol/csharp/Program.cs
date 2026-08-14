@@ -88,6 +88,76 @@ internal static class Program
             StringComparer.Ordinal);
     }
 
+    private sealed class QuotaBucket
+    {
+        private readonly long eventRate;
+        private readonly long eventBurst;
+        private readonly long payloadRate;
+        private readonly long payloadBurst;
+        private readonly long metadataRate;
+        private readonly long metadataBurst;
+        private readonly long custodyLimit;
+        private long events;
+        private long payload;
+        private long metadata;
+        private long custody;
+        private long lastSecond;
+
+        internal QuotaBucket(
+            long eventRate,
+            long eventBurst,
+            long payloadRate,
+            long payloadBurst,
+            long metadataRate,
+            long metadataBurst,
+            long custodyLimit)
+        {
+            long[] values = { eventRate, eventBurst, payloadRate, payloadBurst, metadataRate, metadataBurst, custodyLimit };
+            if (values.Any(value => value < 0))
+                throw new InvalidOperationException("quota limit is negative");
+            this.eventRate = eventRate;
+            this.eventBurst = eventBurst;
+            this.payloadRate = payloadRate;
+            this.payloadBurst = payloadBurst;
+            this.metadataRate = metadataRate;
+            this.metadataBurst = metadataBurst;
+            this.custodyLimit = custodyLimit;
+            events = eventBurst;
+            payload = payloadBurst;
+            metadata = metadataBurst;
+        }
+
+        internal bool Reserve(long second, long requestedEvents, long payloadBytes, long metadataBytes, long custodyBytes)
+        {
+            if (second < lastSecond || new[] { requestedEvents, payloadBytes, metadataBytes, custodyBytes }.Any(value => value < 0))
+                throw new InvalidOperationException("quota reservation is invalid");
+            long elapsed = second - lastSecond;
+            if (elapsed > 0)
+            {
+                events = Math.Min(eventBurst, checked(events + elapsed * eventRate));
+                payload = Math.Min(payloadBurst, checked(payload + elapsed * payloadRate));
+                metadata = Math.Min(metadataBurst, checked(metadata + elapsed * metadataRate));
+                lastSecond = second;
+            }
+            bool allowed = events >= requestedEvents && payload >= payloadBytes && metadata >= metadataBytes &&
+                           custody + custodyBytes <= custodyLimit;
+            events = Math.Max(0, events - requestedEvents);
+            payload = Math.Max(0, payload - payloadBytes);
+            metadata = Math.Max(0, metadata - metadataBytes);
+            if (allowed) custody += custodyBytes;
+            return allowed;
+        }
+
+        internal void Release(long bytes)
+        {
+            if (bytes < 0 || bytes > custody)
+                throw new InvalidOperationException("quota custody release exceeds reservation");
+            custody -= bytes;
+        }
+
+        internal long Custody => custody;
+    }
+
     private static void Main()
     {
         var key = new StreamKey("session-v2", "stream-mic", 4, "microphone");
@@ -169,7 +239,73 @@ internal static class Program
             Encoding.UTF8.GetString(metadata)[..^1] + ",\"unexpected\":true}");
         ExpectReject(() => ParseAudioFrame(BuildAudioFrame(extraFieldMetadata, payload)));
 
-        Console.WriteLine("{\"phase\":\"2A-csharp-vectors\",\"successful\":true,\"vectorsRun\":21}");
+        byte[] duplicateFieldMetadata = Encoding.UTF8.GetBytes(
+            Encoding.UTF8.GetString(metadata)[..^1] + ",\"sequence\":\"0\"}");
+        ExpectReject(() => ParseAudioFrame(BuildAudioFrame(duplicateFieldMetadata, payload)));
+        byte[] exponentMetadata = Encoding.UTF8.GetBytes(
+            Encoding.UTF8.GetString(metadata).Replace("\"protocolVersion\":2", "\"protocolVersion\":2e0", StringComparison.Ordinal));
+        ExpectReject(() => ParseAudioFrame(BuildAudioFrame(exponentMetadata, payload)));
+        byte[] negativeMetadata = Encoding.UTF8.GetBytes(
+            Encoding.UTF8.GetString(metadata).Replace("\"durationMs\":20", "\"durationMs\":-20", StringComparison.Ordinal));
+        ExpectReject(() => ParseAudioFrame(BuildAudioFrame(negativeMetadata, payload)));
+        byte[] booleanMetadata = Encoding.UTF8.GetBytes(
+            Encoding.UTF8.GetString(metadata).Replace("\"channelCount\":1", "\"channelCount\":true", StringComparison.Ordinal));
+        ExpectReject(() => ParseAudioFrame(BuildAudioFrame(booleanMetadata, payload)));
+        byte[] overflowMetadata = Encoding.UTF8.GetBytes(
+            Encoding.UTF8.GetString(metadata).Replace("\"captureGeneration\":\"4\"", "\"captureGeneration\":\"18446744073709551616\"", StringComparison.Ordinal));
+        ExpectReject(() => ParseAudioFrame(BuildAudioFrame(overflowMetadata, payload)));
+        byte[] nonNfcMetadata = Encoding.UTF8.GetBytes(
+            Encoding.UTF8.GetString(metadata).Replace("session-v2", "session-e\u0301", StringComparison.Ordinal));
+        ExpectReject(() => ParseAudioFrame(BuildAudioFrame(nonNfcMetadata, payload)));
+        byte[] invalidUtf8Metadata = metadata.ToArray();
+        int sessionOffset = Encoding.UTF8.GetString(metadata).IndexOf("session-v2", StringComparison.Ordinal);
+        invalidUtf8Metadata[sessionOffset] = 0xff;
+        ExpectReject(() => ParseAudioFrame(BuildAudioFrame(invalidUtf8Metadata, payload)));
+
+        var maxU64Audio = audio with { Key = key with { CaptureGeneration = ulong.MaxValue } };
+        ParseAudioFrame(EncodeAudioFrame(maxU64Audio));
+        RunLongDurationMatrix();
+
+        Console.WriteLine("{\"phase\":\"2A-csharp-vectors\",\"successful\":true,\"vectorsRun\":30}");
+    }
+
+    private static void RunLongDurationMatrix()
+    {
+        foreach (int minutes in new[] { 60, 90, 120 })
+        {
+            var sources = new[]
+            {
+                new QuotaBucket(50, 100, 192_000, 384_000, 205_000, 410_000, 1_048_576),
+                new QuotaBucket(50, 100, 192_000, 384_000, 205_000, 410_000, 1_048_576),
+            };
+            var session = new QuotaBucket(100, 200, 384_000, 768_000, 410_000, 820_000, 2_097_152);
+            var tenant = new QuotaBucket(400, 800, 1_536_000, 3_072_000, 1_640_000, 3_280_000, 8_388_608);
+            var process = new QuotaBucket(1_600, 3_200, 6_144_000, 12_288_000, 6_560_000, 13_120_000, 33_554_432);
+            int[] payloadBytes = { 320, 3_840 };
+            int eventCount = checked(minutes * 60 * 50);
+            for (int eventIndex = 0; eventIndex < eventCount; eventIndex++)
+            {
+                int second = eventIndex / 50;
+                for (int sourceIndex = 0; sourceIndex < sources.Length; sourceIndex++)
+                {
+                    int bytes = payloadBytes[sourceIndex];
+                    if (!sources[sourceIndex].Reserve(second, 1, bytes, 4_100, bytes) ||
+                        !session.Reserve(second, 1, bytes, 4_100, bytes) ||
+                        !tenant.Reserve(second, 1, bytes, 4_100, bytes) ||
+                        !process.Reserve(second, 1, bytes, 4_100, bytes))
+                    {
+                        throw new InvalidOperationException("long-duration quota vector exceeded a frozen bound");
+                    }
+                    sources[sourceIndex].Release(bytes);
+                    session.Release(bytes);
+                    tenant.Release(bytes);
+                    process.Release(bytes);
+                }
+            }
+            if (sources.Any(source => source.Custody != 0) || session.Custody != 0 ||
+                tenant.Custody != 0 || process.Custody != 0)
+                throw new InvalidOperationException("long-duration custody grew across events");
+        }
     }
 
     private static void ValidateAudio(AudioFrameInput input)
