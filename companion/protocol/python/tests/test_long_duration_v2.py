@@ -17,6 +17,20 @@ class ProtocolV2LongDurationTests(unittest.TestCase):
                 self.assertLessEqual(payload, MAX_AUDIO_PAYLOAD_BYTES)
                 self.assertLessEqual(events, minutes * 60 * 4)
                 self.assertGreater(events, MAX_QUEUED_AUDIO_EVENTS)
+                quota = TokenBucketQuota(QuotaLimits(50, 100, 192000, 384000, 205000, 410000, 1_048_576))
+                for event in range(events):
+                    second = event // 4
+                    self.assertTrue(
+                        quota.reserve(
+                            second,
+                            events=1,
+                            payload_bytes=payload,
+                            metadata_bytes=1_000,
+                            custody_bytes=payload,
+                        )
+                    )
+                    quota.release_custody(payload)
+                self.assertEqual(quota.custody, 0)
 
     def test_quota_and_custody_reservation_do_not_grow_with_duration(self):
         quota = TokenBucketQuota(QuotaLimits(100, 200, 384000, 768000, 410000, 820000, 1_048_576))
