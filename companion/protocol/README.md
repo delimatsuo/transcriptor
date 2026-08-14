@@ -47,3 +47,25 @@ Sequence ranges are inclusive. Sample ranges are half-open. A multi-chunk covera
 - Transcript or note content is outside the guard-first slice and is not accepted by its runner.
 
 Changing coverage identity, terminal uniqueness, retry identity, or raw-audio release semantics requires an architecture review. Phase 1B-1D, provider calls, native capture, real data, push, and deployment remain out of scope.
+
+## G2-A protocol-v2 offline corridor
+
+The `tars_phase2` Python package and `ProtocolV2Model.swift` are pure,
+memory-only v2 bindings. They add no capture, provider, network, filesystem,
+credential, or device integration. The v2 model freezes:
+
+- ordered disjoint `stageIntervals` rather than scalar release watermarks;
+- rate-derived two-second custody bounds, exact chunk alignment, and metadata/
+  quota reservation checks;
+- canonical `covr_` terminal coverage identities over the complete ordered
+  atomic list; and
+- self-contained `seg_` transcript-segment identities that allow multiple
+  finals inside one atomic chunk.
+
+`vectors/protocol-v2-vectors.json` is shared by Python, Swift, and the pure
+C# runner. `python/tars_phase2/simulator.py` provides deterministic
+single-use provider-effect fencing, positive quiescence acknowledgements,
+late-callback rejection, and token-bucket quota behavior. The G2-A runner is
+network-denied and must be executed only from an isolated source worktree.
+Hosted gateway, provider, native capture, route, cloud, credential, and
+release evidence remain later gates.
