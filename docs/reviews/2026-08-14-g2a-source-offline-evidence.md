@@ -11,8 +11,8 @@ commit remains required before G2 exit may be recorded.
   `8398fa8b345e326320e54d2a598977e47ee67fa7`, tree
   `419feca4702be389c8f85129e0face1afe912419`.
 - Candidate final source checkpoint: commit
-  `8402d2dc629bd02952fe03189b0af1bf8e9afe6a`, tree
-  `f15444552f2ca9e48f3b581a6faa54cedaafe0c7`.
+  `14b9d77526b879209af8af2b87c62e25a950d63f`, tree
+  `2d2cba5e35a2ca49f3b880165dab0912b4ae7092`.
 - Framing/retry parity checkpoint: commit
   `2a10d6e6b107c473f4561ad65620c8de0787e8e8`, tree
   `0b5ccdbe75fe67a06e61ec8cc7b0aac414738235`.
@@ -69,7 +69,10 @@ The candidate source tree covers:
   original opaque owner/effect authority before invocation, prevents generic
   forwarding around that binding, and prevents a locally released range from
   acquiring a new effect; quiescence acknowledgements require distinct current-
-  fence provider/owner capabilities and matching actor identities;
+  fence provider/owner capabilities and matching actor identities; restart
+  snapshots contain no provider execution capability, restored owned effects
+  enter fail-closed quiescence, and cross-field state invariants reject forged
+  invocation or journal history;
 - exact durable-discard gap identity and idempotence, forwarding/discard
   conflict rejection, local privacy-timeout release without advancing the
   forwarded watermark, no discard claim while a provider effect is pending,
@@ -92,8 +95,8 @@ The candidate source tree covers:
   conservative derived completion and upgrade gating; and
 - deletion admission fencing, worker/connection/effect quiescence, late-
   callback rejection, crash-copy/resume, injected store failure, ordered and
-  idempotent two-pass absence verification, and no success while a modeled
-  store or participant remains.
+  idempotent two-pass absence verification, complete restore-state validation,
+  and no success while a modeled store or participant remains.
 
 The 60-, 90-, and 120-minute matrix runs simultaneous generated 8 kHz mono and
 48 kHz stereo sources at the adversarial 20 ms minimum. Every event charges
@@ -104,12 +107,11 @@ Swift, and C# all finish with zero retained quota custody.
 ## Verification at the candidate source checkpoint
 
 - `git diff --check`: passed.
-- `companion/protocol/scripts/run_offline_guard.sh`: passed twice with **93
+- `companion/protocol/scripts/run_offline_guard.sh`: passed twice with **95
   Python tests and 16 Swift tests** per deterministic pass under a scrubbed,
   network-denied environment.
-- `PATH=/opt/homebrew/opt/dotnet@8/bin:/usr/bin:/bin:/usr/sbin:/sbin
-  companion/protocol/scripts/run_g2_offline_guard.sh`: passed twice with **39
-  Python tests, 16 Swift tests, and 53 C# vectors** per deterministic pass under
+- `companion/protocol/scripts/run_g2_offline_guard.sh`: passed twice with **41
+  Python tests, 16 Swift tests, and 55 C# vectors** per deterministic pass under
   the reviewed network-denied sandbox.
 - `companion/protocol/scripts/run_g2_artifact_scan.sh`: passed with **zero
   artifacts, forbidden imports, and out-of-scope paths**.
@@ -138,9 +140,16 @@ Python/Swift/C# rejection and recovery cases. Review of evidence commit
 acknowledgements without current-fence actor capabilities, permissive Python
 numeric/restore coercions, and an identity omission on idempotent prepared-
 discard replay. Source commit `8402d2d...` resolves that fourth round with
-opaque authority, strict restore validation, and foreign/forged/stale/wrong-
-actor vectors. Because these changes create a new exact tree, none of the prior
-blocked reviews is approval of this candidate.
+opaque authority, strict scalar validation, and foreign/forged/stale/wrong-
+actor vectors. Review of evidence commit `ed6dc7b...` then found that Python
+restart restoration recreated a provider execution capability, accepted
+inconsistent effect and deletion lifecycle states, and that C# allowed an
+ownerless effect to mint owner-quiescence authority. Source commit
+`14b9d77...` resolves that fifth round by excluding execution capabilities from
+snapshots, forcing restored owned effects into quiescence, validating complete
+effect/deletion state proofs, and rejecting ownerless C# recovery. Because
+these changes create a new exact tree, none of the prior blocked reviews is
+approval of this candidate.
 
 ## Claim ceiling and remaining gate
 
