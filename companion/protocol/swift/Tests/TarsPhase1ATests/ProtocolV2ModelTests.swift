@@ -17,4 +17,17 @@ final class ProtocolV2ModelTests: XCTestCase {
         let coverage = try V2AtomicCoverage(key: key, sequence: 0, firstSample: 0, lastSampleExclusive: 160)
         XCTAssertThrowsError(try v2TranscriptSegmentId(key: key, atomic: [coverage], textFirstSample: 0, textLastSampleExclusive: 1, providerResultOrdinal: 0, providerName: "fixture", providerResultId: "result-e\u{301}", sttAttemptGeneration: nil))
     }
+
+    func testRejectsDuplicateOverlapAndInvalidBounds() throws {
+        let key = try V2StreamKey(sessionId: "session-v2", streamId: "stream-mic", captureGeneration: 4, source: .microphone)
+        let first = try V2AtomicCoverage(key: key, sequence: 0, firstSample: 0, lastSampleExclusive: 160)
+        let overlap = try V2AtomicCoverage(key: key, sequence: 1, firstSample: 80, lastSampleExclusive: 240)
+        let middle = try V2AtomicCoverage(key: key, sequence: 1, firstSample: 800, lastSampleExclusive: 960)
+        let nonadjacentOverlap = try V2AtomicCoverage(key: key, sequence: 2, firstSample: 80, lastSampleExclusive: 120)
+        XCTAssertThrowsError(try v2TerminalCoverageId(key: key, atomic: [first, first]))
+        XCTAssertThrowsError(try v2TerminalCoverageId(key: key, atomic: [first, overlap]))
+        XCTAssertThrowsError(try v2TerminalCoverageId(key: key, atomic: [first, middle, nonadjacentOverlap]))
+        XCTAssertThrowsError(try v2TranscriptSegmentId(key: key, atomic: [first], textFirstSample: 10, textLastSampleExclusive: 10, providerResultOrdinal: 0, providerName: "fixture", providerResultId: "result", sttAttemptGeneration: nil))
+        XCTAssertThrowsError(try V2StreamKey(sessionId: "session\0bad", streamId: "stream-mic", captureGeneration: 4, source: .microphone))
+    }
 }

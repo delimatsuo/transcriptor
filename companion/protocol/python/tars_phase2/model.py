@@ -293,12 +293,13 @@ def _validate_atomic_list(key: StreamKey, atomic: Sequence[AtomicCoverage]) -> t
     ids = [item.coverage_id for item in ordered]
     if len(set(ids)) != len(ids):
         raise ProtocolV2Violation("duplicate atomic coverage identity")
-    for left, right in zip(ordered, ordered[1:]):
-        if left.sequence == right.sequence or not (
-            left.last_sample_exclusive <= right.first_sample
-            or right.last_sample_exclusive <= left.first_sample
-        ):
-            raise ProtocolV2Violation("overlapping atomic coverage")
+    for index, left in enumerate(ordered):
+        for right in ordered[index + 1 :]:
+            if left.sequence == right.sequence or not (
+                left.last_sample_exclusive <= right.first_sample
+                or right.last_sample_exclusive <= left.first_sample
+            ):
+                raise ProtocolV2Violation("overlapping atomic coverage")
     return ordered
 
 

@@ -115,10 +115,14 @@ private func v2SortedAtomic(_ key: V2StreamKey, _ values: [V2AtomicCoverage]) th
         return (left.sequence, left.firstSample, left.lastSampleExclusive, leftId) <
             (right.sequence, right.firstSample, right.lastSampleExclusive, rightId)
     }
-    for (left, right) in zip(sorted, sorted.dropFirst()) {
-        guard left.sequence != right.sequence,
-              left.lastSampleExclusive <= right.firstSample || right.lastSampleExclusive <= left.firstSample else {
-            throw ProtocolV2ValidationError.invalid("atomic coverage overlaps")
+    for leftIndex in sorted.indices {
+        for rightIndex in sorted.indices where rightIndex > leftIndex {
+            let left = sorted[leftIndex]
+            let right = sorted[rightIndex]
+            guard left.sequence != right.sequence,
+                  left.lastSampleExclusive <= right.firstSample || right.lastSampleExclusive <= left.firstSample else {
+                throw ProtocolV2ValidationError.invalid("atomic coverage overlaps")
+            }
         }
     }
     return sorted
