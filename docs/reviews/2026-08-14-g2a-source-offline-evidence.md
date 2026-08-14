@@ -9,9 +9,9 @@ blocked by the unavailable .NET SDK on this host.
   from publication commit `8398fa8b345e326320e54d2a598977e47ee67fa7`, tree
   `419feca4702be389c8f85129e0face1afe912419`.
 - Source implementation checkpoint: commit
-  `c8497eff2a77cf3de597638674608e40959f01f7`, tree
-  `2581c37ce57fc78e4429b190315d7050df19516e`.
-- Parent source commit: `75bb55dea228b4f01d676a9b10da29dca8968869`.
+  `83cd3292e14551a8ddfee76e1729d5618b042038`, tree
+  `dc80300c942d94950cc2e865c72318c30f74ce80`.
+- Parent source/evidence commit: `827f2f411c7294b35f95e59bdcb3af3924600e02`.
 - Worktree: `/private/tmp/transcriptor-native-g2a-source`.
 - Branch: `codex/native-g2a-source`.
 - Worktree was clean at the source checkpoint. No protected checkout, PR #8,
