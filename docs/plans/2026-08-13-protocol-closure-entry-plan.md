@@ -1,8 +1,9 @@
 # Protocol Closure Entry Plan
 
-**Status:** Proposed documentation-only G2 plan; exact-artifact staff and
-security/privacy review required before publication. No implementation or live
-authority is granted by this document.
+**Status:** Proposed documentation-only G2 plan with a conditional G2-A0
+follow-up. Exact-tree staff and security/privacy review is required before any
+source corridor. No implementation or live authority is granted by this
+document.
 
 **Date:** 2026-08-13
 
@@ -11,8 +12,10 @@ authority is granted by this document.
 - `docs/architecture/0002-companion-stream-protocol.md`
 - `docs/architecture/0003-native-capture-launch-boundary.md`
 - `docs/plans/2026-08-13-native-capture-launch-roadmap.md`
+- `docs/privacy/data-flow-retention-contract.md`
 - `docs/reviews/2026-08-13-pr8-native-launch-salvage-audit.md`
 - `docs/reviews/2026-08-13-n11dc-native-launch-salvage-audit.md`
+- `docs/reviews/2026-08-14-g2a0-panel-review.md`
 
 ## 1. Purpose
 
@@ -326,6 +329,18 @@ payload digest, audio, transcript, note, document text, or raw device name.
   time alone is not quiescence proof. Without proof, replacement and deletion
   remain fail-closed in `effect_quiescence_required`; liveness does not outrank
   at-most-once effect custody.
+- Every provider effect lane has a process-start `runtimeEpoch` and a
+  single-use non-serializable call token. Revocation, deletion, deployment, or
+  lease replacement first publishes an egress fence for the session/fence and
+  runtime epoch, closes or cancels the provider stream, and waits for a
+  provider-close acknowledgement plus owner termination acknowledgement. A
+  replacement runtime cannot reconstruct the token or invoke an old intent.
+  If the egress fence or provider-close acknowledgement cannot be proven, the
+  durable state is `effect_quiescence_required` (a non-success operational
+  state); it cannot transition to `deleted`, `completed`, an ambiguous gap, or
+  a retryable replacement effect merely because a heartbeat or TTL expired.
+  Operational escalation may remain indefinite, but it must not imply a privacy
+  or provider-deletion success claim.
 - Revocation or replacement first closes admission and marks the lease as
   revocation-requested. It cannot increment the fencing generation until every
   range below reaches the required durable terminal state:
@@ -418,14 +433,16 @@ support output, or analytics and is deleted with all other session metadata.
 ### 3.6 Proposed terminal gap and raw-audio discard acknowledgement
 
 This section recommends a protocol-v2 architecture change; it is **not** an
-operative exception to the current forwarding-only release contract. Before
-any G2 source edit, a separate owner-approved documentation-only decision must
-consistently amend and re-review all of these governing artifacts:
+operative exception to the current forwarding-only release contract. The
+owner-authorized G2-A0 amendment is conditional until the semantic follow-up
+and exact-tree review record are complete. Before any G2 source edit, all of
+these governing artifacts must be reviewed together:
 
 - `docs/architecture/0002-companion-stream-protocol.md`;
 - `docs/architecture/0003-native-capture-launch-boundary.md`;
 - `docs/plans/2026-08-13-native-capture-launch-roadmap.md`; and
-- `docs/privacy/data-flow-retention-contract.md`.
+- `docs/privacy/data-flow-retention-contract.md`; and
+- `docs/reviews/2026-08-14-g2a0-panel-review.md`.
 
 The amendment must name durable discard and local emergency/privacy-timeout
 zeroization as terminal privacy releases distinct from successful provider
@@ -444,11 +461,19 @@ release outcome for ranges that must never be retried:
 - the gateway commits the non-overlapping durable `capture.gap` outcome; and
 - `audio.discard.durable` acknowledges that exact gap ID and ranges.
 
-Only the durable discard acknowledgement authorizes ordinary companion
-zeroization of an unforwarded range. It does not advance the forwarded
-watermark, cannot cover a range already forwarded or terminalized, and is
-idempotent on exact event/range identity. Admission, a local timeout, an error
-response, or an uncommitted gap never authorizes ordinary release.
+When the gateway is reachable, only the durable discard acknowledgement
+authorizes ordinary companion zeroization of an unforwarded range. It does not
+advance the forwarded watermark, cannot cover a range already forwarded or
+terminalized, and is idempotent on exact event/range identity. A reachable
+`effect_pending` response is not a discard acknowledgement: the companion may
+zeroize for the user's local privacy action, but the original owner/fence must
+later produce the forwarded or ambiguous-effect outcome. When the gateway is
+unreachable, `local_privacy_discard` and deletion/privacy-timeout zeroization
+are the explicit pre-ack exception: the companion records the exact or honest
+unknown-end boundary and zeroizes immediately, and recovery must not prepare a
+new provider effect from the released range. Admission, a local timeout, an
+error response, or an uncommitted gap never authorizes ordinary durable
+discard release.
 
 An explicit local emergency kill, forced process termination, deletion command,
 or the 30-second privacy deadline may zero raw bytes before server
@@ -463,21 +488,25 @@ remain proposed until the prerequisite governing amendment above is approved.
 
 Every admitted audio chunk has one atomic `coverageId` derived from the exact
 v2 session, stream, capture generation, source, sequence, and half-open sample
-range. A multi-chunk terminal outcome has `terminalCoverageId` equal to
-`covr_` plus lowercase SHA-256 over these NUL-separated UTF-8 fields:
+range. A terminal outcome has `terminalCoverageId` equal to `covr_` plus
+lowercase SHA-256 over a canonical NUL-separated UTF-8 encoding of:
 
 1. literal `tars-terminal-coverage-v2`;
 2. session ID;
 3. stream ID;
 4. capture generation;
 5. source;
-6. first sequence;
-7. last sequence inclusive;
-8. first sample; and
-9. last sample exclusive.
+6. the unsigned count of the complete ordered atomic `coverageId` list; and
+7. each `coverageId` in canonical order, length-prefixed so concatenation is
+   unambiguous.
 
-Integers use base-10 without leading zeroes. IDs may not contain NUL. Terminal
-**audio coverage** and transcript-segment identity are separate:
+The first/last sequence and sample values are derived display summaries only
+and are not identity inputs. This full-list digest is required because two
+provider finals can share one chunk and sparse success can contain a later
+forwarded range after an earlier gap. A terminal claim with a different ordered
+atomic list is a different claim even when endpoint ranges match. Integers use
+base-10 without leading zeroes. IDs may not contain NUL. Terminal **audio
+coverage** and transcript-segment identity are separate:
 
 - `transcript.segment.durable` stores one immutable final-text segment with a
   `segmentId`, ordered provider-result ordinal, exact provider provenance,
@@ -495,8 +524,8 @@ Integers use base-10 without leading zeroes. IDs may not contain NUL. Terminal
 - After bounded attempt drain, `transcript.coverage.durable` claims one or more
   complete atomic chunks exactly once and references the ordered set of all
   durable segment IDs intersecting them. Its `terminalCoverageId` uses the
-  nine-field range derivation above. If no valid final segment intersects an
-  atomic chunk, that chunk receives a durable gap instead.
+  complete ordered atomic-list derivation above. If no valid final segment
+  intersects an atomic chunk, that chunk receives a durable gap instead.
 - A single transaction or equivalent single-writer compare-and-set claims
   every atomic `coverageId` for either `transcript.coverage.durable` or a gap.
   Any previously terminalized atomic chunk conflicts, even when a different
@@ -521,6 +550,25 @@ unknown range lacking a final uses `no_durable_transcript`; an unknowable tail
 uses the existing unknown-end form. Trailing silence is never silently omitted.
 No terminal audio-coverage event or gap may claim only a fraction of an atomic
 chunk.
+
+### 3.7.1 Frozen versus unresolved disposition
+
+The following v2 semantics are frozen for any later source corridor: canonical
+framing and numeric validation, source/session/tenant/process quotas, the
+sample-rate-derived two-second custody bound and 30-second absolute expiry,
+`audio.forwarded` as the only provider-success watermark, per-range discard CAS
+ordering, full-list terminal coverage identity, positive provider-effect
+quiescence, deletion generations, and late-callback fencing. A source
+implementation may choose data structures, transaction APIs, or provider
+adapter details only when those choices cannot alter these invariants.
+
+Measured allocator overhead, the storage product's performance profile, the
+provider adapter's concrete cancellation API, and the exact STT rotation
+interval remain implementation-defined and require G2/G3 evidence. Any change
+to a frozen invariant, quota, custody deadline, effect-fence rule, or terminal
+identity requires a new ADR and renewed architecture/security review; writing a
+value in a source plan does not make it hosted-capacity, provider-retention, or
+launch evidence.
 
 ### 3.8 Compatibility and upgrade rules
 
@@ -657,9 +705,11 @@ exact allowed paths are reviewed.
 - Preserve admission as non-release and forwarding as the only successful
   provider-forwarding release watermark. Define durable discard and local
   emergency/privacy-timeout zeroization only as terminal privacy releases.
-- Obtain renewed architecture and security/privacy approval of that exact
-  documentation tree. If it is not approved, stop before G2-A rather than
-  implementing a contradictory protocol.
+- Record the conditional panel review and then obtain renewed architecture and
+  security/privacy approval of the corrected exact documentation tree. If it is
+  not approved, stop before G2-A rather than implementing a contradictory
+  protocol. The G3C product-state/privacy UX reconciliation remains a separate
+  docs-only artifact and UI gate.
 
 ### G2-A: v2 schema and vectors
 
@@ -721,6 +771,12 @@ exact allowed paths are reviewed.
 - Obtain independent staff and security/privacy approval of the exact tree.
 - Freeze the exact commit, tree, manifests, commands, test counts, and claim
   ceiling before G3A or G3B branches begin.
+
+G2 source/offline evidence cannot claim physical erasure from allocator,
+parser/HMAC/TLS, swap, core/crash, diagnostic, backup, or provider buffers; it
+cannot claim provider-side deletion or hosted authentication, distributed
+ingress, parser-resource, or tenant-spend safety. G3A/G4 must provide those
+exact-environment controls and readback evidence before hosted or pilot audio.
 
 ## 5. Proposed allowed paths for G2
 

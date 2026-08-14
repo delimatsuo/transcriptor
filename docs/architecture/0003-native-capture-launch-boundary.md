@@ -70,7 +70,11 @@ erase useful implementation evidence from the Week 1 through Week 4 branches.
 - microphone and system-audio permissions;
 - independent microphone and system-audio capture;
 - device and route health, timestamps, framing, and per-source sequence;
-- bounded in-memory raw-audio custody;
+- bounded in-memory raw-audio custody with no T.A.R.S.-controlled durable raw-
+  audio artifact. This does not claim physical erasure from allocator copies,
+  TLS/parser buffers, OS swap, crash/core tooling, or provider/network buffers;
+  hosted and pilot claims remain blocked until those surfaces receive direct
+  G3A/G4 evidence;
 - provider-forwarded raw-audio release only after `audio.forwarded`, with a
   discard claim that wins before provider preparation, the named local
   `local_privacy_discard`, `audio.discard.durable`, and emergency/privacy-timeout
@@ -125,7 +129,7 @@ three authoritative axes rather than one actor-owned top-level lifecycle:
    `checking_permissions_and_devices`, `ready_both_sources`, `starting`,
    `recording`, `degraded`, `reconnecting`, `paused`, `stopping`, or `stopped`.
 2. Gateway `transportState`: `disconnected`, `admitting`, `forwarding`,
-   `draining`, `fenced`, or `closed`.
+   `draining`, `fenced`, `effect_quiescence_required`, or `closed`.
 3. Gateway `coverageState`: `not_started`, `open`, `finalizing`, `completed`,
    `completed_with_gaps`, `delete_quiescing`, `deleting`, `deleted`, or
    `deletion_failed`.
@@ -149,13 +153,19 @@ The v2 precedence table is:
    and never the deleted treatment.
 3. `deleting` or `delete_quiescing` whenever deletion has begun; show the
    deletion treatment even if capture or transport reports a stale older state.
-4. `finalizing` when physical capture is `stopped` and coverage is `open` or
+   If effect quiescence is unproven, expose `effect_quiescence_required` as a
+   non-success substate and never show `deleted`.
+4. `effect_quiescence_required` whenever the gateway cannot prove provider
+   effect egress fencing and stream/owner quiescence outside deletion; show a
+   non-success fenced/degraded treatment and never `completed`, `deleted`, or a
+   safe replacement retry.
+5. `finalizing` when physical capture is `stopped` and coverage is `open` or
    `finalizing`; `completed_with_gaps` when coverage is terminal with a gap.
-5. `completed` only when physical capture is `stopped`, transport is `closed`,
+6. `completed` only when physical capture is `stopped`, transport is `closed`,
    coverage is `completed`, and every captured range has a terminal outcome.
-6. `degraded` when either source health is failed/unknown or coverage has a
+7. `degraded` when either source health is failed/unknown or coverage has a
    known/unknown gap while capture remains active; identify the affected source.
-7. `reconnecting`, `paused`, `stopping`, `recording`, or setup labels follow
+8. `reconnecting`, `paused`, `stopping`, `recording`, or setup labels follow
    the companion physical state only when no higher-precedence state applies.
 
 The existing product state contract's “Discard pending audio” action is
@@ -167,20 +177,31 @@ zeroization. The product contract must be reconciled to this v2 interpretation
 before any UI implementation; this amendment does not authorize that source or
 UI work.
 
+G3C must deliver that reconciliation as a separately versioned docs-only
+artifact with its own exact commit/tree, Product UI/UX and accessibility review,
+and a fault/copy matrix. It must map every legacy state and label to the v2
+precedence table, distinguish local clearing from durable discard and pending
+provider effects, define `delete_quiescing`/`deletion_failed` and browser-close
+behavior, and bind English/pt-BR accessible copy before any UI implementation.
+
 Start fails closed until authentication, current disclosure acknowledgement,
 permissions, and live health checks for both required sources pass. Recording
 shows persistent per-channel health. Source loss never silently degrades into
 a successful state. Pause and stop remain pending until the companion reports
 its authoritative boundary. Deletion atomically increments the deletion
-generation and fences admission/effects first, then sends companion stop plus
-immediate local privacy zeroization. Gateway finalization
+generation, publishes an egress barrier, and fences admission/effects first,
+then closes or cancels provider streams, sends companion stop, and performs
+immediate local privacy zeroization. A runtime epoch and non-serializable
+effect token prevent a replacement process from resuming an old call. Gateway finalization
 ends only when every known
 captured range has one non-overlapping durable transcript or gap outcome; an
 unknowable end boundary is reported honestly. `session.delete.requested` first
 enters `delete_quiescing`, fences new admission/reconnect/provider effects and
 content writes, and waits for positive quiescence of every worker, connection,
-prepared or invoking provider effect, and late-callback lane. Lease expiry or
-heartbeat loss alone is not quiescence. Late callbacks fail before content
+prepared or invoking provider effect, and late-callback lane. Failure to prove
+the egress fence or provider-close acknowledgement remains
+`effect_quiescence_required`/`delete_quiescing` and is not success. Lease expiry
+or heartbeat loss alone is not quiescence. Late callbacks fail before content
 persistence. The first generation-fenced inventory covers session records,
 enrollment/lease records, retry commitments, forwarding intents/journals,
 transcripts, coverage/gaps, blobs, caches, outboxes, logs/crash/support

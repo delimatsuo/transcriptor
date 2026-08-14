@@ -161,6 +161,14 @@ audio. Protocol-v2 also defines terminal privacy releases for ranges that will
 not be retried; those releases create a durable gap and never advance this
 watermark.
 
+The watermark is maintained per contiguous interval, not as a scalar that can
+skip a gap. A later range proven forwarded may be released as an explicit
+interval only after the earlier range has a durable gap or forwarded outcome;
+the gap itself remains visible and no derived high-water value crosses it.
+Implementations must persist the ordered disjoint interval set so sparse
+forwarding cannot strand later released audio or imply that the missing range
+was forwarded.
+
 Provider forwarding does not promise that final transcript text will exist. A provider or gateway failure after forwarding can still create a declared transcript gap.
 
 ### 4.3 Durable transcript segment: `transcript.segment.durable`
@@ -205,7 +213,9 @@ For a terminal privacy release, it also includes the release kind, exact `gapId`
 when boundaries are known, boundary status when the end is unknown, and the
 deletion generation or privacy-deadline reason when applicable.
 
-An acknowledgement must never advance past a gap. A sparse success is represented as explicit ranges, not as a misleading high-water mark.
+An acknowledgement must never advance past a gap. A sparse success is
+represented as explicit disjoint ranges, not as a misleading high-water mark;
+the range list is the release authority for later forwarded intervals.
 
 ## 5. Retry, reconnect, and idempotency
 
@@ -301,7 +311,18 @@ still journal `audio.forwarded` or an ambiguous-effect gap. Later callbacks can
 write only content-free terminal metadata under the capture/fence generation,
 or under the deletion generation when deletion triggered the release.
 
-Terminal transcript and gap coverage for the same source/generation must not overlap. A transaction or equivalent single-writer projection enforces terminal uniqueness by coverage identity. Crash tests cover failure before and after simulated/provider write, forwarding-journal commit, transcript commit, reconnect negotiation, and STT-attempt rotation.
+Terminal transcript and gap coverage for the same source/generation must not
+overlap. A transaction or equivalent single-writer projection enforces
+terminal uniqueness by coverage identity. A terminal coverage identity is
+`covr_` plus lowercase SHA-256 over the canonical NUL-separated fields
+`tars-terminal-coverage-v2`, session, stream, capture generation, source, the
+unsigned count of the complete ordered atomic `coverageId` list, and each
+length-prefixed `coverageId` in order. First/last sequence/sample values are
+display summaries only. This full-list identity distinguishes two finals in
+one chunk and sparse later success after an earlier gap even when endpoint
+ranges match. Crash tests cover failure before and after simulated/provider
+write, forwarding-journal commit, transcript commit, reconnect negotiation,
+and STT-attempt rotation.
 
 Atomic audio chunks are custody and terminal-claim units, not transcript-result
 units. A provider may emit multiple ordered finals inside one chunk or one final
@@ -409,28 +430,38 @@ abort on credential lookup, implicit environment/project selection, network
 access, non-fixture input, or persistent audio. Hosted authentication and
 provider tests belong to separately authorized Phase 1B.
 
-## 10. Unresolved implementation choices
+## 10. Frozen versus unresolved implementation choices
 
-- Binary framing and schema language implementation details; the G2-A0 target is
-  one length-prefixed binary frame with JSON Schema 2020-12 metadata.
-- Provider/runtime implementation of the fixed v2 target bounds: 20–250 ms
-  chunk duration, 64,000-byte payload, two-second rate-derived custody, and
-  30-second absolute expiry.
-- STT stream-rotation interval.
-- Fencing and forwarding-journal storage implementation.
-- The measured bounded-memory duration after the spike.
+The following v2 semantics are frozen for any later source corridor: canonical
+framing and numeric validation, source/session/tenant/process quotas, the
+sample-rate-derived two-second custody bound and 30-second absolute expiry,
+`audio.forwarded` as the only provider-success watermark, per-range discard CAS
+ordering, disjoint interval release after gaps, full-list terminal coverage
+identity, positive provider-effect quiescence, deletion generations, and
+late-callback fencing. A source implementation may choose data structures,
+transaction APIs, or provider adapter details only when those choices cannot
+alter these invariants.
 
-These choices may be resolved during the spike if they preserve the semantics above.
-The G2-A0 amendment fixes the protocol-v2 custody semantics: `audio.forwarded`
-is the only successful provider-forwarding watermark. A discard CAS that wins
-before `prepared` creates the durable discard gap; named
+The following remain implementation-defined and require G2/G3 evidence:
+
+- the concrete parser/data-structure implementation of the fixed framing and
+  JSON Schema 2020-12 profile;
+- measured allocator/container overhead within the fixed resident ceilings;
+- the storage product's transaction/performance profile;
+- the provider adapter's concrete stream-close/cancellation API and egress-fence
+  integration; and
+- the exact STT rotation interval, provided the one-writable/one-draining and
+  no-overlap invariants remain intact.
+
+Writing a value in a source plan does not make it hosted-capacity,
+provider-retention, or launch evidence. Any change to a frozen invariant,
+quota, custody deadline, effect-fence rule, or terminal identity requires a new
+ADR and renewed architecture/security review. The G2-A0 amendment fixes the
+discard rule: a claim winning before `prepared` creates the durable discard gap;
 `local_privacy_discard`, `audio.discard.durable`, and local
 emergency/privacy-timeout zeroization are terminal privacy releases that never
-attribute an already-pending provider effect to the discard acknowledgement. If
-an effect is already pending, its original owner produces the forwarded or
-ambiguous-effect outcome. Changing those semantics,
-the bounded ingress budgets, or the deletion quiescence barrier requires a new
-architecture decision and security review.
+attribute an already-pending provider effect to discard. A pending effect stays
+with its original owner as forwarded or ambiguous.
 
 ## 11. G2-A0 amendment boundary
 

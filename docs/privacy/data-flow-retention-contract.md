@@ -17,7 +17,7 @@ This document defines what T.A.R.S. collects, where each data class travels, wha
 
 The primary privacy promise is:
 
-> T.A.R.S. captures audio only while the user has an active transcription session. Raw audio is processed transiently and is not retained by T.A.R.S. by default. A range is released from raw custody only as provider-forwarded under `audio.forwarded`, as the named local privacy release `local_privacy_discard` (immediate local zeroization followed by an exact/unknown gap when no provider effect is pending, or an original-owner forwarded/ambiguous outcome when one is already pending), as a durably discarded terminal gap under `audio.discard.durable`, or under an emergency/privacy-timeout zeroization rule. `local_privacy_discard`, `audio.discard.durable`, and emergency/privacy-timeout zeroization never claim provider-forwarding success. The transcript, recruiter notes, source documents, and approved assessment remain according to the user's or organization's retention policy.
+> T.A.R.S. captures audio only while the user has an active transcription session. Raw audio is processed transiently and is not retained by T.A.R.S. as a durable application artifact by default. This is not a claim that allocator copies, TLS/parser buffers, OS swap, crash/core tooling, or provider/network buffers are physically erased; those surfaces require direct hosted/pilot evidence before any such claim. A range is released from raw custody only as provider-forwarded under `audio.forwarded`, as the named local privacy release `local_privacy_discard` (immediate local zeroization followed by an exact/unknown gap when no provider effect is pending, or an original-owner forwarded/ambiguous outcome when one is already pending), as a durably discarded terminal gap under `audio.discard.durable`, or under an emergency/privacy-timeout zeroization rule. `local_privacy_discard`, `audio.discard.durable`, and emergency/privacy-timeout zeroization never claim provider-forwarding success. The transcript, recruiter notes, source documents, and approved assessment remain according to the user's or organization's retention policy.
 
 This promise is not publishable until the verification section passes in the intended production environment.
 
@@ -69,7 +69,9 @@ Restricted content must not appear in ordinary application logs, analytics event
 1. The companion captures microphone and system audio as independent sources.
 2. Frames receive capture timestamps and monotonic per-source sequence numbers.
 3. Frames enter a bounded in-memory queue.
-4. No raw-audio file is created by the default path.
+4. No raw-audio file is created by the default path. This bounds T.A.R.S.-
+   controlled durable artifacts; it does not by itself prove physical erasure
+   from transient allocator, transport, OS, crash, or provider surfaces.
 
 Protocol-v2 custody is at most two seconds per source, independently for the
 companion and gateway: `retainedFrames <= min(96,000, 2 * sampleRate)` and
@@ -94,14 +96,15 @@ while the process is frozen.
    bounded ingress, bitrate, custody, and provider-attempt quotas.
 4. A gateway-admission acknowledgement identifies the highest contiguous authenticated, authorized range copied into a bounded gateway queue. It does not permit client audio release.
 5. A provider-forwarding acknowledgement identifies the highest contiguous range written to the active STT stream with content-free forwarding metadata durably journaled.
-6. The companion releases raw audio from memory through the highest contiguous
-   provider-forwarding watermark for that source, or after an explicit local
+6. The companion releases raw audio from memory through the ordered disjoint
+   `audio.forwarded` intervals for that source, or after an explicit local
    discard/zeroization action. A discard CAS that wins before provider
    preparation produces `audio.discard.durable`; an `effect_pending` response
-   leaves the original owner to produce a forwarded or ambiguous-effect outcome.
-   A local emergency kill, deletion command, or privacy deadline may zeroize
-   before acknowledgement; recovery records the exact or honest unknown-end gap
-   when no effect is pending and never attributes a pending effect to discard.
+   leaves the original owner to produce a forwarded or ambiguous-effect outcome
+   and is never shown as “not sent.” A local emergency kill, deletion command,
+   or privacy deadline may zeroize before acknowledgement; recovery records the
+   exact or honest unknown-end gap when no effect is pending and never attributes
+   a pending effect to discard.
 7. Separate `transcript.segment.durable` and `transcript.coverage.durable`
    acknowledgements identify immutable final segments and the complete atomic
    coverage ranges claimed by them.
@@ -217,7 +220,7 @@ Values marked `TBD` require product, customer, and legal approval before externa
 
 | Artifact | Device | T.A.R.S. cloud | Subprocessor | Initial retention rule |
 | --- | --- | --- | --- | --- |
-| Raw audio | Memory only, two-second rate-derived bound/source; 30-second absolute expiry | Transient request/stream memory only; durable content-free gap metadata only after terminal release | Governed by verified STT configuration | Client releases after contiguous `audio.forwarded`, named `local_privacy_discard`, `audio.discard.durable`, or emergency/privacy-timeout zeroization; only the first is forwarding success |
+| Raw audio | T.A.R.S.-controlled memory only, two-second rate-derived bound/source; 30-second absolute expiry | No T.A.R.S.-controlled durable raw-audio artifact; transient request/stream memory and content-free gap metadata only after terminal release | Governed by verified STT configuration and provider-retention evidence | Client releases after ordered `audio.forwarded` intervals, named `local_privacy_discard`, `audio.discard.durable`, or emergency/privacy-timeout zeroization; only the first is forwarding success; no physical-erasure claim without direct evidence |
 | Interim transcript | UI memory | WebSocket/event memory | STT stream lifetime | Do not persist as canonical transcript |
 | Final transcript | Optional encrypted text outbox until acknowledged | Durable | Included in selected Vertex prompts | `TBD`; configurable user/org policy |
 | Recruiter notes | Optional encrypted text outbox until acknowledged | Durable and versioned | Included in selected Vertex prompts | `TBD`; normally follows session policy |
@@ -275,6 +278,13 @@ Forbidden log fields:
 - Enforce separate pre-authentication, control, audio-event, payload-byte,
   metadata-byte, resident-custody, provider-attempt, and tenant/process quotas;
   fail closed when shared quota state is unavailable.
+- Add bounded distributed ingress/connection ceilings, parser CPU/depth limits,
+  TLS/token validation, enrollment revocation and rotation, WebSocket origin and
+  replay protections, and tenant/user spend ceilings before hosted ingress.
+- Require a provider egress fence, runtime-epoch effect ownership, stream
+  close/cancel acknowledgement, and an explicit non-success
+  `effect_quiescence_required` state before deletion or replacement can claim
+  quiescence.
 - Pass unauthenticated, revoked, stale-lease, and cross-tenant rejection tests.
 - Use synthetic fixtures until these controls and no-persistent-audio tests have direct evidence.
 
@@ -304,7 +314,7 @@ The phased controls are stricter than the final hosted boundary:
 The privacy promise requires direct evidence, not code inspection alone.
 
 1. Filesystem snapshots before, during, and after success, stop, forced termination, logout, and deletion, including application storage and OS temporary/cache locations.
-2. Process-memory and queue-limit instrumentation proving bounds without logging content.
+2. Process-memory and queue-limit instrumentation proving bounds without logging content, plus adversarial scans for allocator/parser/HMAC/TLS copies, swap, core/crash, diagnostic, and temporary artifacts.
 3. Network inspection matching documented destinations and payload classes.
 4. Queries of Firestore, GCS, indexes, exports, and logs after deletion.
 5. Google Cloud configuration evidence for STT data logging and Vertex AI retention/cache behavior.
@@ -318,6 +328,11 @@ The privacy promise requires direct evidence, not code inspection alone.
     `audio.discard.requested` / `audio.discard.durable`, local
     privacy-timeout zeroization, deletion
     quiescence, provider-effect fencing, and late-callback rejection.
+13. Exact-environment evidence for TLS/auth/enrollment/revocation/rotation,
+    distributed quotas, parser resource limits, tenant spend ceilings, provider
+    stream cancellation/egress fencing, and retention/deletion settings across
+    logs, caches, backups, and provider surfaces before any hosted or pilot
+    claim.
 
 ## 10. Open policy decisions
 

@@ -168,10 +168,22 @@ The documents must also agree on companion physical state versus gateway
 transport/coverage state, `delete_quiescing`/`deleting` sequencing, positive
 provider-effect quiescence, and late-callback fencing.
 
-**Exit:** One exact commit/tree receives independent architecture and
-security/privacy approval. A passing G2-A0 makes the later G2 source corridor
-eligible for a separate direct authorization; it does not authorize source
-implementation.
+The corrected amendment must additionally bind ordered disjoint forwarding
+intervals (a later forwarded range cannot skip an unresolved earlier gap), a
+full ordered atomic-coverage-list terminal identity, and an explicit
+`effect_quiescence_required` non-success state with a runtime-epoch/egress-fence
+recovery rule. Protocol 0002 must classify frozen v2 invariants separately from
+implementation-defined choices. The privacy contract is a governing artifact,
+and its promise is limited to absence of T.A.R.S.-controlled durable raw-audio
+artifacts; allocator, OS, crash, transport, and provider retention surfaces
+remain later evidence gates.
+
+**Exit:** One exact commit/tree plus the review record receives independent
+architecture and security/privacy approval with no unresolved P0/P1. A passing
+G2-A0 makes the later G2 source corridor eligible for a separate direct
+authorization; it does not authorize source implementation. The G3C
+product-state/privacy UX reconciliation remains a separately versioned,
+reviewed docs-only artifact and UI gate.
 
 ### G2-A: v2 schema and source/offline implementation
 
@@ -195,9 +207,12 @@ artifact scans. Protocol closure is source/offline evidence only.
 - authorization on REST, WebSocket, audio, transcript, notes, reports,
   exports, storage, and deletion;
 - one fenced capture lease and stale-client rejection;
-- bounded transient queues with no raw-audio persistence beyond the approved
-  forwarding or terminal privacy-release semantics;
-- size, rate, duration, concurrency, and spend controls;
+- bounded transient queues with no T.A.R.S.-controlled durable raw-audio
+  artifact beyond the approved forwarding or terminal privacy-release
+  semantics; no physical-erasure claim is made until memory, crash, transport,
+  swap, and provider-retention evidence passes;
+- size, rate, duration, concurrency, distributed ingress, authentication, and
+  spend controls;
 - Google STT streaming and rotation;
 - content-free forwarding journal and exact watermarks;
 - idempotent durable transcripts and gaps;
@@ -219,7 +234,11 @@ artifact scans. Protocol closure is source/offline evidence only.
   reconnect boundaries;
 - scan storage, logs, telemetry, crash artifacts, and backups for fixture
   payloads; and
-- exercise the kill switch and rollback without redeployment.
+- exercise the kill switch and rollback without redeployment;
+- prove provider stream cancellation, deployment egress fencing, runtime-epoch
+  ownership, and non-success `effect_quiescence_required` behavior; and
+- scan allocator/parser/HMAC/TLS, swap/core/crash, diagnostics, caches, logs,
+  backups, and provider-retention surfaces for raw-audio artifacts.
 
 **Exit:** Source/offline gateway evidence. Hosted activation remains G4.
 
@@ -278,13 +297,17 @@ product contract or authorize UI/source work.
   confirm them.
 - Make degraded ranges and gaps visible and non-editable.
 - Explain send-versus-discard consequences, show terminal privacy gaps, and
-  block accidental close during unresolved finalization or deletion
-  quiescence.
+  show truthful browser-close warnings and companion stop/quit guidance during
+  unresolved finalization or deletion quiescence; do not treat a browser-close
+  block as a deletion or capture guarantee.
 - Preserve the report distinction: AI draft remains internal; only an
   explicitly approved client projection may be exported.
 
-**Exit:** Reviewed state contract and synthetic UI tests. This does not prove
-device or hosted behavior.
+**Exit:** A separately versioned docs-only state/privacy UX reconciliation has
+an exact commit/tree, Product UI/UX and accessibility review, and synthetic
+fault/copy evidence covering English and pt-BR, keyboard/screen reader,
+multi-tab/reopen, local discard versus `effect_pending`, deletion retry, and
+browser/companion disappearance. This does not prove device or hosted behavior.
 
 ### G4: Hosted synthetic gateway qualification
 
