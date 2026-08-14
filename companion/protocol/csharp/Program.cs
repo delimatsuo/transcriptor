@@ -73,8 +73,6 @@ internal static class Program
     {
         if (value.Contains('\0') || value != value.Normalize(NormalizationForm.FormC))
             throw new InvalidOperationException($"{name} must be NUL-free NFC");
-        if (Encoding.UTF8.GetByteCount(value) > uint.MaxValue)
-            throw new InvalidOperationException($"{name} exceeds uint32 byte length");
     }
 
     private static void ValidateIdentifier(string name, string value)

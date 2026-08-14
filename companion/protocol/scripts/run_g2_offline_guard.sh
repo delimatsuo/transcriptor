@@ -54,7 +54,7 @@ run_csharp() {
   restore_output=$(
     /usr/bin/env -i HOME="$scratch/home" LC_ALL=C PATH=/usr/bin:/bin:/usr/sbin:/sbin \
       TMPDIR="$scratch/tmp" DOTNET_CLI_HOME="$scratch/home" DOTNET_CLI_TELEMETRY_OPTOUT=1 \
-      DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1 NUGET_PACKAGES="$scratch/nuget" \
+      DOTNET_NOLOGO=1 DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1 NUGET_PACKAGES="$scratch/nuget" \
       /usr/bin/sandbox-exec -f "$SANDBOX_PROFILE" "$dotnet_path" restore \
       "$PROTOCOL_ROOT/csharp/ProtocolV2Vectors.csproj" --configfile "$nuget_config" \
       --property:BaseIntermediateOutputPath="$scratch/obj/" \
@@ -68,15 +68,36 @@ run_csharp() {
     printf '%s\n' "$restore_output" >&2
     return "$restore_status"
   fi
-  output=$(
+  build_output=$(
     /usr/bin/env -i HOME="$scratch/home" LC_ALL=C PATH=/usr/bin:/bin:/usr/sbin:/sbin \
       TMPDIR="$scratch/tmp" DOTNET_CLI_HOME="$scratch/home" DOTNET_CLI_TELEMETRY_OPTOUT=1 \
-      DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1 \
-      NUGET_PACKAGES="$scratch/nuget" /usr/bin/sandbox-exec -f "$SANDBOX_PROFILE" "$dotnet_path" run \
-      --project "$PROTOCOL_ROOT/csharp/ProtocolV2Vectors.csproj" --no-restore \
+      DOTNET_NOLOGO=1 DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1 NUGET_PACKAGES="$scratch/nuget" \
+      /usr/bin/sandbox-exec -f "$SANDBOX_PROFILE" "$dotnet_path" build \
+      "$PROTOCOL_ROOT/csharp/ProtocolV2Vectors.csproj" --no-restore --configuration Release \
+      --nologo --verbosity quiet \
       --property:BaseIntermediateOutputPath="$scratch/obj/" \
       --property:MSBuildProjectExtensionsPath="$scratch/obj/" \
       --property:BaseOutputPath="$scratch/bin/" 2>&1
+  )
+  build_status=$?
+  if [ "$build_status" -ne 0 ]; then
+    set -e
+    /bin/rm -rf "$scratch"
+    printf '%s\n' "$build_output" >&2
+    return "$build_status"
+  fi
+  csharp_dll="$scratch/bin/Release/net8.0/ProtocolV2Vectors.dll"
+  if [ ! -f "$csharp_dll" ]; then
+    set -e
+    /bin/rm -rf "$scratch"
+    echo 'C# build did not produce the expected scratch DLL' >&2
+    return 1
+  fi
+  output=$(
+    /usr/bin/env -i HOME="$scratch/home" LC_ALL=C PATH=/usr/bin:/bin:/usr/sbin:/sbin \
+      TMPDIR="$scratch/tmp" DOTNET_CLI_HOME="$scratch/home" DOTNET_CLI_TELEMETRY_OPTOUT=1 \
+      DOTNET_NOLOGO=1 DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1 NUGET_PACKAGES="$scratch/nuget" \
+      /usr/bin/sandbox-exec -f "$SANDBOX_PROFILE" "$dotnet_path" "$csharp_dll" 2>&1
   )
   result=$?
   set -e
