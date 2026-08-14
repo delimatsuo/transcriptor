@@ -1,9 +1,11 @@
 # Protocol Closure Entry Plan
 
 **Status:** Proposed documentation-only G2 plan with a conditional G2-A0
-follow-up. Exact-tree staff and security/privacy review is required before any
-source corridor. No implementation or live authority is granted by this
-document.
+follow-up. This is a single-engineer repository: the owner performs the
+architecture and security/privacy review, records an exact-tree attestation,
+and relies on deterministic offline guards; no team reviewer or GitHub approval
+is assumed before a source corridor. No implementation or live authority is
+granted by this document.
 
 **Date:** 2026-08-13
 
@@ -455,10 +457,12 @@ these governing artifacts must be reviewed together:
 The amendment must name durable discard and local emergency/privacy-timeout
 zeroization as terminal privacy releases distinct from successful provider
 forwarding, and must reconcile custody, retry, UI, reconnect, deletion,
-retention, and claim semantics. It requires renewed architecture and
-security/privacy approval. If the owner rejects or has not approved that exact
-amendment, `audio.forwarded` remains the exclusive release watermark and G2
-implementation stays blocked rather than silently omitting this choice.
+retention, and claim semantics. The owner records the architecture and
+security/privacy self-review for the exact amendment; no external team or
+GitHub approval is required in this single-engineer repository. If the owner
+rejects or has not approved that exact amendment, `audio.forwarded` remains
+the exclusive release watermark and G2 implementation stays blocked rather
+than silently omitting this choice.
 
 `audio.forwarded` remains the only success watermark that releases audio as
 provider-forwarded. Protocol v2 additionally needs one explicit terminal
@@ -717,11 +721,11 @@ exact allowed paths are reviewed.
 - Preserve admission as non-release and forwarding as the only successful
   provider-forwarding release watermark. Define durable discard and local
   emergency/privacy-timeout zeroization only as terminal privacy releases.
-- Record the conditional panel review and then obtain renewed architecture and
-  security/privacy approval of the corrected exact documentation tree. If it is
-  not approved, stop before G2-A rather than implementing a contradictory
-  protocol. The G3C product-state/privacy UX reconciliation remains a separate
-  docs-only artifact and UI gate.
+- Record the owner's architecture and security/privacy self-review of the
+  corrected exact documentation tree. If the owner does not approve it, stop
+  before G2-A rather than implementing a contradictory protocol. The G3C
+  product-state/privacy UX reconciliation remains a separate docs-only
+  artifact and UI gate.
 
 ### G2-A: v2 schema and vectors
 
@@ -784,14 +788,17 @@ exact allowed paths are reviewed.
 - Prove byte-for-byte frame equivalence and the same validation/rejection
   matrix. It is not a WASAPI implementation.
 
-### G2-E: independent review and freeze
+### G2-E: owner review and freeze
 
 - Run Python, Swift, and C# vectors twice from clean scratch with networking
   denied.
 - Run 60-, 90-, and 120-minute simultaneous two-source generated-byte cases.
 - Scan the repository and scratch artifacts for payload bytes, credentials,
   project/endpoint selection, logs, and undeclared files.
-- Obtain independent staff and security/privacy approval of the exact tree.
+- The sole owner reviews the exact tree for architecture, security/privacy,
+  scope, and claim ceiling, and records an exact-tree attestation. Automated
+  offline guards and artifact scans are the reproducible verification record;
+  no team reviewer or GitHub approval is required.
 - Freeze the exact commit, tree, manifests, commands, test counts, and claim
   ceiling before G3A or G3B branches begin.
 
@@ -812,8 +819,8 @@ limited to:
 - `docs/privacy/data-flow-retention-contract.md`; and
 - the plan/review record that binds the amendment decision.
 
-That amendment receives its own exact commit/tree and renewed architecture and
-security/privacy review before any source authority may be requested. The later
+That amendment receives its own exact commit/tree and owner architecture and
+security/privacy self-review before any source authority may be requested. The later
 G2 source implementation plan should permit only:
 
 - this G2 implementation plan and its final source-only evidence record;
@@ -835,7 +842,7 @@ or protected handoff path belongs in the G2 write set.
 G2 exits only when one exact source tree proves:
 
 - the prerequisite G2-A0 governing amendment was owner-approved and its exact
-  tree received renewed architecture and security/privacy approval;
+  tree received the owner's architecture and security/privacy self-review;
 - canonical v2 frames, RFC 8785 profile, checked numeric domains, HMAC inputs,
   and schema validation agree byte-for-byte across Python, Swift, and C#;
 - unauthenticated, expired, revoked, replayed, wrong-audience, wrong-tenant,
@@ -883,8 +890,8 @@ G2 exits only when one exact source tree proves:
   derived web state;
 - no payload, transcript, credential, project selection, endpoint, network
   activity, or unapproved artifact escapes the offline boundary; and
-- independent staff and security/privacy reviewers approve the exact tree
-  with no unresolved P0-P3 finding.
+- the sole owner attests to the exact tree with no unresolved P0-P3 finding,
+  supported by the deterministic offline guards and artifact scan.
 
 ## 7. Stop conditions
 
@@ -909,7 +916,7 @@ Stop and return to planning if implementation needs:
 Approval of this plan grants no source implementation authority. It only makes
 the defined G2 corridor eligible for a later, separately requested and
 explicitly approved implementation action against exact allowed paths, after
-the G2-A0 governing-artifact decision passes its own owner and review gate.
+the G2-A0 governing-artifact decision passes its owner self-review gate.
 Passing a later G2 implementation would establish protocol closure under
 offline generated-byte tests. It would not prove a gateway deployment,
 Firestore transaction rate, provider delivery, macOS/Windows capture,

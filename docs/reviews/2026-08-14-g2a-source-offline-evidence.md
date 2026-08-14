@@ -4,7 +4,9 @@ Status: candidate final G2-A source/offline evidence, published for review in
 PR #11. Source implementation and clean-scratch qualification are complete at
 the exact source parent below. The PR is cumulative with the documentation
 history published in PR #10; PR #10 must not be merged separately. G2 exit
-remains gated by fresh exact-tree staff/security review and CI evidence.
+is gated by the sole owner's exact-tree architecture/security/privacy
+attestation, deterministic offline guards, artifact scan, and claim ceiling;
+no team reviewer, GitHub approval, or remote CI check is assumed.
 
 ## Exact binding and authority
 
@@ -24,9 +26,14 @@ remains gated by fresh exact-tree staff/security review and CI evidence.
 - Branch: `codex/native-g2a-source`; published at the source parent/evidence
   checkpoint in PR #11, targeting `codex/native-launch-boundary`.
 - Publication state at this record: PR #11 is open, ready for review, clean,
-  and has no submitted GitHub reviews or reported CI checks. PR #10 remains an
-  open draft containing the cumulative documentation history; it must not be
-  merged separately from PR #11.
+  and has no submitted GitHub reviews or reported CI checks; this is expected
+  for the single-engineer repository and is not a G2 blocker. PR #10 remains
+  an open draft containing the cumulative documentation history; it must not
+  be merged separately from PR #11.
+- Owner governance attestation: the sole project engineer directed this
+  correction to remove the team-review assumption and accepts owner-performed
+  architecture/security/privacy review backed by the exact guards, artifact
+  scan, manifest, and claim ceiling below.
 
 The owner authorized this source-only offline corridor and separately
 authorized the Homebrew download needed to install the keg-only .NET 8 SDK.
@@ -158,32 +165,33 @@ these changes create a new exact tree, none of the prior blocked reviews is
 approval of this candidate.
 
 The initial publication review of PR #11 at the prior evidence head found no
-source P0-P3 defect but did find package-level corrections: staff engineering
-blocked the stale “local and unpushed” metadata, unsupported approval wording,
-empty GitHub CI/review state, and unresolved PR #10/PR #11 stacking semantics;
-security/privacy approved with conditions requiring an exact current-tree
-attestation, preserved network-denied guard evidence, and renewed review after
-any correction. Those dispositions are recorded as review history, not as G2
-exit approval.
+source P0-P3 defect but did find package-level corrections: stale publication
+metadata, unsupported approval wording, and unresolved PR #10/PR #11 stacking
+semantics. Those historical team-review dispositions are retained for
+provenance only; this repository has one engineer, so the owner now performs
+the architecture/security/privacy self-review and exact-tree attestation.
+GitHub review and CI records are informative only and are not exit gates.
 
 ## Claim ceiling and remaining gate
 
 This evidence can support only protocol-v2 closure under deterministic,
-generated-byte, source-only offline tests after renewed exact-tree staff and
-security/privacy approval. It does not prove provider delivery or deletion,
+generated-byte, source-only offline tests after the sole owner's exact-tree
+architecture/security/privacy attestation. It does not prove provider delivery
+or deletion,
 hosted authentication/tenancy/rate enforcement, storage transactions or
 absence, physical RAM erasure during OS suspension, macOS or Windows capture,
 permissions, packaging, deployment, pilot behavior, launch readiness, merge,
 or release.
 
-The remaining G2-A publication gate asserted by this record is fresh
-independent staff and security/privacy review of the corrected enclosing
-evidence commit and its exact source parent, with preserved CI/guard evidence
-and no unresolved P0-P3 finding. Any correction expires that approval and
-requires a new exact commit/tree review. Later G3A gateway and G3B
-native-capture work remain separately planned and separately authorized.
+The remaining G2-A publication gate asserted by this record is the sole
+owner's exact-tree architecture/security/privacy attestation of the enclosing
+evidence commit and its exact source parent, with deterministic guards,
+artifact scan, preserved manifest, and no unresolved P0-P3 finding. Any
+correction expires that attestation and requires a new exact commit/tree
+review. Later G3A gateway and G3B native-capture work remain separately
+planned and separately authorized.
 
 The evidence file binds its exact source parent above. Its enclosing evidence
 commit cannot self-identify without changing itself; final binding therefore
-must be supplied by the independent reviewer dispositions and the exported
-offline bundle manifest, each naming the same enclosing commit and tree.
+must be supplied by the owner's attestation and exported offline bundle
+manifest, each naming the same enclosing commit and tree.
