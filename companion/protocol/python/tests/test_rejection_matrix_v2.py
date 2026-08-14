@@ -1,4 +1,5 @@
 import json
+import re
 import unittest
 from pathlib import Path
 
@@ -145,7 +146,11 @@ class ProtocolV2RejectionMatrixTests(unittest.TestCase):
         path = Path(__file__).resolve().parents[2] / "schema" / "protocol-v2.schema.json"
         with path.open(encoding="utf-8") as handle:
             schema = json.load(handle)
-        self.assertEqual(schema["properties"]["captureGeneration"]["maximum"], 2**64 - 1)
+        self.assertEqual(schema["properties"]["captureGeneration"]["$ref"], "#/$defs/uint64Decimal")
+        self.assertEqual(schema["$defs"]["uint64Decimal"]["maxLength"], 20)
+        uint64_pattern = re.compile(schema["$defs"]["uint64Decimal"]["pattern"])
+        self.assertIsNotNone(uint64_pattern.fullmatch(str(2**64 - 1)))
+        self.assertIsNone(uint64_pattern.fullmatch(str(2**64)))
         for name in ("firstSequence", "lastSequenceInclusive", "firstSample", "lastSampleExclusive"):
             self.assertEqual(schema["$defs"]["interval"]["properties"][name]["maxLength"], 20)
 

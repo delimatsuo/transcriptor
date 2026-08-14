@@ -29,5 +29,18 @@
     "providerResultId": "result-1",
     "sttAttemptGeneration": 2,
     "segmentId": "seg_5bff65fae2a94b2ed887183957588ed3d650bcf1c87696f9d089f5a95282a50f"
+  },
+  "audioFrame": {
+    "eventId": "aevt_93876bd7ae88af5c4c875e668bae680ce508d9982fc7f0f8d8e009c234f6dca2",
+    "payloadGenerator": "byte[(index*17+3)%256] for index 0..319",
+    "payloadBytes": 320,
+    "payloadSha256": "503489449f267385114af959449ce584279c825573d82975708e40dc444ae127",
+    "canonicalMetadata": "{\"captureGeneration\":\"4\",\"channelCount\":1,\"durationMs\":20,\"encoding\":\"pcm_s16le\",\"eventId\":\"aevt_93876bd7ae88af5c4c875e668bae680ce508d9982fc7f0f8d8e009c234f6dca2\",\"eventType\":\"audio.chunk\",\"firstSample\":\"0\",\"lastSampleExclusive\":\"160\",\"payloadBytes\":320,\"payloadDigestSha256\":\"503489449f267385114af959449ce584279c825573d82975708e40dc444ae127\",\"protocolVersion\":2,\"sampleRateHertz\":8000,\"sequence\":\"0\",\"sessionId\":\"session-v2\",\"source\":\"microphone\",\"streamId\":\"stream-mic\"}",
+    "metadataBytes": 472,
+    "metadataSha256": "4d4bfb8c38171b661d1a3890059701bbd343a4d6e2cfc62c1ff045cc8e1858bd",
+    "frameBytes": 796,
+    "frameSha256": "b6a1f52fe0d0bf30ab444c16ec5c9c935c014109fa4d38d06a6ca782866a23ed",
+    "retryKeyGenerator": "byte[index] for index 0..31",
+    "retryCommitmentHmacSha256": "4a8d1b9605f776c966ac0d62c5a459ead0922a026c521f9e95accce7f069e4c2"
   }
 }

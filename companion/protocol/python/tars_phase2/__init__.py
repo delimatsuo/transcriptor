@@ -17,6 +17,17 @@ from .model import (
     transcript_segment_id,
 )
 from .simulator import DeletionFence, DeletionState, EffectState, ProviderEffectFence, QuotaLimits, TokenBucketQuota
+from .framing import (
+    ParsedAudioFrame,
+    RetryCommitmentLedger,
+    audio_event_id,
+    audio_metadata,
+    encode_audio_frame,
+    parse_audio_frame,
+    parse_control_event,
+    retry_commitment,
+    verify_retry_commitment,
+)
 
 __all__ = [
     "AudioChunkV2",
@@ -39,4 +50,13 @@ __all__ = [
     "parse_canonical_json_bytes",
     "terminal_coverage_id",
     "transcript_segment_id",
+    "ParsedAudioFrame",
+    "RetryCommitmentLedger",
+    "audio_event_id",
+    "audio_metadata",
+    "encode_audio_frame",
+    "parse_audio_frame",
+    "parse_control_event",
+    "retry_commitment",
+    "verify_retry_commitment",
 ]

@@ -1,3 +1,4 @@
+import CryptoKit
 import XCTest
 @testable import TarsPhase1A
 
@@ -29,5 +30,43 @@ final class ProtocolV2ModelTests: XCTestCase {
         XCTAssertThrowsError(try v2TerminalCoverageId(key: key, atomic: [first, middle, nonadjacentOverlap]))
         XCTAssertThrowsError(try v2TranscriptSegmentId(key: key, atomic: [first], textFirstSample: 10, textLastSampleExclusive: 10, providerResultOrdinal: 0, providerName: "fixture", providerResultId: "result", sttAttemptGeneration: nil))
         XCTAssertThrowsError(try V2StreamKey(sessionId: "session\0bad", streamId: "stream-mic", captureGeneration: 4, source: .microphone))
+    }
+
+    func testCanonicalAudioFrameAndRetryCommitment() throws {
+        let key = try V2StreamKey(sessionId: "session-v2", streamId: "stream-mic", captureGeneration: 4, source: .microphone)
+        let payload = Data((0..<320).map { UInt8(($0 * 17 + 3) % 256) })
+        let input = try V2AudioFrameInput(key: key, sequence: 0, firstSample: 0, lastSampleExclusive: 160, sampleRateHertz: 8_000, channelCount: 1, durationMs: 20, payload: payload)
+        let metadata = try v2CanonicalAudioMetadata(input)
+        let frame = try v2EncodeAudioFrame(input)
+        let parsed = try v2ParseAudioFrame(frame)
+        XCTAssertEqual(parsed.input, input)
+        XCTAssertEqual(parsed.eventId, "aevt_93876bd7ae88af5c4c875e668bae680ce508d9982fc7f0f8d8e009c234f6dca2")
+        XCTAssertEqual(metadata.count, 472)
+        XCTAssertEqual(SHA256.hash(data: metadata).map { String(format: "%02x", $0) }.joined(), "4d4bfb8c38171b661d1a3890059701bbd343a4d6e2cfc62c1ff045cc8e1858bd")
+        XCTAssertEqual(frame.count, 796)
+        XCTAssertEqual(SHA256.hash(data: frame).map { String(format: "%02x", $0) }.joined(), "b6a1f52fe0d0bf30ab444c16ec5c9c935c014109fa4d38d06a6ca782866a23ed")
+        let commitment = try v2RetryCommitment(sessionKey: Data((0..<32).map(UInt8.init)), metadata: metadata, payload: payload)
+        XCTAssertEqual(commitment.map { String(format: "%02x", $0) }.joined(), "4a8d1b9605f776c966ac0d62c5a459ead0922a026c521f9e95accce7f069e4c2")
+    }
+
+    func testAudioFrameRejectsNoncanonicalDigestLengthAndExtraFields() throws {
+        let key = try V2StreamKey(sessionId: "session-v2", streamId: "stream-mic", captureGeneration: 4, source: .microphone)
+        let payload = Data((0..<320).map { UInt8(($0 * 17 + 3) % 256) })
+        let input = try V2AudioFrameInput(key: key, sequence: 0, firstSample: 0, lastSampleExclusive: 160, sampleRateHertz: 8_000, channelCount: 1, durationMs: 20, payload: payload)
+        let frame = try v2EncodeAudioFrame(input)
+        XCTAssertThrowsError(try v2ParseAudioFrame(Data(frame.dropLast())))
+        var changed = frame
+        changed[changed.count - 1] ^= 1
+        XCTAssertThrowsError(try v2ParseAudioFrame(changed))
+        var oversizedPrefix = Data([0, 0, 16, 1])
+        oversizedPrefix.append(Data("{}".utf8))
+        XCTAssertThrowsError(try v2ParseAudioFrame(oversizedPrefix))
+        let metadata = try v2CanonicalAudioMetadata(input)
+        var noncanonical = Data("{ ".utf8)
+        noncanonical.append(metadata.dropFirst())
+        var noncanonicalFrame = Data([0, 0, UInt8(noncanonical.count >> 8), UInt8(noncanonical.count & 0xff)])
+        noncanonicalFrame.append(noncanonical)
+        noncanonicalFrame.append(payload)
+        XCTAssertThrowsError(try v2ParseAudioFrame(noncanonicalFrame))
     }
 }
