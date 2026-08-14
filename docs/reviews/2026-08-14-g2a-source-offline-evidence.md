@@ -22,10 +22,12 @@ blocked by the unavailable .NET SDK on this host.
   review reported no P0/P1 source-semantic findings and blocked G2 exit at the
   unavailable C# and full-matrix evidence gates.
 - Post-review offline-hardening source checkpoint: commit
-  `8561073bc4a20aa14d3beae89618236ae4fc11ce`, tree
-  `2b8879222d22ac363df04de77ab93c0b37a2b919`. It closes the reviewers'
-  offline-remediable canonical-JSON and build-artifact P2s. This evidence
-  child and its source parent require fresh exact-tree review.
+  `6668bd804c4b191943fa344cfab1ee3cf2b6879a`, tree
+  `579d5f0f196c39cc44346e8cbbf04ee1b93722cc`. It includes the canonical-JSON
+  and scratch-build remediation from `8561073bc4a20aa14d3beae89618236ae4fc11ce`
+  and aligns the canonical control envelope with the governing 65,536-byte
+  limit. This evidence child and its source parent require fresh exact-tree
+  review.
 - Worktree: `/private/tmp/transcriptor-native-g2a-source`.
 - Branch: `codex/native-g2a-source`.
 - Worktree was clean at the source checkpoint. No protected checkout, PR #8,
@@ -54,6 +56,8 @@ and deletion generations. Its bounded canonical parser rejects duplicate
 keys, non-canonical ordering/whitespace/escaping, floats, negative and unsafe
 integers, invalid UTF-8, lone surrogates, non-NFC and NUL-bearing strings,
 oversized envelopes, and excessive nesting.
+The 65,536-byte canonical control boundary is accepted exactly and a
+65,537-byte encoding is rejected.
 
 ## Verification
 
