@@ -12,6 +12,12 @@ blocked by the unavailable .NET SDK on this host.
   `bc2c22a9d2d3c9f840ade771ac82b2faca0f1e52`, tree
   `61687a51dbc3f7513df3417895db4ee6ccd49965`.
 - Parent source/evidence commit: `1986f70248d1d2d4e6d72ab9f3c6aa55aafb71b6`.
+- Final exact-tree review parent: commit
+  `3c9619c899f6abe72a3aff651a74270ab1c58d5c`, tree
+  `01dda48d67cc565c270f4f673392936b8a78bd6d`.
+- Independent staff and security/privacy review of that exact parent approved
+  this as a source-only checkpoint with no P0/P1 findings; G2 exit remains
+  blocked by the unavailable .NET SDK and the remaining full matrix.
 - Worktree: `/private/tmp/transcriptor-native-g2a-source`.
 - Branch: `codex/native-g2a-source`.
 - Worktree was clean at the source checkpoint. No protected checkout, PR #8,
