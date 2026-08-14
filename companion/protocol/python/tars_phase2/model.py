@@ -508,6 +508,8 @@ class CustodyLedger:
             return False
         if any(item.coverage_id not in self._atomic for item in segment.atomic):
             raise ProtocolV2Violation("segment references unknown atomic coverage")
+        if any(not self.forwarded.contains(item) for item in segment.atomic):
+            raise ProtocolV2Violation("segment requires forwarded atomic coverage")
         self.segments[segment.segment_id] = segment
         return True
 
@@ -521,6 +523,10 @@ class CustodyLedger:
             return False
         if any(item.coverage_id not in self._atomic for item in claim.atomic):
             raise ProtocolV2Violation("terminal claim references unknown atomic coverage")
+        if claim.kind is TerminalKind.GAP and any(
+            self.forwarded.contains(item) for item in claim.atomic
+        ):
+            raise ProtocolV2Violation("gap cannot overwrite forwarded atomic coverage")
         for previous in self.terminal.values():
             previous_ids = {item.coverage_id for item in previous.atomic}
             if previous_ids.intersection(item.coverage_id for item in claim.atomic):

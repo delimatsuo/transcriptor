@@ -11,14 +11,14 @@
     "sessionId": {"$ref": "#/$defs/identifier"},
     "streamId": {"$ref": "#/$defs/identifier"},
     "source": {"enum": ["microphone", "system_audio"]},
-    "captureGeneration": {"type": "integer", "minimum": 0},
+    "captureGeneration": {"type": "integer", "minimum": 0, "maximum": 18446744073709551615},
     "eventId": {"$ref": "#/$defs/identifier"},
     "stageIntervals": {"type": "array", "items": {"$ref": "#/$defs/interval"}, "uniqueItems": true},
     "derivedContiguousPrefix": {"anyOf": [{"$ref": "#/$defs/interval"}, {"type": "null"}]},
     "coverageIds": {"type": "array", "items": {"$ref": "#/$defs/identifier"}, "minItems": 1, "uniqueItems": true},
-    "textFirstSample": {"type": "integer", "minimum": 0},
-    "textLastSampleExclusive": {"type": "integer", "minimum": 1},
-    "providerResultOrdinal": {"type": "integer", "minimum": 0},
+    "textFirstSample": {"type": "integer", "minimum": 0, "maximum": 18446744073709551615},
+    "textLastSampleExclusive": {"type": "integer", "minimum": 1, "maximum": 18446744073709551615},
+    "providerResultOrdinal": {"type": "integer", "minimum": 0, "maximum": 18446744073709551615},
     "providerName": {"$ref": "#/$defs/identifier"},
     "providerResultId": {"$ref": "#/$defs/identifier"}
   },
@@ -29,10 +29,10 @@
       "additionalProperties": false,
       "required": ["firstSequence", "lastSequenceInclusive", "firstSample", "lastSampleExclusive"],
       "properties": {
-        "firstSequence": {"type": "string", "pattern": "^(0|[1-9][0-9]*)$"},
-        "lastSequenceInclusive": {"type": "string", "pattern": "^(0|[1-9][0-9]*)$"},
-        "firstSample": {"type": "string", "pattern": "^(0|[1-9][0-9]*)$"},
-        "lastSampleExclusive": {"type": "string", "pattern": "^(0|[1-9][0-9]*)$"}
+        "firstSequence": {"type": "string", "pattern": "^(0|[1-9][0-9]*)$", "maxLength": 20},
+        "lastSequenceInclusive": {"type": "string", "pattern": "^(0|[1-9][0-9]*)$", "maxLength": 20},
+        "firstSample": {"type": "string", "pattern": "^(0|[1-9][0-9]*)$", "maxLength": 20},
+        "lastSampleExclusive": {"type": "string", "pattern": "^(0|[1-9][0-9]*)$", "maxLength": 20}
       }
     }
   }

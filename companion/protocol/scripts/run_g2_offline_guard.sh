@@ -38,12 +38,25 @@ run_swift() {
 }
 
 run_csharp() {
-  if ! command -v dotnet >/dev/null 2>&1; then
+  dotnet_path=$(command -v dotnet || true)
+  if [ -z "$dotnet_path" ]; then
     echo '{"available":false,"successful":false,"reason":"dotnet SDK unavailable"}'
     return 2
   fi
-  DOTNET_CLI_TELEMETRY_OPTOUT=1 DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1 \
-    dotnet run --project "$PROTOCOL_ROOT/csharp/ProtocolV2Vectors.csproj" --no-restore
+  scratch=$(/usr/bin/mktemp -d /tmp/tars-g2a-dotnet.XXXXXX)
+  /bin/mkdir -p "$scratch/home" "$scratch/tmp" "$scratch/nuget"
+  set +e
+  output=$(
+    /usr/bin/env -i HOME="$scratch/home" LC_ALL=C PATH=/usr/bin:/bin:/usr/sbin:/sbin \
+      TMPDIR="$scratch/tmp" DOTNET_CLI_TELEMETRY_OPTOUT=1 DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1 \
+      NUGET_PACKAGES="$scratch/nuget" /usr/bin/sandbox-exec -f "$SANDBOX_PROFILE" "$dotnet_path" run \
+      --project "$PROTOCOL_ROOT/csharp/ProtocolV2Vectors.csproj" --no-restore 2>&1
+  )
+  result=$?
+  set -e
+  /bin/rm -rf "$scratch"
+  printf '%s\n' "$output"
+  return "$result"
 }
 
 first_python=$(run_python)

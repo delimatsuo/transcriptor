@@ -75,6 +75,20 @@ class ProtocolV2ModelTests(unittest.TestCase):
         self.assertTrue(ledger.commit_terminal(claim))
         self.assertFalse(ledger.commit_terminal(claim))
 
+    def test_segment_requires_forwarded_coverage(self):
+        ledger = CustodyLedger(self.key)
+        ledger.admit(self.c0)
+        segment = TranscriptSegment(self.key, (self.c0,), 0, 80, 0, "fixture", "not-forwarded", "hello", 1)
+        with self.assertRaises(ProtocolV2Violation):
+            ledger.commit_segment(segment)
+
+    def test_gap_cannot_overwrite_forwarded_coverage(self):
+        ledger = CustodyLedger(self.key)
+        ledger.admit(self.c0)
+        ledger.forward(self.c0)
+        with self.assertRaises(ProtocolV2Violation):
+            ledger.commit_terminal(TerminalClaim(TerminalKind.GAP, self.key, (self.c0,), reason="durable_discard"))
+
     def test_terminal_claim_rejects_unforwarded_and_conflicting_reuse(self):
         ledger = CustodyLedger(self.key)
         ledger.admit(self.c0)

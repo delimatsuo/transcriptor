@@ -4,11 +4,15 @@ set -eu
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 PROTOCOL_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
 REPO_ROOT=$(git -C "$PROTOCOL_ROOT" rev-parse --show-toplevel)
+G2_AUTH_BASE=8398fa8b345e326320e54d2a598977e47ee67fa7
 
 fail() { echo "G2-A artifact scan failed: $1" >&2; exit 1; }
 
-git -C "$REPO_ROOT" diff --check || fail "whitespace error"
+git -C "$REPO_ROOT" cat-file -e "$G2_AUTH_BASE^{commit}" || fail "authorization baseline unavailable"
+git -C "$REPO_ROOT" diff --check "$G2_AUTH_BASE"..HEAD || fail "committed-range whitespace error"
+git -C "$REPO_ROOT" diff --check || fail "working-tree whitespace error"
 changed_paths=$( {
+  git -C "$REPO_ROOT" diff --name-only "$G2_AUTH_BASE"..HEAD
   git -C "$REPO_ROOT" diff --name-only
   git -C "$REPO_ROOT" ls-files --others --exclude-standard
 } | sort -u )
