@@ -530,6 +530,9 @@ class RawCustodyBuffer:
             or not isinstance(payload, bytes)
             or frames <= 0
             or len(payload) != frames * self.channel_count * 2
+            or len(payload) > 64_000
+            or not 20 <= (frames * 1_000 // self.sample_rate_hertz) <= 250
+            or frames * 1_000 % self.sample_rate_hertz != 0
             or not 0 < metadata_bytes <= 4_096
             or resident_overhead_bytes < 0
             or captured_at_ms < self.last_clock_ms
@@ -563,6 +566,9 @@ class RawCustodyBuffer:
     def acknowledge_durable_discard(self, event_id: str, gap_id: str) -> None:
         if event_id in self.forwarded or not gap_id:
             raise ProtocolV2Violation("durable discard conflicts with forwarding or gap identity")
+        existing_gap = self.gap_obligations.get(event_id)
+        if existing_gap is not None and existing_gap != gap_id:
+            raise ProtocolV2Violation("durable discard identity replay conflicts")
         self._release(event_id, "durable_discard")
         self.gap_obligations[event_id] = gap_id
 
@@ -619,6 +625,23 @@ class ScopeQuotaLimits:
     active_sessions: int
     writable_attempts: int
     draining_attempts: int
+
+    def __post_init__(self) -> None:
+        for value in (
+            self.event_rate,
+            self.event_burst,
+            self.payload_rate,
+            self.payload_burst,
+            self.metadata_rate,
+            self.metadata_burst,
+            self.custody_bytes,
+            self.resident_bytes,
+            self.active_sessions,
+            self.writable_attempts,
+            self.draining_attempts,
+        ):
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ProtocolV2Violation("scope quota limit is invalid")
 
 
 @dataclass
@@ -776,7 +799,12 @@ class TransportEdgeBudget:
 
     def authenticate(self, connection_id: str, now_ms: int) -> None:
         pending = self.pending.get(connection_id)
-        if pending is None or now_ms - pending[1] > 8_000 or len(self.authenticated) >= 16:
+        if (
+            pending is None
+            or now_ms < pending[1]
+            or now_ms - pending[1] > 8_000
+            or len(self.authenticated) >= 16
+        ):
             raise ProtocolV2Violation("authentication deadline or connection bound exceeded")
         del self.pending[connection_id]
         self.authenticated.add(connection_id)

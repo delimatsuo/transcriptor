@@ -30,6 +30,7 @@ public struct V2CustodyBudget: Sendable {
     public let channelCount: Int
     private var entries: [String: V2CustodyReservation] = [:]
     public private(set) var released: [String: String] = [:]
+    public private(set) var discardGapIds: [String: String] = [:]
     public private(set) var acquisitionStopped = false
     public private(set) var lastClockMs: UInt64 = 0
 
@@ -57,19 +58,35 @@ public struct V2CustodyBudget: Sendable {
         }
         guard released[value.eventId] == nil, !acquisitionStopped,
               !value.eventId.isEmpty, value.frames > 0,
-              value.payloadBytes == value.frames * channelCount * 2,
+              value.payloadBytes > 0, value.payloadBytes <= 64_000,
               (1...4_096).contains(value.metadataBytes),
-              value.residentBytes >= value.payloadBytes + value.metadataBytes,
+              value.residentBytes >= 0,
               value.capturedAtMs >= lastClockMs else {
             throw ProtocolV2ValidationError.invalid("custody reservation is invalid")
         }
+        let (expectedPayloadBytes, payloadOverflow) = value.frames.multipliedReportingOverflow(by: channelCount * 2)
+        let (durationNumerator, durationOverflow) = value.frames.multipliedReportingOverflow(by: 1_000)
+        let (minimumResidentBytes, residentOverflow) = value.payloadBytes.addingReportingOverflow(value.metadataBytes)
+        guard !payloadOverflow, !durationOverflow, !residentOverflow,
+              value.payloadBytes == expectedPayloadBytes,
+              durationNumerator % sampleRateHertz == 0,
+              (20...250).contains(durationNumerator / sampleRateHertz),
+              value.residentBytes >= minimumResidentBytes else {
+            throw ProtocolV2ValidationError.invalid("custody event is outside framing bounds")
+        }
         let maxFrames = min(96_000, 2 * sampleRateHertz)
         let maxPayload = min(384_000, maxFrames * channelCount * 2)
-        guard retainedEvents + 1 <= 100,
-              retainedFrames + value.frames <= maxFrames,
-              retainedPayloadBytes + value.payloadBytes <= maxPayload,
-              retainedMetadataBytes + value.metadataBytes <= 409_600,
-              retainedResidentBytes + value.residentBytes <= 1_048_576 else {
+        let (nextEvents, eventsOverflow) = retainedEvents.addingReportingOverflow(1)
+        let (nextFrames, framesOverflow) = retainedFrames.addingReportingOverflow(value.frames)
+        let (nextPayload, aggregatePayloadOverflow) = retainedPayloadBytes.addingReportingOverflow(value.payloadBytes)
+        let (nextMetadata, metadataOverflow) = retainedMetadataBytes.addingReportingOverflow(value.metadataBytes)
+        let (nextResident, aggregateResidentOverflow) = retainedResidentBytes.addingReportingOverflow(value.residentBytes)
+        guard !eventsOverflow, !framesOverflow, !aggregatePayloadOverflow, !metadataOverflow, !aggregateResidentOverflow,
+              nextEvents <= 100,
+              nextFrames <= maxFrames,
+              nextPayload <= maxPayload,
+              nextMetadata <= 409_600,
+              nextResident <= 1_048_576 else {
             acquisitionStopped = true
             throw ProtocolV2ValidationError.invalid("custody reservation exceeds a frozen bound")
         }
@@ -89,7 +106,11 @@ public struct V2CustodyBudget: Sendable {
         guard !gapId.isEmpty, released[eventId] != "forwarded" else {
             throw ProtocolV2ValidationError.invalid("durable discard conflicts with forwarding")
         }
+        if let existing = discardGapIds[eventId], existing != gapId {
+            throw ProtocolV2ValidationError.invalid("durable discard identity replay conflicts")
+        }
         try release(eventId, outcome: "durable_discard")
+        discardGapIds[eventId] = gapId
     }
 
     public mutating func advanceClock(_ nowMs: UInt64, clockCertain: Bool = true) throws -> [String] {
@@ -186,17 +207,31 @@ public struct V2TokenBucket: Sendable {
         }
         let elapsed = second - lastSecond
         if elapsed > 0 {
-            events = min(limits.eventBurst, events + elapsed * limits.eventRate)
-            payload = min(limits.payloadBurst, payload + elapsed * limits.payloadRate)
-            metadata = min(limits.metadataBurst, metadata + elapsed * limits.metadataRate)
+            let (eventRefill, eventRefillOverflow) = elapsed.multipliedReportingOverflow(by: limits.eventRate)
+            let (payloadRefill, payloadRefillOverflow) = elapsed.multipliedReportingOverflow(by: limits.payloadRate)
+            let (metadataRefill, metadataRefillOverflow) = elapsed.multipliedReportingOverflow(by: limits.metadataRate)
+            let (refilledEvents, eventAddOverflow) = events.addingReportingOverflow(eventRefill)
+            let (refilledPayload, payloadAddOverflow) = payload.addingReportingOverflow(payloadRefill)
+            let (refilledMetadata, metadataAddOverflow) = metadata.addingReportingOverflow(metadataRefill)
+            guard !eventRefillOverflow, !payloadRefillOverflow, !metadataRefillOverflow,
+                  !eventAddOverflow, !payloadAddOverflow, !metadataAddOverflow else {
+                throw ProtocolV2ValidationError.invalid("quota refill overflow")
+            }
+            events = min(limits.eventBurst, refilledEvents)
+            payload = min(limits.payloadBurst, refilledPayload)
+            metadata = min(limits.metadataBurst, refilledMetadata)
             lastSecond = second
         }
+        let (nextCustody, custodyOverflow) = custody.addingReportingOverflow(custodyBytes)
+        guard !custodyOverflow else {
+            throw ProtocolV2ValidationError.invalid("quota custody overflow")
+        }
         let allowed = events >= requestedEvents && payload >= payloadBytes && metadata >= metadataBytes &&
-            custody + custodyBytes <= limits.custodyBytes
+            nextCustody <= limits.custodyBytes
         events = max(0, events - requestedEvents)
         payload = max(0, payload - payloadBytes)
         metadata = max(0, metadata - metadataBytes)
-        if allowed { custody += custodyBytes }
+        if allowed { custody = nextCustody }
         return allowed
     }
 
@@ -209,6 +244,7 @@ public struct V2TokenBucket: Sendable {
 }
 
 public struct V2EffectToken: Equatable, Sendable {
+    public let effectId: String
     public let runtimeEpoch: UInt64
     public let egressFence: UInt64
     public let ownerId: String
@@ -224,6 +260,7 @@ public enum V2EffectState: String, Sendable {
 }
 
 public struct V2EffectFence: Sendable {
+    public let effectId: String
     public private(set) var state: V2EffectState = .prepared
     public private(set) var runtimeEpoch: UInt64 = 0
     public private(set) var egressFence: UInt64 = 0
@@ -234,7 +271,12 @@ public struct V2EffectFence: Sendable {
     public private(set) var providerClosed = false
     public private(set) var ownerTerminated = false
 
-    public init() {}
+    public init(effectId: String) throws {
+        guard !effectId.isEmpty else {
+            throw ProtocolV2ValidationError.invalid("effect identity is required")
+        }
+        self.effectId = effectId
+    }
 
     public mutating func prepare(ownerId: String) throws -> V2EffectToken {
         guard state == .prepared, !ownerId.isEmpty else {
@@ -246,7 +288,12 @@ public struct V2EffectFence: Sendable {
             }
             return token
         }
-        let created = V2EffectToken(runtimeEpoch: runtimeEpoch, egressFence: egressFence, ownerId: ownerId)
+        let created = V2EffectToken(
+            effectId: effectId,
+            runtimeEpoch: runtimeEpoch,
+            egressFence: egressFence,
+            ownerId: ownerId
+        )
         self.ownerId = ownerId
         token = created
         return created
@@ -279,7 +326,8 @@ public struct V2EffectFence: Sendable {
     }
 
     public mutating func recover(runtimeEpoch: UInt64, egressFence: UInt64) throws {
-        guard runtimeEpoch > self.runtimeEpoch, egressFence > self.egressFence else {
+        guard state != .terminal,
+              runtimeEpoch > self.runtimeEpoch, egressFence > self.egressFence else {
             throw ProtocolV2ValidationError.invalid("recovery epoch and fence must advance")
         }
         self.runtimeEpoch = runtimeEpoch
@@ -363,5 +411,154 @@ public struct V2LifecycleProjection: Sendable {
         if coverage?.1 == .finalizing || transport?.1 == .draining { return .finalizing }
         if physical?.1 == .recording, transport?.1 == .forwarding, coverage?.1 == .open { return .recording }
         return .degraded
+    }
+}
+
+public enum V2DeletionState: String, Sendable {
+    case active, deleteQuiescing = "delete_quiescing", deleting, deleted, deletionFailed = "deletion_failed"
+}
+
+public struct V2DeletionFence: Sendable {
+    public private(set) var state: V2DeletionState = .active
+    public private(set) var generation: UInt64 = 0
+    public let participants: Set<String>
+    public let stores: Set<String>
+    public private(set) var acknowledgements: Set<String> = []
+    public private(set) var absencePasses: [Int: [String: Bool]] = [:]
+    public private(set) var lateCallbackRejections = 0
+
+    public init(participants: Set<String>, stores: Set<String>) throws {
+        guard participants.allSatisfy({ !$0.isEmpty }), stores.allSatisfy({ !$0.isEmpty }) else {
+            throw ProtocolV2ValidationError.invalid("deletion participant or store identity is invalid")
+        }
+        self.participants = participants
+        self.stores = stores
+    }
+
+    public mutating func request() throws -> UInt64 {
+        guard state == .active, generation < UInt64.max else {
+            throw ProtocolV2ValidationError.invalid("deletion request is out of order")
+        }
+        generation += 1
+        state = .deleteQuiescing
+        return generation
+    }
+
+    public func assertAdmissionAllowed() throws {
+        guard state == .active else {
+            throw ProtocolV2ValidationError.invalid("admission is fenced during deletion")
+        }
+    }
+
+    public mutating func acknowledge(_ participant: String, generation: UInt64) throws {
+        guard state == .deleteQuiescing, generation == self.generation,
+              participants.contains(participant) else {
+            throw ProtocolV2ValidationError.invalid("deletion acknowledgement is stale or foreign")
+        }
+        acknowledgements.insert(participant)
+    }
+
+    public mutating func startDeleting() throws {
+        guard state == .deleteQuiescing, acknowledgements == participants else {
+            throw ProtocolV2ValidationError.invalid("positive deletion quiescence is required")
+        }
+        state = .deleting
+    }
+
+    @discardableResult
+    public mutating func recordAbsencePass(_ number: Int, results: [String: Bool]) throws -> Bool {
+        guard state == .deleting, number == 1 || number == 2,
+              number == 1 || absencePasses[1] != nil,
+              Set(results.keys) == stores else {
+            throw ProtocolV2ValidationError.invalid("absence pass is out of order or incomplete")
+        }
+        if let existing = absencePasses[number] {
+            guard existing == results else {
+                throw ProtocolV2ValidationError.invalid("absence pass replay conflicts")
+            }
+            return true
+        }
+        guard results.values.allSatisfy({ $0 }) else {
+            state = .deletionFailed
+            return false
+        }
+        absencePasses[number] = results
+        return true
+    }
+
+    public mutating func resume(generation: UInt64) throws {
+        guard state == .deletionFailed, generation == self.generation else {
+            throw ProtocolV2ValidationError.invalid("deletion resume is stale")
+        }
+        state = .deleting
+    }
+
+    public mutating func rejectLateCallback(generation: UInt64) throws {
+        guard state != .active, generation <= self.generation else {
+            throw ProtocolV2ValidationError.invalid("callback generation is not fenced")
+        }
+        lateCallbackRejections += 1
+        throw ProtocolV2ValidationError.invalid("late callback rejected before persistence")
+    }
+
+    public mutating func finish() throws {
+        guard state == .deleting, Set(absencePasses.keys) == Set([1, 2]) else {
+            throw ProtocolV2ValidationError.invalid("two absence passes are required")
+        }
+        state = .deleted
+    }
+}
+
+public struct V2TransportEdgeBudget: Sendable {
+    private struct Pending: Sendable {
+        let sourceIp: String
+        let startedAtMs: UInt64
+        let receiveBytes: Int
+    }
+
+    private var pending: [String: Pending] = [:]
+    private var authenticated: Set<String> = []
+
+    public init() {}
+
+    public var pendingBytes: Int { pending.values.reduce(0) { $0 + $1.receiveBytes } }
+    public var parserBytes: Int { authenticated.count * 68_100 }
+
+    public mutating func openPending(
+        connectionId: String,
+        sourceIp: String,
+        nowMs: UInt64,
+        headerBytes: Int,
+        firstAuthBytes: Int,
+        receiveBytes: Int
+    ) throws {
+        let (nextPendingBytes, overflow) = pendingBytes.addingReportingOverflow(receiveBytes)
+        guard !overflow, pending[connectionId] == nil, !authenticated.contains(connectionId),
+              !connectionId.isEmpty, !sourceIp.isEmpty,
+              (0...16_384).contains(headerBytes),
+              (0...8_192).contains(firstAuthBytes),
+              (0...32_768).contains(receiveBytes),
+              pending.count < 64,
+              pending.values.filter({ $0.sourceIp == sourceIp }).count < 16,
+              nextPendingBytes <= 2_097_152 else {
+            throw ProtocolV2ValidationError.invalid("pending transport bound exceeded")
+        }
+        pending[connectionId] = Pending(sourceIp: sourceIp, startedAtMs: nowMs, receiveBytes: receiveBytes)
+    }
+
+    public func rejectPreAuthAudio(declaredBytes: Int) throws {
+        guard declaredBytes >= 0 else {
+            throw ProtocolV2ValidationError.invalid("declared audio length is invalid")
+        }
+        throw ProtocolV2ValidationError.invalid("audio is rejected before authentication")
+    }
+
+    public mutating func authenticate(connectionId: String, nowMs: UInt64) throws {
+        guard let value = pending[connectionId], nowMs >= value.startedAtMs,
+              nowMs - value.startedAtMs <= 8_000, authenticated.count < 16 else {
+            throw ProtocolV2ValidationError.invalid("authentication deadline or connection bound exceeded")
+        }
+        pending.removeValue(forKey: connectionId)
+        authenticated.insert(connectionId)
     }
 }

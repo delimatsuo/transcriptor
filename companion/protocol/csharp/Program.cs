@@ -158,6 +158,347 @@ internal static class Program
         internal long Custody => custody;
     }
 
+    private readonly record struct EffectToken(
+        string EffectId,
+        ulong RuntimeEpoch,
+        ulong EgressFence,
+        string OwnerId);
+
+    private sealed class EffectFence
+    {
+        private readonly string effectId;
+        private string state = "prepared";
+        private ulong runtimeEpoch;
+        private ulong egressFence;
+        private string? ownerId;
+        private EffectToken? token;
+        private bool providerClosed;
+        private bool ownerTerminated;
+
+        internal EffectFence(string effectId)
+        {
+            if (string.IsNullOrEmpty(effectId))
+                throw new InvalidOperationException("effect identity is required");
+            this.effectId = effectId;
+        }
+
+        internal int InvokeCount { get; private set; }
+        internal bool JournalCommitted { get; private set; }
+        internal string State => state;
+
+        internal EffectToken Prepare(string owner)
+        {
+            if (state != "prepared" || string.IsNullOrEmpty(owner))
+                throw new InvalidOperationException("effect is not prepareable");
+            if (ownerId is not null)
+            {
+                if (ownerId == owner && token.HasValue) return token.Value;
+                throw new InvalidOperationException("effect already has a durable owner");
+            }
+            ownerId = owner;
+            token = new EffectToken(effectId, runtimeEpoch, egressFence, owner);
+            return token.Value;
+        }
+
+        internal void Invoke(EffectToken presented)
+        {
+            Check(presented);
+            if (state != "prepared")
+                throw new InvalidOperationException("effect invocation is not single-use");
+            state = "invoking";
+            InvokeCount++;
+        }
+
+        internal void ProviderReturned(EffectToken presented)
+        {
+            Check(presented);
+            if (state != "invoking")
+                throw new InvalidOperationException("provider return is out of order");
+            state = "provider_returned";
+        }
+
+        internal void CommitJournal(EffectToken presented)
+        {
+            Check(presented);
+            if (state != "provider_returned")
+                throw new InvalidOperationException("journal is out of order");
+            JournalCommitted = true;
+            state = "journaled";
+        }
+
+        internal void Recover(ulong epoch, ulong fence)
+        {
+            if (state == "terminal" || epoch <= runtimeEpoch || fence <= egressFence)
+                throw new InvalidOperationException("recovery epoch or fence is invalid");
+            runtimeEpoch = epoch;
+            egressFence = fence;
+            state = "effect_quiescence_required";
+        }
+
+        internal void AcknowledgeProviderClose() => providerClosed = true;
+        internal void AcknowledgeOwnerTermination() => ownerTerminated = true;
+
+        internal void Terminalize()
+        {
+            if (state != "effect_quiescence_required" || !providerClosed || !ownerTerminated)
+                throw new InvalidOperationException("positive effect quiescence is required");
+            state = "terminal";
+        }
+
+        private void Check(EffectToken presented)
+        {
+            if (!token.HasValue || presented != token.Value || presented.EffectId != effectId ||
+                presented.RuntimeEpoch != runtimeEpoch || presented.EgressFence != egressFence)
+            {
+                throw new InvalidOperationException("effect token is stale or foreign");
+            }
+        }
+    }
+
+    private readonly record struct CustodyItem(
+        long Frames,
+        int PayloadBytes,
+        int MetadataBytes,
+        int ResidentBytes,
+        long CapturedAtMs);
+
+    private sealed class CustodyBudget
+    {
+        private readonly int sampleRate;
+        private readonly int channels;
+        private readonly Dictionary<string, CustodyItem> items = new(StringComparer.Ordinal);
+        private readonly Dictionary<string, string> released = new(StringComparer.Ordinal);
+        private readonly Dictionary<string, string> gapIds = new(StringComparer.Ordinal);
+        private long lastClockMs;
+
+        internal CustodyBudget(int sampleRate, int channels)
+        {
+            if (sampleRate is < 8_000 or > 48_000 || channels is < 1 or > 2)
+                throw new InvalidOperationException("custody format is invalid");
+            this.sampleRate = sampleRate;
+            this.channels = channels;
+        }
+
+        internal int Count => items.Count;
+        internal long RetainedFrames => items.Values.Sum(value => value.Frames);
+        internal long RetainedPayloadBytes => items.Values.Sum(value => (long)value.PayloadBytes);
+        internal long RetainedMetadataBytes => items.Values.Sum(value => (long)value.MetadataBytes);
+        internal long RetainedResidentBytes => items.Values.Sum(value => (long)value.ResidentBytes);
+        internal bool AcquisitionStopped { get; private set; }
+
+        internal bool Reserve(string eventId, CustodyItem item)
+        {
+            if (items.TryGetValue(eventId, out CustodyItem existing))
+            {
+                if (existing == item) return false;
+                throw new InvalidOperationException("custody retry changed content");
+            }
+            if (released.ContainsKey(eventId) || AcquisitionStopped || string.IsNullOrEmpty(eventId) ||
+                item.Frames <= 0 || item.PayloadBytes <= 0 || item.PayloadBytes > 64_000 ||
+                item.MetadataBytes is < 1 or > 4_096 || item.ResidentBytes < 0 || item.CapturedAtMs < lastClockMs ||
+                item.Frames > long.MaxValue / (channels * 2L) || item.Frames * channels * 2L != item.PayloadBytes ||
+                item.Frames > long.MaxValue / 1_000 || item.Frames * 1_000 % sampleRate != 0 ||
+                item.Frames * 1_000 / sampleRate is < 20 or > 250 ||
+                item.ResidentBytes < (long)item.PayloadBytes + item.MetadataBytes)
+            {
+                throw new InvalidOperationException("custody reservation is outside framing bounds");
+            }
+            long maxFrames = Math.Min(96_000, 2L * sampleRate);
+            long maxPayload = Math.Min(384_000, maxFrames * channels * 2L);
+            if (items.Count + 1 > 100 || RetainedFrames + item.Frames > maxFrames ||
+                RetainedPayloadBytes + item.PayloadBytes > maxPayload ||
+                RetainedMetadataBytes + item.MetadataBytes > 409_600 ||
+                RetainedResidentBytes + item.ResidentBytes > 1_048_576)
+            {
+                AcquisitionStopped = true;
+                throw new InvalidOperationException("custody aggregate bound exceeded");
+            }
+            items.Add(eventId, item);
+            lastClockMs = item.CapturedAtMs;
+            return true;
+        }
+
+        internal void Forward(string eventId, bool journalCommitted)
+        {
+            if (!journalCommitted)
+                throw new InvalidOperationException("forwarding release requires journal");
+            Release(eventId, "forwarded");
+        }
+
+        internal void Discard(string eventId, string gapId)
+        {
+            if (string.IsNullOrEmpty(gapId) || released.GetValueOrDefault(eventId) == "forwarded")
+                throw new InvalidOperationException("discard conflicts with forwarding");
+            if (gapIds.TryGetValue(eventId, out string? existing) && existing != gapId)
+                throw new InvalidOperationException("discard identity replay conflicts");
+            Release(eventId, "durable_discard");
+            gapIds[eventId] = gapId;
+        }
+
+        internal IReadOnlyList<string> Advance(long nowMs, bool clockCertain)
+        {
+            if (nowMs < lastClockMs)
+                throw new InvalidOperationException("custody clock moved backwards");
+            lastClockMs = nowMs;
+            if (!clockCertain) AcquisitionStopped = true;
+            if (items.Values.Any(value => nowMs - value.CapturedAtMs >= 10_000)) AcquisitionStopped = true;
+            string[] expired = items
+                .Where(pair => !clockCertain || nowMs - pair.Value.CapturedAtMs >= 30_000)
+                .Select(pair => pair.Key)
+                .OrderBy(value => value, StringComparer.Ordinal)
+                .ToArray();
+            foreach (string eventId in expired) Release(eventId, "privacy_timeout_local");
+            return expired;
+        }
+
+        private void Release(string eventId, string outcome)
+        {
+            if (!items.Remove(eventId))
+            {
+                if (released.GetValueOrDefault(eventId) == outcome) return;
+                throw new InvalidOperationException("release references absent or conflicting custody");
+            }
+            released[eventId] = outcome;
+        }
+    }
+
+    private sealed class DeletionFence
+    {
+        private readonly HashSet<string> participants;
+        private readonly HashSet<string> stores;
+        private readonly HashSet<string> acknowledgements = new(StringComparer.Ordinal);
+        private readonly Dictionary<int, Dictionary<string, bool>> passes = new();
+
+        internal DeletionFence(IEnumerable<string> participants, IEnumerable<string> stores)
+        {
+            this.participants = new HashSet<string>(participants, StringComparer.Ordinal);
+            this.stores = new HashSet<string>(stores, StringComparer.Ordinal);
+            if (this.participants.Any(string.IsNullOrEmpty) || this.stores.Any(string.IsNullOrEmpty))
+                throw new InvalidOperationException("deletion identity is invalid");
+        }
+
+        internal string State { get; private set; } = "active";
+        internal ulong Generation { get; private set; }
+        internal int LateCallbacks { get; private set; }
+
+        internal ulong Request()
+        {
+            if (State != "active" || Generation == ulong.MaxValue)
+                throw new InvalidOperationException("deletion request is out of order");
+            Generation++;
+            State = "delete_quiescing";
+            return Generation;
+        }
+
+        internal void Acknowledge(string participant, ulong generation)
+        {
+            if (State != "delete_quiescing" || generation != Generation || !participants.Contains(participant))
+                throw new InvalidOperationException("deletion acknowledgement is stale or foreign");
+            acknowledgements.Add(participant);
+        }
+
+        internal void StartDeleting()
+        {
+            if (State != "delete_quiescing" || !acknowledgements.SetEquals(participants))
+                throw new InvalidOperationException("positive deletion quiescence is required");
+            State = "deleting";
+        }
+
+        internal bool RecordPass(int number, IReadOnlyDictionary<string, bool> results)
+        {
+            if (State != "deleting" || number is < 1 or > 2 || number == 2 && !passes.ContainsKey(1) ||
+                !stores.SetEquals(results.Keys))
+            {
+                throw new InvalidOperationException("absence pass is out of order or incomplete");
+            }
+            var normalized = new Dictionary<string, bool>(results, StringComparer.Ordinal);
+            if (passes.TryGetValue(number, out Dictionary<string, bool>? existing))
+            {
+                if (existing.Count != normalized.Count || existing.Any(pair => !normalized.TryGetValue(pair.Key, out bool value) || value != pair.Value))
+                    throw new InvalidOperationException("absence pass replay conflicts");
+                return true;
+            }
+            if (normalized.Values.Any(value => !value))
+            {
+                State = "deletion_failed";
+                return false;
+            }
+            passes.Add(number, normalized);
+            return true;
+        }
+
+        internal void Resume(ulong generation)
+        {
+            if (State != "deletion_failed" || generation != Generation)
+                throw new InvalidOperationException("deletion resume is stale");
+            State = "deleting";
+        }
+
+        internal void RejectLateCallback(ulong generation)
+        {
+            if (State == "active" || generation > Generation)
+                throw new InvalidOperationException("callback generation is not fenced");
+            LateCallbacks++;
+            throw new InvalidOperationException("late callback rejected before persistence");
+        }
+
+        internal void Finish()
+        {
+            if (State != "deleting" || !passes.ContainsKey(1) || !passes.ContainsKey(2))
+                throw new InvalidOperationException("two absence passes are required");
+            State = "deleted";
+        }
+    }
+
+    private readonly record struct PendingConnection(string SourceIp, long StartedAtMs, int ReceiveBytes);
+
+    private sealed class TransportEdgeBudget
+    {
+        private readonly Dictionary<string, PendingConnection> pending = new(StringComparer.Ordinal);
+        private readonly HashSet<string> authenticated = new(StringComparer.Ordinal);
+
+        internal long PendingBytes => pending.Values.Sum(value => (long)value.ReceiveBytes);
+        internal int ParserBytes => checked(authenticated.Count * 68_100);
+
+        internal void Open(
+            string connectionId,
+            string sourceIp,
+            long nowMs,
+            int headerBytes,
+            int firstAuthBytes,
+            int receiveBytes)
+        {
+            if (pending.ContainsKey(connectionId) || authenticated.Contains(connectionId) ||
+                string.IsNullOrEmpty(connectionId) || string.IsNullOrEmpty(sourceIp) || nowMs < 0 ||
+                headerBytes is < 0 or > 16_384 || firstAuthBytes is < 0 or > 8_192 ||
+                receiveBytes is < 0 or > 32_768 || pending.Count >= 64 ||
+                pending.Values.Count(value => value.SourceIp == sourceIp) >= 16 ||
+                PendingBytes + receiveBytes > 2_097_152)
+            {
+                throw new InvalidOperationException("pending transport bound exceeded");
+            }
+            pending.Add(connectionId, new PendingConnection(sourceIp, nowMs, receiveBytes));
+        }
+
+        internal void RejectPreAuthAudio(int declaredBytes)
+        {
+            if (declaredBytes < 0)
+                throw new InvalidOperationException("declared audio length is invalid");
+            throw new InvalidOperationException("audio is rejected before authentication");
+        }
+
+        internal void Authenticate(string connectionId, long nowMs)
+        {
+            if (!pending.TryGetValue(connectionId, out PendingConnection value) || nowMs < value.StartedAtMs ||
+                nowMs - value.StartedAtMs > 8_000 || authenticated.Count >= 16)
+            {
+                throw new InvalidOperationException("authentication deadline or connection bound exceeded");
+            }
+            pending.Remove(connectionId);
+            authenticated.Add(connectionId);
+        }
+    }
+
     private static void Main()
     {
         var key = new StreamKey("session-v2", "stream-mic", 4, "microphone");
@@ -261,12 +602,105 @@ internal static class Program
         int sessionOffset = Encoding.UTF8.GetString(metadata).IndexOf("session-v2", StringComparison.Ordinal);
         invalidUtf8Metadata[sessionOffset] = 0xff;
         ExpectReject(() => ParseAudioFrame(BuildAudioFrame(invalidUtf8Metadata, payload)));
+        ExpectReject(() => RetryCommitment(retryKey, noncanonicalMetadata, payload));
 
         var maxU64Audio = audio with { Key = key with { CaptureGeneration = ulong.MaxValue } };
         ParseAudioFrame(EncodeAudioFrame(maxU64Audio));
+        RunStateMatrix();
         RunLongDurationMatrix();
 
-        Console.WriteLine("{\"phase\":\"2A-csharp-vectors\",\"successful\":true,\"vectorsRun\":30}");
+        Console.WriteLine("{\"phase\":\"2A-csharp-vectors\",\"successful\":true,\"vectorsRun\":39}");
+    }
+
+    private static void RunStateMatrix()
+    {
+        var firstEffect = new EffectFence("effect-1");
+        var secondEffect = new EffectFence("effect-2");
+        EffectToken token = firstEffect.Prepare("owner-a");
+        if (firstEffect.Prepare("owner-a") != token)
+            throw new InvalidOperationException("effect owner retry is not idempotent");
+        secondEffect.Prepare("owner-a");
+        ExpectReject(() => secondEffect.Invoke(token));
+        ExpectReject(() => firstEffect.Prepare("owner-b"));
+        firstEffect.Invoke(token);
+        ExpectReject(() => firstEffect.Invoke(token));
+        firstEffect.ProviderReturned(token);
+        if (firstEffect.JournalCommitted)
+            throw new InvalidOperationException("provider return advanced forwarding before journal");
+        firstEffect.CommitJournal(token);
+        firstEffect.Recover(1, 1);
+        ExpectReject(firstEffect.Terminalize);
+        firstEffect.AcknowledgeProviderClose();
+        ExpectReject(firstEffect.Terminalize);
+        firstEffect.AcknowledgeOwnerTermination();
+        firstEffect.Terminalize();
+        ExpectReject(() => firstEffect.Recover(2, 2));
+        if (firstEffect.State != "terminal" || firstEffect.InvokeCount != 1 || !firstEffect.JournalCommitted)
+            throw new InvalidOperationException("effect fencing state mismatch");
+
+        var custody = new CustodyBudget(48_000, 2);
+        ExpectReject(() => custody.Reserve(
+            "oversized",
+            new CustodyItem(96_000, 384_000, 472, 384_600, 0)));
+        if (custody.Count != 0)
+            throw new InvalidOperationException("oversized event mutated custody");
+        var item = new CustodyItem(960, 3_840, 472, 4_440, 0);
+        if (!custody.Reserve("discard", item) || custody.Reserve("discard", item))
+            throw new InvalidOperationException("custody retry state mismatch");
+        custody.Discard("discard", "gap-1");
+        custody.Discard("discard", "gap-1");
+        ExpectReject(() => custody.Discard("discard", "gap-2"));
+
+        custody = new CustodyBudget(8_000, 1);
+        custody.Reserve("expiring", new CustodyItem(160, 320, 472, 920, 0));
+        if (custody.Advance(10_000, true).Count != 0 || !custody.AcquisitionStopped)
+            throw new InvalidOperationException("custody reconcile deadline mismatch");
+        if (!custody.Advance(30_000, true).SequenceEqual(new[] { "expiring" }))
+            throw new InvalidOperationException("custody privacy deadline mismatch");
+
+        var deletion = new DeletionFence(
+            new[] { "worker", "connection", "effect" },
+            new[] { "session", "retry", "backup" });
+        ulong generation = deletion.Request();
+        deletion.Acknowledge("worker", generation);
+        deletion.Acknowledge("connection", generation);
+        ExpectReject(deletion.StartDeleting);
+        deletion.Acknowledge("effect", generation);
+        deletion.StartDeleting();
+        var absent = new Dictionary<string, bool>(StringComparer.Ordinal)
+        {
+            ["session"] = true,
+            ["retry"] = true,
+            ["backup"] = true,
+        };
+        if (!deletion.RecordPass(1, absent))
+            throw new InvalidOperationException("first absence pass failed");
+        var failed = new Dictionary<string, bool>(absent, StringComparer.Ordinal) { ["backup"] = false };
+        if (deletion.RecordPass(2, failed) || deletion.State != "deletion_failed")
+            throw new InvalidOperationException("injected deletion failure was accepted");
+        deletion.Resume(generation);
+        if (!deletion.RecordPass(2, absent))
+            throw new InvalidOperationException("resumed deletion pass failed");
+        deletion.Finish();
+        ExpectReject(() => deletion.RejectLateCallback(generation));
+        if (deletion.State != "deleted" || deletion.LateCallbacks != 1)
+            throw new InvalidOperationException("deletion terminal state mismatch");
+
+        var edge = new TransportEdgeBudget();
+        for (int index = 0; index < 16; index++)
+            edge.Open($"connection-{index}", "192.0.2.1", 10_000, 16_384, 8_192, 32_768);
+        long pendingBytes = edge.PendingBytes;
+        ExpectReject(() => edge.Open("connection-16", "192.0.2.1", 10_000, 1, 1, 1));
+        ExpectReject(() => edge.RejectPreAuthAudio(68_100));
+        if (edge.PendingBytes != pendingBytes)
+            throw new InvalidOperationException("pre-auth audio allocated receive custody");
+        ExpectReject(() => edge.Authenticate("connection-0", 9_999));
+        edge.Authenticate("connection-0", 18_000);
+        ExpectReject(() => edge.Authenticate("connection-1", 18_001));
+        if (edge.ParserBytes != 68_100)
+            throw new InvalidOperationException("authenticated parser allocation mismatch");
+
+        ExpectReject(() => _ = new QuotaBucket(-1, 1, 1, 1, 1, 1, 1));
     }
 
     private static void RunLongDurationMatrix()
@@ -496,6 +930,7 @@ internal static class Program
     {
         if (sessionKey.Length < 32 || metadata.Length > 4_096 || payload.Length > 64_000)
             throw new InvalidOperationException("retry commitment input is outside bounds");
+        _ = ParseAudioFrame(BuildAudioFrame(metadata, payload));
         var message = new List<byte>(checked(14 + 4 + metadata.Length + 4 + payload.Length));
         message.AddRange(Encoding.UTF8.GetBytes("tars-retry-v2\0"));
         AppendU32(message, checked((uint)metadata.Length));

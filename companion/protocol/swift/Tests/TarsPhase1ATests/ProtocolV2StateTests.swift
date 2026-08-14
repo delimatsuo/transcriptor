@@ -34,6 +34,18 @@ final class ProtocolV2StateTests: XCTestCase {
             metadataBytes: 4_096, residentBytes: 52_608, capturedAtMs: 2_000
         )))
 
+        var oversizedEvent = try V2CustodyBudget(sampleRateHertz: 48_000, channelCount: 2)
+        XCTAssertThrowsError(try oversizedEvent.reserve(V2CustodyReservation(
+            eventId: "oversized", frames: 96_000, payloadBytes: 384_000,
+            metadataBytes: 472, residentBytes: 384_600, capturedAtMs: 0
+        )))
+        XCTAssertEqual(oversizedEvent.retainedEvents, 0)
+        XCTAssertThrowsError(try oversizedEvent.reserve(V2CustodyReservation(
+            eventId: "overflow", frames: Int.max, payloadBytes: Int.max,
+            metadataBytes: 472, residentBytes: Int.max, capturedAtMs: 0
+        )))
+        XCTAssertEqual(oversizedEvent.retainedEvents, 0)
+
         var expiring = try V2CustodyBudget(sampleRateHertz: 8_000, channelCount: 1)
         try expiring.reserve(V2CustodyReservation(
             eventId: "expiring", frames: 160, payloadBytes: 320,
@@ -43,6 +55,16 @@ final class ProtocolV2StateTests: XCTestCase {
         XCTAssertTrue(expiring.acquisitionStopped)
         XCTAssertEqual(try expiring.advanceClock(30_000), ["expiring"])
         XCTAssertEqual(expiring.released["expiring"], "privacy_timeout_local")
+
+        var discarded = try V2CustodyBudget(sampleRateHertz: 8_000, channelCount: 1)
+        try discarded.reserve(V2CustodyReservation(
+            eventId: "discard", frames: 160, payloadBytes: 320,
+            metadataBytes: 472, residentBytes: 920, capturedAtMs: 0
+        ))
+        try discarded.acknowledgeDurableDiscard("discard", gapId: "gap-1")
+        try discarded.acknowledgeDurableDiscard("discard", gapId: "gap-1")
+        XCTAssertThrowsError(try discarded.acknowledgeDurableDiscard("discard", gapId: "gap-2"))
+        XCTAssertEqual(discarded.discardGapIds["discard"], "gap-1")
     }
 
     func testMixedSource6090120MinuteQuotaMatrixStaysBounded() throws {
@@ -110,8 +132,11 @@ final class ProtocolV2StateTests: XCTestCase {
     }
 
     func testEffectRequiresDurableOwnerJournalAndPositiveQuiescence() throws {
-        var effect = V2EffectFence()
+        var effect = try V2EffectFence(effectId: "effect-1")
+        var foreign = try V2EffectFence(effectId: "effect-2")
         let token = try effect.prepare(ownerId: "owner-a")
+        _ = try foreign.prepare(ownerId: "owner-a")
+        XCTAssertThrowsError(try foreign.invoke(token))
         XCTAssertEqual(try effect.prepare(ownerId: "owner-a"), token)
         XCTAssertThrowsError(try effect.prepare(ownerId: "owner-b"))
         try effect.invoke(token)
@@ -129,6 +154,7 @@ final class ProtocolV2StateTests: XCTestCase {
         XCTAssertEqual(effect.state, .terminal)
         XCTAssertEqual(effect.invokeCount, 1)
         XCTAssertTrue(effect.journalCommitted)
+        XCTAssertThrowsError(try effect.recover(runtimeEpoch: 2, egressFence: 2))
     }
 
     func testLifecycleProjectionCannotClaimCompletionFromOneAxis() throws {
@@ -146,5 +172,55 @@ final class ProtocolV2StateTests: XCTestCase {
         try lifecycle.gatewayCoverage(version: 3, state: .deleteQuiescing)
         XCTAssertEqual(lifecycle.derived, .deleting)
         XCTAssertThrowsError(try lifecycle.companion(version: 2, state: .degraded))
+    }
+
+    func testDeletionRequiresQuiescenceTwoPassesAndFencesLateCallbacks() throws {
+        var deletion = try V2DeletionFence(
+            participants: ["worker", "connection", "effect"],
+            stores: ["session", "retry", "backup"]
+        )
+        let generation = try deletion.request()
+        XCTAssertThrowsError(try deletion.assertAdmissionAllowed())
+        try deletion.acknowledge("worker", generation: generation)
+        try deletion.acknowledge("connection", generation: generation)
+        XCTAssertThrowsError(try deletion.startDeleting())
+        try deletion.acknowledge("effect", generation: generation)
+        try deletion.startDeleting()
+
+        var restarted = deletion
+        let absent = ["session": true, "retry": true, "backup": true]
+        XCTAssertTrue(try restarted.recordAbsencePass(1, results: absent))
+        XCTAssertFalse(try restarted.recordAbsencePass(
+            2,
+            results: ["session": true, "retry": true, "backup": false]
+        ))
+        XCTAssertEqual(restarted.state, .deletionFailed)
+        try restarted.resume(generation: generation)
+        XCTAssertTrue(try restarted.recordAbsencePass(2, results: absent))
+        try restarted.finish()
+        XCTAssertEqual(restarted.state, .deleted)
+        XCTAssertThrowsError(try restarted.rejectLateCallback(generation: generation))
+        XCTAssertEqual(restarted.lateCallbackRejections, 1)
+    }
+
+    func testTransportEdgeRejectsPreAuthAudioCountsAndBackwardDeadline() throws {
+        var edge = V2TransportEdgeBudget()
+        for index in 0..<16 {
+            try edge.openPending(
+                connectionId: "connection-\(index)", sourceIp: "192.0.2.1", nowMs: 10_000,
+                headerBytes: 16_384, firstAuthBytes: 8_192, receiveBytes: 32_768
+            )
+        }
+        let before = edge.pendingBytes
+        XCTAssertThrowsError(try edge.openPending(
+            connectionId: "connection-16", sourceIp: "192.0.2.1", nowMs: 10_000,
+            headerBytes: 1, firstAuthBytes: 1, receiveBytes: 1
+        ))
+        XCTAssertThrowsError(try edge.rejectPreAuthAudio(declaredBytes: 68_100))
+        XCTAssertEqual(edge.pendingBytes, before)
+        XCTAssertThrowsError(try edge.authenticate(connectionId: "connection-0", nowMs: 9_999))
+        try edge.authenticate(connectionId: "connection-0", nowMs: 18_000)
+        XCTAssertEqual(edge.parserBytes, 68_100)
+        XCTAssertThrowsError(try edge.authenticate(connectionId: "connection-1", nowMs: 18_001))
     }
 }

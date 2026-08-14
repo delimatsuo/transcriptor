@@ -68,5 +68,10 @@ final class ProtocolV2ModelTests: XCTestCase {
         noncanonicalFrame.append(noncanonical)
         noncanonicalFrame.append(payload)
         XCTAssertThrowsError(try v2ParseAudioFrame(noncanonicalFrame))
+        XCTAssertThrowsError(try v2RetryCommitment(
+            sessionKey: Data((0..<32).map(UInt8.init)),
+            metadata: noncanonical,
+            payload: payload
+        ))
     }
 }

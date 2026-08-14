@@ -244,6 +244,11 @@ public func v2RetryCommitment(sessionKey: Data, metadata: Data, payload: Data) t
     guard sessionKey.count >= 32, metadata.count <= 4_096, payload.count <= 64_000 else {
         throw ProtocolV2ValidationError.invalid("retry commitment input is outside bounds")
     }
+    var canonicalFrame = Data()
+    v2AppendFrameUInt32(UInt32(metadata.count), to: &canonicalFrame)
+    canonicalFrame.append(metadata)
+    canonicalFrame.append(payload)
+    _ = try v2ParseAudioFrame(canonicalFrame)
     var message = Data("tars-retry-v2\0".utf8)
     v2AppendFrameUInt32(UInt32(metadata.count), to: &message)
     message.append(metadata)

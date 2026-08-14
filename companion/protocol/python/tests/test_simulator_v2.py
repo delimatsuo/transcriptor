@@ -119,6 +119,8 @@ class ProtocolV2SimulatorTests(unittest.TestCase):
         ))
         self.assertTrue(all(scope.custody == 0 and scope.resident == 0 for scope in quota.scopes.values()))
         self.assertTrue(all(scope.events == max(0, scope.limits.event_burst - 1) for scope in quota.scopes.values()))
+        with self.assertRaises(ProtocolV2Violation):
+            ScopeQuotaLimits(-1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1)
 
         quota = HierarchicalIngressQuota(quota_rows())
         self.assertTrue(quota.reserve(
@@ -184,6 +186,12 @@ class ProtocolV2SimulatorTests(unittest.TestCase):
         self.assertNotIn("event-1", custody.forwarded)
 
         custody = RawCustodyBuffer(48_000, 2)
+        with self.assertRaises(ProtocolV2Violation):
+            custody.reserve(
+                "oversized", bytes(384_000), frames=96_000, metadata_bytes=472,
+                resident_overhead_bytes=128, captured_at_ms=0,
+            )
+        self.assertEqual(custody.retained_frames, 0)
         stereo = bytes(19_200)
         for index in range(10):
             custody.reserve(
@@ -194,6 +202,14 @@ class ProtocolV2SimulatorTests(unittest.TestCase):
         custody.advance_clock(1_000, clock_certain=False)
         self.assertEqual(custody.retained_frames, 0)
         self.assertEqual(len(custody.gap_obligations), 10)
+
+        custody = RawCustodyBuffer(8_000, 1)
+        custody.reserve("discard", payload, frames=160, metadata_bytes=472, resident_overhead_bytes=128, captured_at_ms=0)
+        custody.acknowledge_durable_discard("discard", "gap-1")
+        custody.acknowledge_durable_discard("discard", "gap-1")
+        with self.assertRaises(ProtocolV2Violation):
+            custody.acknowledge_durable_discard("discard", "gap-2")
+        self.assertEqual(custody.gap_obligations["discard"], "gap-1")
 
     def test_transport_edge_bounds_pre_auth_audio_and_deadlines(self):
         edge = TransportEdgeBudget()
@@ -215,6 +231,12 @@ class ProtocolV2SimulatorTests(unittest.TestCase):
         self.assertEqual(edge.authenticated_parser_bytes, 68_100)
         with self.assertRaises(ProtocolV2Violation):
             edge.authenticate("connection-1", 8_001)
+        edge.open_pending(
+            "future-clock", "192.0.2.2", 10_000,
+            header_bytes=1, first_auth_bytes=1, receive_buffer_bytes=1,
+        )
+        with self.assertRaises(ProtocolV2Violation):
+            edge.authenticate("future-clock", 9_999)
 
     def test_lifecycle_axes_are_origin_separated_and_conservative(self):
         lifecycle = LifecycleProjection()
