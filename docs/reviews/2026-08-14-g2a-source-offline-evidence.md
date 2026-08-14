@@ -1,7 +1,8 @@
 # G2-A source-only offline evidence checkpoint
 
-Status: implementation checkpoint; G2 is not complete because C# execution is
-blocked by the unavailable .NET SDK on this host.
+Status: implementation checkpoint; the C# availability gate now passes, but
+G2 remains incomplete pending the full three-language matrix and renewed
+exact-tree review.
 
 ## Exact binding
 
@@ -28,11 +29,19 @@ blocked by the unavailable .NET SDK on this host.
   and aligns the canonical control envelope with the governing 65,536-byte
   limit. This evidence child and its source parent require fresh exact-tree
   review.
+- C# execution checkpoint: commit
+  `fb77990891fa3cbfe4da87de4726ecc7ad78308a`, tree
+  `5c3245d183957bc8f8b93518780c1ef46c642d66`. It executes the restored and
+  compiled C# assembly directly from scratch and removes the compiler warning
+  exposed by the first SDK-backed run. This evidence child and source parent
+  require renewed exact-tree review.
 - Worktree: `/private/tmp/transcriptor-native-g2a-source`.
 - Branch: `codex/native-g2a-source`.
 - Worktree was clean at the source checkpoint. No protected checkout, PR #8,
-  N11D-C worktree, provider, device, network, cloud, credential, capture,
-  deployment, merge, release, or candidate-data activity occurred.
+  N11D-C worktree, provider, device, cloud, credential, capture, deployment,
+  merge, release, or candidate-data activity occurred. The owner authorized a
+  Homebrew download to install the keg-only `.NET 8` SDK; all qualification
+  processes themselves remained network-denied.
 
 ## Approved implementation paths
 
@@ -64,27 +73,26 @@ The 65,536-byte canonical control boundary is accepted exactly and a
 - `git diff --check`: passed.
 - Full inherited Phase 1A guarded wrapper: **79 Python tests and 7 Swift tests
   passed twice**, networking denied and scrubbed environment.
-- G2-A guarded prefix: **25 Python tests and 7 Swift tests passed twice** in
-  the network-denied, scrubbed environment before the C# availability check.
+- Complete G2-A guarded wrapper: **25 Python tests, 7 Swift tests, and 11 C#
+  vectors passed twice** in network-denied, scrubbed environments.
 - Shared Python/Swift canonical v2 vectors: passed, including atomic coverage,
   terminal coverage, and transcript segment identities.
 - G2 artifact scan: passed against the exact authorization range
   `8398fa8b345e326320e54d2a598977e47ee67fa7..HEAD`, with zero artifacts,
   forbidden imports, and out-of-scope paths.
-- C# vector runner: a conventional dependency-free entry point contains four
-  positive identity checks and seven negative validation checks, but neither
-  compilation nor execution is available because this host has no `.NET`
-  SDK or C# compiler. The guarded C# path now clears all NuGet package sources,
+- C# vector runner: `.NET SDK 8.0.130` and runtime `8.0.30` compiled and ran
+  the conventional dependency-free entry point. Four positive identity checks
+  and seven negative validation checks passed twice. The guarded C# path
+  clears all NuGet package sources, restores only from installed SDK packs,
   creates restore/build/output directories only under a fresh scratch root,
-  and deletes that root after each run. The G2 wrapper exited `2` after
-  reporting `dotnet SDK unavailable` twice. No package install or network
-  fetch was attempted. G2 exit evidence therefore remains blocked.
+  executes the resulting DLL directly from that root, and deletes the root
+  after each run. The final artifact scan found no `bin` or `obj` residue.
 
 ## Remaining required evidence
 
-Before G2 can exit, compile and run the C# vectors twice with networking
-denied, re-run the full Python/Swift/C# conformance and long-duration matrix
-from clean scratch, scan the final exact tree, and obtain independent staff
-and security/privacy approval bound to that final commit/tree. This checkpoint
-does not authorize provider, device, capture, hosted, deployment, merge, or
-release work.
+Before G2 can exit, complete the remaining cross-language rejection,
+crash/recovery, fencing, quiescence, quota, custody, deletion, identity, and
+long-duration matrix from clean scratch; scan the final exact tree; and obtain
+independent staff and security/privacy approval bound to that final
+commit/tree. This checkpoint does not authorize provider, device, capture,
+hosted, deployment, merge, or release work.
