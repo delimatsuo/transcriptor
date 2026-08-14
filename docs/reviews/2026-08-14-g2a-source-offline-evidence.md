@@ -1,9 +1,10 @@
 # G2-A source-only offline evidence candidate
 
-Status: candidate final G2 source/offline evidence. Source implementation and
-clean-scratch qualification are complete at the exact source parent below.
-Independent staff and security/privacy approval of the enclosing evidence
-commit remains required before G2 exit may be recorded.
+Status: candidate final G2-A source/offline evidence, published for review in
+PR #11. Source implementation and clean-scratch qualification are complete at
+the exact source parent below. The PR is cumulative with the documentation
+history published in PR #10; PR #10 must not be merged separately. G2 exit
+remains gated by fresh exact-tree staff/security review and CI evidence.
 
 ## Exact binding and authority
 
@@ -20,7 +21,12 @@ commit remains required before G2 exit may be recorded.
   `794a19152d14cbaf4a0d875f799b1864d1e5dc5e`, tree
   `30d6f9f77435d6171e45d489fa2da11933e55fd2`.
 - Worktree: `/private/tmp/transcriptor-native-g2a-source`.
-- Branch: `codex/native-g2a-source`; local and unpushed.
+- Branch: `codex/native-g2a-source`; published at the source parent/evidence
+  checkpoint in PR #11, targeting `codex/native-launch-boundary`.
+- Publication state at this record: PR #11 is open, ready for review, clean,
+  and has no submitted GitHub reviews or reported CI checks. PR #10 remains an
+  open draft containing the cumulative documentation history; it must not be
+  merged separately from PR #11.
 
 The owner authorized this source-only offline corridor and separately
 authorized the Homebrew download needed to install the keg-only .NET 8 SDK.
@@ -151,6 +157,15 @@ effect/deletion state proofs, and rejecting ownerless C# recovery. Because
 these changes create a new exact tree, none of the prior blocked reviews is
 approval of this candidate.
 
+The initial publication review of PR #11 at the prior evidence head found no
+source P0-P3 defect but did find package-level corrections: staff engineering
+blocked the stale “local and unpushed” metadata, unsupported approval wording,
+empty GitHub CI/review state, and unresolved PR #10/PR #11 stacking semantics;
+security/privacy approved with conditions requiring an exact current-tree
+attestation, preserved network-denied guard evidence, and renewed review after
+any correction. Those dispositions are recorded as review history, not as G2
+exit approval.
+
 ## Claim ceiling and remaining gate
 
 This evidence can support only protocol-v2 closure under deterministic,
@@ -161,12 +176,12 @@ absence, physical RAM erasure during OS suspension, macOS or Windows capture,
 permissions, packaging, deployment, pilot behavior, launch readiness, merge,
 or release.
 
-The only remaining G2-A source gate asserted by this record is independent
-staff and security/privacy review of the enclosing evidence commit and its
-exact source parent with no unresolved P0–P3 finding. Any correction expires
-that approval and requires a new exact commit/tree review. Later G3A gateway
-and G3B native-capture work remain separately planned and separately
-authorized.
+The remaining G2-A publication gate asserted by this record is fresh
+independent staff and security/privacy review of the corrected enclosing
+evidence commit and its exact source parent, with preserved CI/guard evidence
+and no unresolved P0-P3 finding. Any correction expires that approval and
+requires a new exact commit/tree review. Later G3A gateway and G3B
+native-capture work remain separately planned and separately authorized.
 
 The evidence file binds its exact source parent above. Its enclosing evidence
 commit cannot self-identify without changing itself; final binding therefore
