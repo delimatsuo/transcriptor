@@ -101,8 +101,13 @@ while the process is frozen.
 2. The gateway validates session ownership, stream identity, limits, and ordering.
 3. The gateway forwards transient audio to Google Cloud STT under the approved
    bounded ingress, bitrate, custody, and provider-attempt quotas.
-4. A gateway-admission acknowledgement identifies the highest contiguous authenticated, authorized range copied into a bounded gateway queue. It does not permit client audio release.
-5. A provider-forwarding acknowledgement identifies the highest contiguous range written to the active STT stream with content-free forwarding metadata durably journaled.
+4. A gateway-admission acknowledgement identifies the authoritative ordered
+   disjoint `stageIntervals` copied into a bounded gateway queue, plus any
+   derived contiguous prefix. It does not permit client audio release.
+5. A provider-forwarding acknowledgement identifies an authoritative ordered
+   disjoint interval set written to the active STT stream, with any derived
+   contiguous prefix explicitly marked as a convenience summary; content-free
+   forwarding metadata is durably journaled.
 6. The companion releases raw audio from memory through the ordered disjoint
    `audio.forwarded` intervals for that source, or after an explicit local
    discard/zeroization action. A discard CAS that wins before provider

@@ -425,6 +425,14 @@ admission and intents immediately. Journal compaction may build derived
 watermarks but never deletes the immutable entries before the session's
 retention/deletion policy authorizes it.
 
+Every admission and forwarding acknowledgement carries the authoritative
+ordered disjoint `stageIntervals` array and a nullable derived contiguous
+prefix; reconnect requests and responses carry the same interval representation
+plus an exact resend interval set. The array is sorted by
+`(firstSequence, firstSample, lastSampleExclusive)`, rejects duplicates and
+overlap, and uses canonical unsigned decimal strings for values outside JSON's
+safe integer range. A scalar high-water sequence is never a release authority.
+
 The admission ledger, intents, and journals include the session-scoped retry
 commitment reference needed to validate an exact resend after restart. The
 commitment itself is never exposed in acknowledgements, logs, telemetry,
@@ -514,9 +522,13 @@ and transcript-segment identity are separate:
   canonical fields: literal `tars-transcript-segment-v2`, session ID, stream ID,
   capture generation, source, the complete ordered atomic `coverageId` list
   encoded with the same count/length-prefix rules, the two text sample bounds,
-  and the non-negative result ordinal and provider provenance. The text is not
-  an ID input; replay with the same ID and different text, provenance, bounds,
-  ordinal, or intersected list fails closed.
+  and the non-negative result ordinal. The suffix then encodes provider
+  provenance as length-prefixed UTF-8 `providerName` and `providerResultId`, a
+  one-byte presence flag plus big-endian uint64 `sttAttemptGeneration` when
+  present, and no other fields. Text/sample/ordinal values use big-endian
+  uint64; every string is NFC, rejects embedded NUL, and is length-capped at
+  `2^32-1`. The text is not an ID input; replay with the same ID and different
+  text, provenance, bounds, ordinal, or intersected list fails closed.
 - Multiple ordered segments may reference the same atomic chunk. A final
   inside one chunk, two finals inside one chunk, and one final spanning several
   chunks are therefore representable without making transcript text itself an
@@ -602,8 +614,8 @@ identity, and server receive time. State authority is separated:
   It also carries per-source permission/device/capture health and last captured
   sequence/sample. Only the companion can advance physical boundaries.
 - Gateway-originated `transportState` is one of `disconnected`, `admitting`,
-  `forwarding`, `draining`, `fenced`, or `closed`, with the authoritative
-  admission/forwarding watermarks.
+  `forwarding`, `draining`, `fenced`, or `closed`, with authoritative
+  admission/forwarding interval sets and derived prefixes.
 - Gateway-originated `coverageState` is one of `not_started`, `open`,
   `finalizing`, `completed`, `completed_with_gaps`, `delete_quiescing`,
   `deleting`, `deleted`, or `deletion_failed`, with durable transcript/gap

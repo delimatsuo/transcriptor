@@ -190,9 +190,10 @@ reviewed docs-only artifact and UI gate.
 **Entry:** Approved G2-A0 exact tree plus a new direct source-implementation
 authorization naming the exact allowed paths.
 
-**Exit:** Swift, Python, and future Windows binding vectors pass twice with
-network denied, bounded long-duration fixtures, crash points, and clean
-artifact scans. Protocol closure is source/offline evidence only.
+**Exit:** Swift, Python, and C# binding/vector suites pass twice with network
+denied, canonical interval/terminal identity vectors, 60/90/120-minute
+simultaneous two-source fixtures, crash points, and clean artifact scans.
+Protocol closure is source/offline evidence only.
 
 ### G3A: Minimal gateway, isolated and synthetic
 

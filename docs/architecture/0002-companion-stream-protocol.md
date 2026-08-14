@@ -156,11 +156,12 @@ Meaning:
 - A content-free forwarding record containing the source, range, attempt, and time is durable.
 
 This is the provider-forwarded success watermark. The companion may classify a
-chunk as provider-forwarded and release it through the highest contiguous
-`audio.forwarded` sequence for that source. Admission alone never releases raw
-audio. Protocol-v2 also defines terminal privacy releases for ranges that will
-not be retried; those releases create a durable gap and never advance this
-watermark.
+chunk as provider-forwarded and release it when its exact interval appears in
+the authoritative ordered `stageIntervals` set and any preceding gap is
+terminal. `derivedContiguousPrefix` is only a convenience summary. Admission
+alone never releases raw audio. Protocol-v2 also defines terminal privacy
+releases for ranges that will not be retried; those releases create a durable
+gap and never advance this watermark.
 
 The watermark is maintained per contiguous interval, not as a scalar that can
 skip a gap. A later range proven forwarded may be released as an explicit
@@ -197,18 +198,30 @@ Meaning:
 
 This watermark is for transcript completeness and UI reconciliation. It is not the raw-audio release watermark.
 
-### 4.4 Required acknowledgement fields
+### 4.5 Required acknowledgement fields
 
 Each acknowledgement includes:
 
 - session, stream, source, and capture generation; STT attempt generation is
   nullable and absent for pre-provider local discard, privacy-timeout, and
-  deletion gaps
-- highest contiguous sequence for the named acknowledgement stage, or the
-  exact terminal coverage ranges for segment/coverage events
-- the corresponding sample and capture-time range
-- server event ID and server time
-- any missing or rejected ranges
+  deletion gaps;
+- for `audio.admitted` and `audio.forwarded`, an authoritative ordered
+  `stageIntervals` array of disjoint records, each containing
+  `firstSequence`, `lastSequenceInclusive`, `firstSample`, and
+  `lastSampleExclusive`, plus a nullable `derivedContiguousPrefix` record;
+- for segment/coverage events, the exact terminal coverage ranges and ordered
+  segment IDs;
+- the corresponding capture-time range, server event ID, and server time; and
+- any missing or rejected ranges.
+
+`stageIntervals` is sorted by `(firstSequence, firstSample,
+lastSampleExclusive)` ascending, uses canonical unsigned decimal strings for
+values above the JSON safe integer range, rejects duplicate or overlapping
+records, and is the release authority. `derivedContiguousPrefix` is only a
+convenience summary of the interval beginning at the next expected sequence;
+it is null when a gap precedes the interval set and can never authorize release
+past that gap. A scalar high-water sequence is not a wire substitute for this
+array.
 
 For a terminal privacy release, it also includes the release kind, exact `gapId`
 when boundaries are known, boundary status when the end is unknown, and the
@@ -220,12 +233,15 @@ the range list is the release authority for later forwarded intervals.
 
 ## 5. Retry, reconnect, and idempotency
 
-1. The companion retains each raw chunk in bounded memory until its
-   `audio.forwarded` watermark advances past that chunk, or until a terminal
-   privacy release below authorizes or requires zeroization.
-2. On reconnect, the companion sends its last observed admission, forwarding,
-   transcript-segment, and transcript-coverage watermarks.
-3. The server returns the authoritative watermarks, active fencing generation, and exact resend range.
+1. The companion retains each raw chunk in bounded memory until an authoritative
+   `audio.forwarded` interval contains that chunk and all preceding ranges have
+   a forwarded or terminal-gap outcome, or until a terminal privacy release
+   below authorizes or requires zeroization.
+2. On reconnect, the companion sends its last observed admission and forwarding
+   `stageIntervals` arrays, terminal segment/coverage identities, and any local
+   unknown-end boundaries; it does not send a scalar forwarding watermark.
+3. The server returns authoritative interval arrays, derived prefixes, active
+   fencing generation, and an exact resend interval set.
 4. The client resends only ranges not authoritatively forwarded. Retries reuse their original event IDs and payload digests.
 5. The gateway deduplicates already admitted or forwarded events and never creates a second terminal transcript or gap outcome for the same coverage identity.
 6. A stale connection or stale fencing generation cannot admit, forward, pause, resume, or stop a session.
@@ -329,9 +345,13 @@ NUL bytes, non-NFC IDs, and lengths above `2^32-1` fail closed. First/last
 sequence/sample values are display summaries only. This full-list identity
 distinguishes two finals in one chunk and sparse later success after an earlier
 gap even when endpoint ranges match. Transcript segment IDs use the same
-ordered-list and length-prefix encoding, followed by their text bounds,
-provider ordinal, and provenance fields. Crash tests cover failure before and
-after simulated/provider write, forwarding-journal commit, transcript commit,
+ordered-list and length-prefix encoding, followed by big-endian uint64 text
+start/end bounds and provider ordinal, then length-prefixed UTF-8
+`providerName`/`providerResultId`, a one-byte presence flag and optional
+big-endian uint64 `sttAttemptGeneration`. Strings are NFC, reject embedded NUL,
+and are capped at `2^32-1` bytes; all integer overflow and invalid presence
+flags fail closed. Crash tests cover failure before and after simulated/provider
+write, forwarding-journal commit, transcript commit,
 reconnect negotiation, and STT-attempt rotation.
 
 Atomic audio chunks are custody and terminal-claim units, not transcript-result
