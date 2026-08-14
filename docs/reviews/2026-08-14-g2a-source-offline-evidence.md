@@ -44,8 +44,9 @@ was performed. Qualification processes ran with networking denied.
 ## Scope
 
 Changes from the authorization baseline remain confined to the approved
-`companion/protocol/` source/test/guard corridor and this evidence record. The
-implementation is pure and memory-only:
+`companion/protocol/` source/test/guard corridor, the owner-authorized protocol
+closure plan, and this evidence record. The implementation is pure and
+memory-only:
 
 - Python supplies the canonical reference model, parser, retry ledger,
   terminal projection, admission/quota/custody/transport oracles, provider-
@@ -128,6 +129,9 @@ Swift, and C# all finish with zero retained quota custody.
   the reviewed network-denied sandbox.
 - `companion/protocol/scripts/run_g2_artifact_scan.sh`: passed with **zero
   artifacts, forbidden imports, and out-of-scope paths**.
+- The exact baseline-to-HEAD path set is 26 paths: the approved protocol
+  corridor plus `docs/plans/2026-08-13-protocol-closure-entry-plan.md` and this
+  evidence record.
 - .NET SDK `8.0.130` and runtime `8.0.30` compiled and executed the C# DLL from
   fresh scratch twice. NuGet sources were cleared; restore/build/output stayed
   in scratch; no `bin`, `obj`, `.build`, `.swiftpm`, `__pycache__`, payload

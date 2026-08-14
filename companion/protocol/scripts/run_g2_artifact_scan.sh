@@ -19,7 +19,7 @@ changed_paths=$( {
 printf '%s\n' "$changed_paths" | while IFS= read -r path; do
   [ -n "$path" ] || continue
   case "$path" in
-    companion/protocol/*|docs/reviews/2026-08-14-g2a-source-offline-evidence.md) ;;
+    companion/protocol/*|docs/plans/2026-08-13-protocol-closure-entry-plan.md|docs/reviews/2026-08-14-g2a-source-offline-evidence.md) ;;
     *) fail "out-of-scope changed path: $path" ;;
   esac
 done
