@@ -42,10 +42,15 @@ class ProtocolV2RejectionMatrixTests(unittest.TestCase):
             {"x": "e\u0301"},
             {"x": "bad\0value"},
             {"x": "\ud800"},
-            {"x": "a" * 68_100},
+            {"x": "a" * 65_529},
         ):
             with self.assertRaises(ProtocolV2Violation):
                 canonical_json_bytes(value)
+
+        exact_control_envelope = {"x": "a" * 65_528}
+        encoded = canonical_json_bytes(exact_control_envelope)
+        self.assertEqual(len(encoded), 65_536)
+        self.assertEqual(parse_canonical_json_bytes(encoded), exact_control_envelope)
 
     def test_canonical_json_parser_rejects_noncanonical_and_duplicate_bytes(self):
         canonical = b'{"a":1,"nested":[true,null,"ok"]}'

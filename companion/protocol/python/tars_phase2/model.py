@@ -18,7 +18,7 @@ from enum import Enum
 from typing import Any, Iterable, Mapping, Optional, Sequence, Tuple
 
 
-MAX_CONTROL_BYTES = 68_100
+MAX_CONTROL_BYTES = 65_536
 MAX_AUDIO_PAYLOAD_BYTES = 64_000
 MIN_AUDIO_DURATION_MS = 20
 MAX_AUDIO_DURATION_MS = 250
