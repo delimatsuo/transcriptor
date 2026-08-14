@@ -48,8 +48,12 @@ class ProtocolV2SimulatorTests(unittest.TestCase):
         deletion.acknowledge_callback("callback-lane", generation)
         deletion.acknowledge_connection("connection", generation)
         with self.assertRaises(ProtocolV2Violation):
+            deletion.acknowledge_worker("unregistered-worker", generation)
+        with self.assertRaises(ProtocolV2Violation):
             deletion.start_deleting()
         deletion.acknowledge_effect("effect", generation)
+        with self.assertRaises(ProtocolV2Violation):
+            deletion.start_deleting(expected_workers={"worker", "unregistered-worker"})
         deletion.start_deleting()
 
         restarted = DeletionFence.restore(deletion.snapshot())
@@ -102,6 +106,8 @@ class ProtocolV2SimulatorTests(unittest.TestCase):
         restarted.terminalize()
         self.assertEqual(restarted.state, EffectState.TERMINAL)
         self.assertEqual(restarted.invoke_count, 1)
+        with self.assertRaises(ProtocolV2Violation):
+            restarted.recovery_epoch(2, 2)
 
     def test_quota_rejects_before_custody_allocation_and_burns_attempt_tokens(self):
         quota = TokenBucketQuota(QuotaLimits(2, 2, 100, 100, 100, 100, 500))
@@ -110,6 +116,8 @@ class ProtocolV2SimulatorTests(unittest.TestCase):
         self.assertEqual(quota.custody, 200)
         self.assertFalse(quota.reserve(0, events=1, payload_bytes=1, metadata_bytes=1, custody_bytes=1))
         self.assertTrue(quota.reserve(1, events=1, payload_bytes=1, metadata_bytes=1, custody_bytes=1))
+        with self.assertRaises(ProtocolV2Violation):
+            quota.reserve(1.5, events=1, payload_bytes=1, metadata_bytes=1, custody_bytes=1)
 
     def test_all_quota_rows_are_atomic_and_broader_failure_mutates_no_custody(self):
         quota = HierarchicalIngressQuota(quota_rows(process_event_burst=0))
@@ -133,6 +141,13 @@ class ProtocolV2SimulatorTests(unittest.TestCase):
         ))
         quota.release(custody_bytes=320, resident_bytes=1_024, active_sessions=1, writable_attempts=1)
         self.assertTrue(all(scope.custody == 0 and scope.sessions == 0 for scope in quota.scopes.values()))
+        with self.assertRaises(ProtocolV2Violation):
+            quota.reserve(
+                0.5, events=1, payload_bytes=320, metadata_bytes=476,
+                custody_bytes=320, resident_bytes=1_024,
+            )
+        with self.assertRaises(ProtocolV2Violation):
+            quota.release(custody_bytes=True)
 
     def test_admission_matrix_fails_with_one_non_enumerating_code(self):
         authority = AdmissionAuthority(
@@ -210,6 +225,63 @@ class ProtocolV2SimulatorTests(unittest.TestCase):
         with self.assertRaises(ProtocolV2Violation):
             custody.acknowledge_durable_discard("discard", "gap-2")
         self.assertEqual(custody.gap_obligations["discard"], "gap-1")
+
+        for invalid in (True, 160.5):
+            custody = RawCustodyBuffer(8_000, 1)
+            with self.assertRaises(ProtocolV2Violation):
+                custody.reserve(
+                    "invalid", payload, frames=invalid, metadata_bytes=472,
+                    resident_overhead_bytes=128, captured_at_ms=0,
+                )
+            self.assertEqual(custody.retained_frames, 0)
+        with self.assertRaises(ProtocolV2Violation):
+            RawCustodyBuffer(8_000, 1).advance_clock(0.5)
+
+    def test_local_privacy_release_fences_pending_provider_effect(self):
+        payload = bytes(range(160)) * 2
+        custody = RawCustodyBuffer(8_000, 1)
+        custody.reserve(
+            "forwarded", payload, frames=160, metadata_bytes=472,
+            resident_overhead_bytes=128, captured_at_ms=0,
+        )
+        effect = ProviderEffectFence("effect-forwarded")
+        token = effect.prepare("owner-a")
+        custody.register_effect("forwarded", effect)
+        custody.invoke_effect("forwarded", effect, token)
+        with self.assertRaises(ProtocolV2Violation):
+            custody.acknowledge_forwarded("forwarded", journal_committed=True)
+        custody.local_privacy_release("forwarded", "emergency_local")
+        self.assertIn("forwarded", custody.effect_pending_releases)
+        self.assertNotIn("forwarded", custody.gap_obligations)
+        with self.assertRaises(ProtocolV2Violation):
+            custody.register_effect("forwarded", ProviderEffectFence("replacement"))
+        with self.assertRaises(ProtocolV2Violation):
+            custody.acknowledge_durable_discard("forwarded", "gap-forbidden")
+        with self.assertRaises(ProtocolV2Violation):
+            custody.resolve_pending_effect("forwarded", effect, "durable_discard")
+        effect.provider_ack(token)
+        effect.commit_journal(token)
+        custody.resolve_pending_effect("forwarded", effect, "forwarded")
+        self.assertIn("forwarded", custody.forwarded)
+        self.assertNotIn("forwarded", custody.gap_obligations)
+
+        custody = RawCustodyBuffer(8_000, 1)
+        custody.reserve(
+            "ambiguous", payload, frames=160, metadata_bytes=472,
+            resident_overhead_bytes=128, captured_at_ms=0,
+        )
+        effect = ProviderEffectFence("effect-ambiguous")
+        token = effect.prepare("owner-a")
+        custody.register_effect("ambiguous", effect)
+        custody.invoke_effect("ambiguous", effect, token)
+        custody.local_privacy_release("ambiguous", "deletion_local")
+        effect.recovery_epoch(1, 1)
+        effect.acknowledge_provider_close()
+        effect.acknowledge_owner_termination()
+        effect.terminalize()
+        custody.resolve_pending_effect("ambiguous", effect, "ambiguous_effect")
+        self.assertEqual(custody.gap_obligations["ambiguous"], "ambiguous_effect")
+        self.assertNotIn("ambiguous", custody.forwarded)
 
     def test_transport_edge_bounds_pre_auth_audio_and_deadlines(self):
         edge = TransportEdgeBudget()

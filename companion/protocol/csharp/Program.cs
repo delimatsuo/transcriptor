@@ -140,7 +140,7 @@ internal static class Program
                 lastSecond = second;
             }
             bool allowed = events >= requestedEvents && payload >= payloadBytes && metadata >= metadataBytes &&
-                           custody + custodyBytes <= custodyLimit;
+                           custodyBytes <= custodyLimit - custody;
             events = Math.Max(0, events - requestedEvents);
             payload = Math.Max(0, payload - payloadBytes);
             metadata = Math.Max(0, metadata - metadataBytes);
@@ -183,8 +183,10 @@ internal static class Program
         }
 
         internal int InvokeCount { get; private set; }
+        internal string EffectId => effectId;
         internal bool JournalCommitted { get; private set; }
         internal string State => state;
+        internal bool IsPreparedOwned => state == "prepared" && ownerId is not null && token.HasValue;
 
         internal EffectToken Prepare(string owner)
         {
@@ -269,6 +271,9 @@ internal static class Program
         private readonly Dictionary<string, CustodyItem> items = new(StringComparer.Ordinal);
         private readonly Dictionary<string, string> released = new(StringComparer.Ordinal);
         private readonly Dictionary<string, string> gapIds = new(StringComparer.Ordinal);
+        private readonly Dictionary<string, string> effectIds = new(StringComparer.Ordinal);
+        private readonly HashSet<string> pendingEffectReleases = new(StringComparer.Ordinal);
+        private readonly HashSet<string> forwarded = new(StringComparer.Ordinal);
         private long lastClockMs;
 
         internal CustodyBudget(int sampleRate, int channels)
@@ -320,20 +325,95 @@ internal static class Program
 
         internal void Forward(string eventId, bool journalCommitted)
         {
+            if (effectIds.ContainsKey(eventId))
+                throw new InvalidOperationException("registered provider effect requires effect-bound forwarding");
             if (!journalCommitted)
                 throw new InvalidOperationException("forwarding release requires journal");
             Release(eventId, "forwarded");
+            forwarded.Add(eventId);
+        }
+
+        internal void ForwardEffect(string eventId, EffectFence effect)
+        {
+            if (effectIds.GetValueOrDefault(eventId) != effect.EffectId || !effect.JournalCommitted)
+                throw new InvalidOperationException("effect-bound forwarding requires the original immutable journal");
+            if (pendingEffectReleases.Contains(eventId))
+                throw new InvalidOperationException("locally released custody requires pending-effect resolution");
+            Release(eventId, "forwarded");
+            forwarded.Add(eventId);
         }
 
         internal void Discard(string eventId, string gapId)
         {
-            if (string.IsNullOrEmpty(gapId) || released.GetValueOrDefault(eventId) == "forwarded")
+            if (string.IsNullOrEmpty(gapId) || forwarded.Contains(eventId) || pendingEffectReleases.Contains(eventId))
                 throw new InvalidOperationException("discard conflicts with forwarding");
             if (gapIds.TryGetValue(eventId, out string? existing) && existing != gapId)
                 throw new InvalidOperationException("discard identity replay conflicts");
             Release(eventId, "durable_discard");
             gapIds[eventId] = gapId;
         }
+
+        internal void RegisterEffect(string eventId, EffectFence effect)
+        {
+            if (!items.ContainsKey(eventId) || released.ContainsKey(eventId) || gapIds.ContainsKey(eventId) ||
+                !effect.IsPreparedOwned)
+            {
+                throw new InvalidOperationException("provider effect requires live unreleased custody and a durable owner");
+            }
+            if (effectIds.TryGetValue(eventId, out string? existing))
+            {
+                if (existing == effect.EffectId) return;
+                throw new InvalidOperationException("range already has a different provider effect");
+            }
+            effectIds[eventId] = effect.EffectId;
+        }
+
+        internal void InvokeEffect(string eventId, EffectFence effect, EffectToken token)
+        {
+            if (!items.ContainsKey(eventId) || effectIds.GetValueOrDefault(eventId) != effect.EffectId)
+                throw new InvalidOperationException("provider invocation requires registered live custody");
+            effect.Invoke(token);
+        }
+
+        internal void LocalPrivacyRelease(string eventId, string reason)
+        {
+            if (reason is not ("privacy_timeout_local" or "deletion_local" or "emergency_local") ||
+                forwarded.Contains(eventId))
+            {
+                throw new InvalidOperationException("local privacy release is invalid");
+            }
+            Release(eventId, reason);
+            if (effectIds.ContainsKey(eventId)) pendingEffectReleases.Add(eventId);
+            else gapIds[eventId] = reason;
+        }
+
+        internal void ResolvePendingEffect(string eventId, EffectFence effect, string outcome)
+        {
+            if (!pendingEffectReleases.Contains(eventId) || effectIds.GetValueOrDefault(eventId) != effect.EffectId)
+                throw new InvalidOperationException("pending effect resolution is stale or foreign");
+            if (outcome == "forwarded")
+            {
+                if (!effect.JournalCommitted)
+                    throw new InvalidOperationException("forwarded resolution requires immutable journal");
+                forwarded.Add(eventId);
+                released[eventId] = "forwarded_after_local_release";
+            }
+            else if (outcome == "ambiguous_effect")
+            {
+                if (effect.State != "terminal" || effect.JournalCommitted)
+                    throw new InvalidOperationException("ambiguous resolution requires unforwarded positive quiescence");
+                gapIds[eventId] = "ambiguous_effect";
+            }
+            else
+            {
+                throw new InvalidOperationException("pending effect cannot resolve as discard");
+            }
+            pendingEffectReleases.Remove(eventId);
+        }
+
+        internal bool IsPendingEffectRelease(string eventId) => pendingEffectReleases.Contains(eventId);
+        internal bool IsForwarded(string eventId) => forwarded.Contains(eventId);
+        internal string? GapFor(string eventId) => gapIds.GetValueOrDefault(eventId);
 
         internal IReadOnlyList<string> Advance(long nowMs, bool clockCertain)
         {
@@ -347,7 +427,7 @@ internal static class Program
                 .Select(pair => pair.Key)
                 .OrderBy(value => value, StringComparer.Ordinal)
                 .ToArray();
-            foreach (string eventId in expired) Release(eventId, "privacy_timeout_local");
+            foreach (string eventId in expired) LocalPrivacyRelease(eventId, "privacy_timeout_local");
             return expired;
         }
 
@@ -609,7 +689,7 @@ internal static class Program
         RunStateMatrix();
         RunLongDurationMatrix();
 
-        Console.WriteLine("{\"phase\":\"2A-csharp-vectors\",\"successful\":true,\"vectorsRun\":39}");
+        Console.WriteLine("{\"phase\":\"2A-csharp-vectors\",\"successful\":true,\"vectorsRun\":43}");
     }
 
     private static void RunStateMatrix()
@@ -658,6 +738,50 @@ internal static class Program
         if (!custody.Advance(30_000, true).SequenceEqual(new[] { "expiring" }))
             throw new InvalidOperationException("custody privacy deadline mismatch");
 
+        custody = new CustodyBudget(8_000, 1);
+        custody.Reserve("direct", new CustodyItem(160, 320, 472, 920, 0));
+        var directEffect = new EffectFence("effect-direct");
+        EffectToken directToken = directEffect.Prepare("owner-a");
+        custody.RegisterEffect("direct", directEffect);
+        custody.InvokeEffect("direct", directEffect, directToken);
+        directEffect.ProviderReturned(directToken);
+        directEffect.CommitJournal(directToken);
+        ExpectReject(() => custody.Forward("direct", true));
+        custody.ForwardEffect("direct", directEffect);
+        if (!custody.IsForwarded("direct"))
+            throw new InvalidOperationException("effect-bound direct forwarding was not recorded");
+
+        custody = new CustodyBudget(8_000, 1);
+        custody.Reserve("pending-forwarded", new CustodyItem(160, 320, 472, 920, 0));
+        var pendingForwarded = new EffectFence("effect-pending-forwarded");
+        EffectToken pendingToken = pendingForwarded.Prepare("owner-a");
+        custody.RegisterEffect("pending-forwarded", pendingForwarded);
+        custody.InvokeEffect("pending-forwarded", pendingForwarded, pendingToken);
+        custody.LocalPrivacyRelease("pending-forwarded", "emergency_local");
+        ExpectReject(() => custody.RegisterEffect("pending-forwarded", new EffectFence("replacement")));
+        ExpectReject(() => custody.Discard("pending-forwarded", "gap-forbidden"));
+        ExpectReject(() => custody.ResolvePendingEffect("pending-forwarded", pendingForwarded, "durable_discard"));
+        pendingForwarded.ProviderReturned(pendingToken);
+        pendingForwarded.CommitJournal(pendingToken);
+        custody.ResolvePendingEffect("pending-forwarded", pendingForwarded, "forwarded");
+        if (!custody.IsForwarded("pending-forwarded") || custody.GapFor("pending-forwarded") is not null)
+            throw new InvalidOperationException("pending forwarded effect resolution mismatch");
+
+        custody = new CustodyBudget(8_000, 1);
+        custody.Reserve("pending-ambiguous", new CustodyItem(160, 320, 472, 920, 0));
+        var pendingAmbiguous = new EffectFence("effect-pending-ambiguous");
+        EffectToken ambiguousToken = pendingAmbiguous.Prepare("owner-a");
+        custody.RegisterEffect("pending-ambiguous", pendingAmbiguous);
+        custody.InvokeEffect("pending-ambiguous", pendingAmbiguous, ambiguousToken);
+        custody.LocalPrivacyRelease("pending-ambiguous", "deletion_local");
+        pendingAmbiguous.Recover(1, 1);
+        pendingAmbiguous.AcknowledgeProviderClose();
+        pendingAmbiguous.AcknowledgeOwnerTermination();
+        pendingAmbiguous.Terminalize();
+        custody.ResolvePendingEffect("pending-ambiguous", pendingAmbiguous, "ambiguous_effect");
+        if (custody.GapFor("pending-ambiguous") != "ambiguous_effect" || custody.IsForwarded("pending-ambiguous"))
+            throw new InvalidOperationException("pending ambiguous effect resolution mismatch");
+
         var deletion = new DeletionFence(
             new[] { "worker", "connection", "effect" },
             new[] { "session", "retry", "backup" });
@@ -701,6 +825,9 @@ internal static class Program
             throw new InvalidOperationException("authenticated parser allocation mismatch");
 
         ExpectReject(() => _ = new QuotaBucket(-1, 1, 1, 1, 1, 1, 1));
+        var overflowQuota = new QuotaBucket(1, 1, 1, 1, 1, 1, long.MaxValue);
+        if (!overflowQuota.Reserve(0, 1, 1, 1, long.MaxValue) || overflowQuota.Reserve(0, 0, 0, 0, 1))
+            throw new InvalidOperationException("quota custody overflow was accepted");
     }
 
     private static void RunLongDurationMatrix()

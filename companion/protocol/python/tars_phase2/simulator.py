@@ -99,7 +99,11 @@ class ProviderEffectFence:
         self.state = EffectState.AMBIGUOUS
 
     def recovery_epoch(self, new_runtime_epoch: int, new_egress_fence: int) -> None:
-        if new_runtime_epoch <= self.runtime_epoch or new_egress_fence <= self.egress_fence:
+        if (
+            self.state is EffectState.TERMINAL
+            or new_runtime_epoch <= self.runtime_epoch
+            or new_egress_fence <= self.egress_fence
+        ):
             raise ProtocolV2Violation("recovery epoch/fence must advance")
         self.runtime_epoch = new_runtime_epoch
         self.egress_fence = new_egress_fence
@@ -225,18 +229,26 @@ class DeletionFence:
             raise ProtocolV2Violation("admission is fenced during deletion")
 
     def acknowledge_worker(self, worker_id: str, generation: int) -> None:
+        if worker_id not in self.workers:
+            raise ProtocolV2Violation("worker is not registered for deletion")
         self._ack(worker_id, generation)
         self.worker_acks.add(worker_id)
 
     def acknowledge_callback(self, callback_id: str, generation: int) -> None:
+        if callback_id not in self.callbacks:
+            raise ProtocolV2Violation("callback lane is not registered for deletion")
         self._ack(callback_id, generation)
         self.callback_acks.add(callback_id)
 
     def acknowledge_connection(self, connection_id: str, generation: int) -> None:
+        if connection_id not in self.connections:
+            raise ProtocolV2Violation("connection is not registered for deletion")
         self._ack(connection_id, generation)
         self.connection_acks.add(connection_id)
 
     def acknowledge_effect(self, effect_id: str, generation: int) -> None:
+        if effect_id not in self.effects:
+            raise ProtocolV2Violation("effect is not registered for deletion")
         self._ack(effect_id, generation)
         self.effect_acks.add(effect_id)
 
@@ -249,15 +261,19 @@ class DeletionFence:
     ) -> None:
         if self.state is not DeletionState.DELETE_QUIESCING:
             raise ProtocolV2Violation("deletion requires delete_quiescing")
-        workers = self.workers | self._identifiers(expected_workers or set())
-        callbacks = self.callbacks | self._identifiers(expected_callbacks or set())
-        connections = self.connections | self._identifiers(expected_connections or set())
-        effects = self.effects | self._identifiers(expected_effects or set())
+        requested = (
+            (expected_workers, self.workers),
+            (expected_callbacks, self.callbacks),
+            (expected_connections, self.connections),
+            (expected_effects, self.effects),
+        )
+        if any(expected is not None and self._identifiers(expected) != registered for expected, registered in requested):
+            raise ProtocolV2Violation("deletion participant set cannot change after request")
         if (
-            not workers.issubset(self.worker_acks)
-            or not callbacks.issubset(self.callback_acks)
-            or not connections.issubset(self.connection_acks)
-            or not effects.issubset(self.effect_acks)
+            not self.workers.issubset(self.worker_acks)
+            or not self.callbacks.issubset(self.callback_acks)
+            or not self.connections.issubset(self.connection_acks)
+            or not self.effects.issubset(self.effect_acks)
         ):
             raise ProtocolV2Violation("positive worker, callback, connection, and effect quiescence required")
         self.state = DeletionState.DELETING
@@ -383,6 +399,8 @@ class TokenBucketQuota:
         self.last_second = 0
 
     def refill(self, now_second: int) -> None:
+        if isinstance(now_second, bool) or not isinstance(now_second, int):
+            raise ProtocolV2Violation("quota clock must be an integer")
         if now_second < self.last_second:
             raise ProtocolV2Violation("quota clock moved backwards")
         elapsed = now_second - self.last_second
@@ -413,7 +431,7 @@ class TokenBucketQuota:
         return allowed
 
     def release_custody(self, bytes_count: int) -> None:
-        if bytes_count < 0 or bytes_count > self.custody:
+        if isinstance(bytes_count, bool) or not isinstance(bytes_count, int) or bytes_count < 0 or bytes_count > self.custody:
             raise ProtocolV2Violation("custody release exceeds reserved bytes")
         self.custody -= bytes_count
 
@@ -487,6 +505,8 @@ class RawCustodyBuffer:
         self.released: dict[str, str] = {}
         self.forwarded: set[str] = set()
         self.gap_obligations: dict[str, str] = {}
+        self.effects: dict[str, ProviderEffectFence] = {}
+        self.effect_pending_releases: set[str] = set()
         self.acquisition_stopped = False
         self.last_clock_ms = 0
 
@@ -516,6 +536,11 @@ class RawCustodyBuffer:
         resident_overhead_bytes: int,
         captured_at_ms: int,
     ) -> bool:
+        if any(
+            isinstance(value, bool) or not isinstance(value, int)
+            for value in (frames, metadata_bytes, resident_overhead_bytes, captured_at_ms)
+        ):
+            raise ProtocolV2Violation("custody reservation numeric input is invalid")
         if event_id in self.items:
             existing = self.items[event_id]
             if bytes(existing.payload) != payload or existing.frames != frames or existing.metadata_bytes != metadata_bytes:
@@ -558,13 +583,23 @@ class RawCustodyBuffer:
         return True
 
     def acknowledge_forwarded(self, event_id: str, *, journal_committed: bool) -> None:
+        if event_id in self.effects:
+            raise ProtocolV2Violation("registered provider effect requires effect-bound forwarding")
         if not journal_committed:
             raise ProtocolV2Violation("forwarding release requires immutable journal")
         self._release(event_id, "forwarded")
         self.forwarded.add(event_id)
 
+    def acknowledge_effect_forwarded(self, event_id: str, effect: ProviderEffectFence) -> None:
+        if self.effects.get(event_id) is not effect or not effect.forwarded:
+            raise ProtocolV2Violation("effect-bound forwarding requires the original immutable journal")
+        if event_id in self.effect_pending_releases:
+            raise ProtocolV2Violation("locally released custody requires pending-effect resolution")
+        self._release(event_id, "forwarded")
+        self.forwarded.add(event_id)
+
     def acknowledge_durable_discard(self, event_id: str, gap_id: str) -> None:
-        if event_id in self.forwarded or not gap_id:
+        if event_id in self.forwarded or event_id in self.effect_pending_releases or not gap_id:
             raise ProtocolV2Violation("durable discard conflicts with forwarding or gap identity")
         existing_gap = self.gap_obligations.get(event_id)
         if existing_gap is not None and existing_gap != gap_id:
@@ -578,9 +613,47 @@ class RawCustodyBuffer:
         if event_id in self.forwarded:
             raise ProtocolV2Violation("forwarded audio cannot become a local privacy discard")
         self._release(event_id, reason)
-        self.gap_obligations[event_id] = reason
+        if event_id in self.effects:
+            self.effect_pending_releases.add(event_id)
+        else:
+            self.gap_obligations[event_id] = reason
+
+    def register_effect(self, event_id: str, effect: ProviderEffectFence) -> None:
+        if event_id not in self.items or event_id in self.released or event_id in self.gap_obligations:
+            raise ProtocolV2Violation("provider effect requires live unreleased custody")
+        if effect.state is not EffectState.PREPARED or effect.token is None or effect.owner_id is None:
+            raise ProtocolV2Violation("provider effect must have a durable owner before range registration")
+        existing = self.effects.get(event_id)
+        if existing is not None:
+            if existing is effect:
+                return
+            raise ProtocolV2Violation("range already has a different provider effect")
+        self.effects[event_id] = effect
+
+    def invoke_effect(self, event_id: str, effect: ProviderEffectFence, token: EffectToken) -> None:
+        if event_id not in self.items or self.effects.get(event_id) is not effect:
+            raise ProtocolV2Violation("provider invocation requires registered live custody")
+        effect.invoke(token)
+
+    def resolve_pending_effect(self, event_id: str, effect: ProviderEffectFence, outcome: str) -> None:
+        if event_id not in self.effect_pending_releases or self.effects.get(event_id) is not effect:
+            raise ProtocolV2Violation("pending effect resolution is stale or foreign")
+        if outcome == "forwarded":
+            if not effect.forwarded:
+                raise ProtocolV2Violation("forwarded resolution requires immutable journal")
+            self.forwarded.add(event_id)
+            self.released[event_id] = "forwarded_after_local_release"
+        elif outcome == "ambiguous_effect":
+            if effect.state is not EffectState.TERMINAL or effect.forwarded:
+                raise ProtocolV2Violation("ambiguous resolution requires unforwarded positive quiescence")
+            self.gap_obligations[event_id] = "ambiguous_effect"
+        else:
+            raise ProtocolV2Violation("pending effect cannot resolve as discard")
+        self.effect_pending_releases.remove(event_id)
 
     def advance_clock(self, now_ms: int, *, clock_certain: bool = True) -> None:
+        if isinstance(now_ms, bool) or not isinstance(now_ms, int) or not isinstance(clock_certain, bool):
+            raise ProtocolV2Violation("custody clock input is invalid")
         if now_ms < self.last_clock_ms:
             raise ProtocolV2Violation("custody clock moved backwards")
         self.last_clock_ms = now_ms
@@ -692,7 +765,12 @@ class HierarchicalIngressQuota:
             writable_attempts,
             draining_attempts,
         )
-        if now_second < 0 or any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in requested):
+        if (
+            isinstance(now_second, bool)
+            or not isinstance(now_second, int)
+            or now_second < 0
+            or any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in requested)
+        ):
             raise ProtocolV2Violation("hierarchical quota request is invalid")
         for scope in self.scopes.values():
             if now_second < scope.last_second:
@@ -736,7 +814,7 @@ class HierarchicalIngressQuota:
         draining_attempts: int = 0,
     ) -> None:
         values = (custody_bytes, resident_bytes, active_sessions, writable_attempts, draining_attempts)
-        if any(value < 0 for value in values):
+        if any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in values):
             raise ProtocolV2Violation("hierarchical quota release is invalid")
         for scope in self.scopes.values():
             if (

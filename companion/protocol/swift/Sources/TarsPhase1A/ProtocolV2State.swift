@@ -29,8 +29,12 @@ public struct V2CustodyBudget: Sendable {
     public let sampleRateHertz: Int
     public let channelCount: Int
     private var entries: [String: V2CustodyReservation] = [:]
+    private var effectIds: [String: String] = [:]
     public private(set) var released: [String: String] = [:]
     public private(set) var discardGapIds: [String: String] = [:]
+    public private(set) var gapObligations: [String: String] = [:]
+    public private(set) var effectPendingReleases: Set<String> = []
+    public private(set) var forwarded: Set<String> = []
     public private(set) var acquisitionStopped = false
     public private(set) var lastClockMs: UInt64 = 0
 
@@ -96,14 +100,29 @@ public struct V2CustodyBudget: Sendable {
     }
 
     public mutating func acknowledgeForwarded(_ eventId: String, journalCommitted: Bool) throws {
+        guard effectIds[eventId] == nil else {
+            throw ProtocolV2ValidationError.invalid("registered provider effect requires effect-bound forwarding")
+        }
         guard journalCommitted else {
             throw ProtocolV2ValidationError.invalid("forwarding release requires immutable journal")
         }
         try release(eventId, outcome: "forwarded")
+        forwarded.insert(eventId)
+    }
+
+    public mutating func acknowledgeEffectForwarded(_ eventId: String, effect: V2EffectFence) throws {
+        guard effectIds[eventId] == effect.effectId, effect.journalCommitted else {
+            throw ProtocolV2ValidationError.invalid("effect-bound forwarding requires the original immutable journal")
+        }
+        guard !effectPendingReleases.contains(eventId) else {
+            throw ProtocolV2ValidationError.invalid("locally released custody requires pending-effect resolution")
+        }
+        try release(eventId, outcome: "forwarded")
+        forwarded.insert(eventId)
     }
 
     public mutating func acknowledgeDurableDiscard(_ eventId: String, gapId: String) throws {
-        guard !gapId.isEmpty, released[eventId] != "forwarded" else {
+        guard !gapId.isEmpty, !forwarded.contains(eventId), !effectPendingReleases.contains(eventId) else {
             throw ProtocolV2ValidationError.invalid("durable discard conflicts with forwarding")
         }
         if let existing = discardGapIds[eventId], existing != gapId {
@@ -111,6 +130,71 @@ public struct V2CustodyBudget: Sendable {
         }
         try release(eventId, outcome: "durable_discard")
         discardGapIds[eventId] = gapId
+        gapObligations[eventId] = gapId
+    }
+
+    public mutating func registerEffect(eventId: String, effect: V2EffectFence) throws {
+        guard entries[eventId] != nil, released[eventId] == nil,
+              gapObligations[eventId] == nil, effect.state == .prepared,
+              effect.ownerId != nil, effect.token != nil else {
+            throw ProtocolV2ValidationError.invalid("provider effect requires live unreleased custody")
+        }
+        if let existing = effectIds[eventId] {
+            guard existing == effect.effectId else {
+                throw ProtocolV2ValidationError.invalid("range already has a different provider effect")
+            }
+            return
+        }
+        effectIds[eventId] = effect.effectId
+    }
+
+    public mutating func invokeEffect(
+        eventId: String,
+        effect: inout V2EffectFence,
+        token: V2EffectToken
+    ) throws {
+        guard entries[eventId] != nil, effectIds[eventId] == effect.effectId,
+              effect.state == .prepared, effect.ownerId != nil else {
+            throw ProtocolV2ValidationError.invalid("provider invocation requires registered live custody")
+        }
+        try effect.invoke(token)
+    }
+
+    public mutating func localPrivacyRelease(_ eventId: String, reason: String) throws {
+        guard ["privacy_timeout_local", "deletion_local", "emergency_local"].contains(reason),
+              !forwarded.contains(eventId) else {
+            throw ProtocolV2ValidationError.invalid("local privacy release is invalid")
+        }
+        try release(eventId, outcome: reason)
+        if effectIds[eventId] != nil {
+            effectPendingReleases.insert(eventId)
+        } else {
+            gapObligations[eventId] = reason
+        }
+    }
+
+    public mutating func resolvePendingEffect(
+        eventId: String,
+        effect: V2EffectFence,
+        outcome: V2PendingEffectOutcome
+    ) throws {
+        guard effectPendingReleases.contains(eventId), effectIds[eventId] == effect.effectId else {
+            throw ProtocolV2ValidationError.invalid("pending effect resolution is stale or foreign")
+        }
+        switch outcome {
+        case .forwarded:
+            guard effect.journalCommitted else {
+                throw ProtocolV2ValidationError.invalid("forwarded resolution requires immutable journal")
+            }
+            forwarded.insert(eventId)
+            released[eventId] = "forwarded_after_local_release"
+        case .ambiguousEffect:
+            guard effect.state == .terminal, !effect.journalCommitted else {
+                throw ProtocolV2ValidationError.invalid("ambiguous resolution requires unforwarded positive quiescence")
+            }
+            gapObligations[eventId] = "ambiguous_effect"
+        }
+        effectPendingReleases.remove(eventId)
     }
 
     public mutating func advanceClock(_ nowMs: UInt64, clockCertain: Bool = true) throws -> [String] {
@@ -121,7 +205,7 @@ public struct V2CustodyBudget: Sendable {
         if !clockCertain {
             acquisitionStopped = true
             let all = entries.keys.sorted()
-            for eventId in all { try release(eventId, outcome: "privacy_timeout_local") }
+            for eventId in all { try localPrivacyRelease(eventId, reason: "privacy_timeout_local") }
             return all
         }
         if entries.values.contains(where: { nowMs - $0.capturedAtMs >= 10_000 }) {
@@ -131,7 +215,7 @@ public struct V2CustodyBudget: Sendable {
             .filter { nowMs - $0.capturedAtMs >= 30_000 }
             .map(\.eventId)
             .sorted()
-        for eventId in expired { try release(eventId, outcome: "privacy_timeout_local") }
+        for eventId in expired { try localPrivacyRelease(eventId, reason: "privacy_timeout_local") }
         return expired
     }
 
@@ -144,6 +228,11 @@ public struct V2CustodyBudget: Sendable {
         }
         released[eventId] = outcome
     }
+}
+
+public enum V2PendingEffectOutcome: Sendable {
+    case forwarded
+    case ambiguousEffect
 }
 
 public struct V2QuotaLimits: Sendable {

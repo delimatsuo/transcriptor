@@ -157,6 +157,50 @@ final class ProtocolV2StateTests: XCTestCase {
         XCTAssertThrowsError(try effect.recover(runtimeEpoch: 2, egressFence: 2))
     }
 
+    func testLocalPrivacyReleaseFencesPendingProviderEffect() throws {
+        let reservation = V2CustodyReservation(
+            eventId: "forwarded", frames: 160, payloadBytes: 320,
+            metadataBytes: 472, residentBytes: 920, capturedAtMs: 0
+        )
+        var custody = try V2CustodyBudget(sampleRateHertz: 8_000, channelCount: 1)
+        try custody.reserve(reservation)
+        var effect = try V2EffectFence(effectId: "effect-forwarded")
+        let token = try effect.prepare(ownerId: "owner-a")
+        try custody.registerEffect(eventId: "forwarded", effect: effect)
+        try custody.invokeEffect(eventId: "forwarded", effect: &effect, token: token)
+        XCTAssertThrowsError(try custody.acknowledgeForwarded("forwarded", journalCommitted: true))
+        try custody.localPrivacyRelease("forwarded", reason: "emergency_local")
+        XCTAssertTrue(custody.effectPendingReleases.contains("forwarded"))
+        XCTAssertNil(custody.gapObligations["forwarded"])
+        var replacement = try V2EffectFence(effectId: "replacement")
+        _ = try replacement.prepare(ownerId: "owner-b")
+        XCTAssertThrowsError(try custody.registerEffect(eventId: "forwarded", effect: replacement))
+        XCTAssertThrowsError(try custody.acknowledgeDurableDiscard("forwarded", gapId: "gap-forbidden"))
+        try effect.providerReturned(token)
+        try effect.commitJournal(token)
+        try custody.resolvePendingEffect(eventId: "forwarded", effect: effect, outcome: .forwarded)
+        XCTAssertTrue(custody.forwarded.contains("forwarded"))
+        XCTAssertNil(custody.gapObligations["forwarded"])
+
+        custody = try V2CustodyBudget(sampleRateHertz: 8_000, channelCount: 1)
+        try custody.reserve(V2CustodyReservation(
+            eventId: "ambiguous", frames: 160, payloadBytes: 320,
+            metadataBytes: 472, residentBytes: 920, capturedAtMs: 0
+        ))
+        effect = try V2EffectFence(effectId: "effect-ambiguous")
+        let ambiguousToken = try effect.prepare(ownerId: "owner-a")
+        try custody.registerEffect(eventId: "ambiguous", effect: effect)
+        try custody.invokeEffect(eventId: "ambiguous", effect: &effect, token: ambiguousToken)
+        try custody.localPrivacyRelease("ambiguous", reason: "deletion_local")
+        try effect.recover(runtimeEpoch: 1, egressFence: 1)
+        effect.acknowledgeProviderClose()
+        effect.acknowledgeOwnerTermination()
+        try effect.terminalize()
+        try custody.resolvePendingEffect(eventId: "ambiguous", effect: effect, outcome: .ambiguousEffect)
+        XCTAssertEqual(custody.gapObligations["ambiguous"], "ambiguous_effect")
+        XCTAssertFalse(custody.forwarded.contains("ambiguous"))
+    }
+
     func testLifecycleProjectionCannotClaimCompletionFromOneAxis() throws {
         var lifecycle = V2LifecycleProjection()
         XCTAssertEqual(lifecycle.derived, .degraded)

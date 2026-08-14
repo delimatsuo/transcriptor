@@ -247,8 +247,9 @@ def retry_commitment(session_key: bytes, canonical_metadata: bytes, payload: byt
         raise ProtocolV2Violation("retry commitment inputs must be bytes")
     if len(canonical_metadata) > MAX_AUDIO_METADATA_BYTES or len(payload) > MAX_AUDIO_PAYLOAD_BYTES:
         raise ProtocolV2Violation("retry commitment input exceeds framing bounds")
-    # Revalidate canonical bytes before deriving a durable commitment.
-    parse_canonical_json_bytes(canonical_metadata)
+    # Revalidate the complete canonical typed audio frame before deriving a
+    # durable commitment; generic canonical control JSON is not audio authority.
+    parse_audio_frame(struct.pack(">I", len(canonical_metadata)) + canonical_metadata + payload)
     message = (
         b"tars-retry-v2\0"
         + struct.pack(">I", len(canonical_metadata))

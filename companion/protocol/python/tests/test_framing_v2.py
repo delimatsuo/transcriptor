@@ -93,6 +93,8 @@ class ProtocolV2FramingTests(unittest.TestCase):
         self.assertEqual(commitment.hex(), "4a8d1b9605f776c966ac0d62c5a459ead0922a026c521f9e95accce7f069e4c2")
         self.assertTrue(verify_retry_commitment(key, parsed.canonical_metadata, parsed.chunk.payload, commitment))
         self.assertFalse(verify_retry_commitment(bytes(reversed(key)), parsed.canonical_metadata, parsed.chunk.payload, commitment))
+        with self.assertRaises(ProtocolV2Violation):
+            retry_commitment(key, canonical_json_bytes({"eventType": "capture.pause"}), b"")
 
     def test_control_event_requires_canonical_exact_fields(self):
         value = {
