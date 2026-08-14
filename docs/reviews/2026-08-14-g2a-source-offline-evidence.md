@@ -11,8 +11,8 @@ commit remains required before G2 exit may be recorded.
   `8398fa8b345e326320e54d2a598977e47ee67fa7`, tree
   `419feca4702be389c8f85129e0face1afe912419`.
 - Candidate final source checkpoint: commit
-  `830025ecb0f1367f9de8b6fba48c836caea4e1ce`, tree
-  `6e9f70c96e7ccc2eff40edf614a04e9cb3ef5cee`.
+  `381f5bb9b202fae7afe4d38e76ea6a6dcaf72124`, tree
+  `a71cbe91795267baeb4b75821531dc24f0048265`.
 - Framing/retry parity checkpoint: commit
   `2a10d6e6b107c473f4561ad65620c8de0787e8e8`, tree
   `0b5ccdbe75fe67a06e61ec8cc7b0aac414738235`.
@@ -60,17 +60,21 @@ The candidate source tree covers:
   truncated, oversized, mismatched, and changed-content retries;
 - exact atomic `acov_`, full-list terminal `covr_`, and transcript `seg_`
   identities, including duplicate/overlapping/foreign coverage rejection and
-  multiple final segments over one atomic chunk;
+  multiple final segments over one atomic chunk; every pair in a sparse
+  interval set is checked for sample or sequence overlap;
 - durable owner/effect identity, single invocation, immutable journal before
   forwarded release, runtime-epoch and egress-fence recovery, foreign/stale
   token rejection, terminal non-reopening, and positive provider/owner
   quiescence; the custody ledger binds each live audio range to its original
   prepared owner/effect before invocation, prevents generic forwarding around
   that binding, and prevents a locally released range from acquiring a new
-  effect;
+  effect; quiescence acknowledgements are accepted only after the current
+  recovery epoch/fence is installed;
 - exact durable-discard gap identity and idempotence, forwarding/discard
   conflict rejection, local privacy-timeout release without advancing the
   forwarded watermark, no discard claim while a provider effect is pending,
+  atomic cancellation-and-discard only for an uninvoked prepared effect,
+  rejection of invocation/callback after that terminal cancellation,
   original-effect journal resolution to forwarded coverage or post-quiescence
   resolution to an exact ambiguous-effect gap, the 10-second reconcile
   threshold, and 30-second absolute custody expiry scheduling model;
@@ -101,12 +105,12 @@ Swift, and C# all finish with zero retained quota custody.
 
 - `git diff --check`: passed.
 - `companion/protocol/scripts/run_offline_guard.sh`: passed twice with **93
-  Python tests and 16 Swift tests** per deterministic pass under a scrubbed, network-denied
-  environment.
+  Python tests and 16 Swift tests** per deterministic pass under a scrubbed,
+  network-denied environment.
 - `PATH=/opt/homebrew/opt/dotnet@8/bin:/usr/bin:/bin:/usr/sbin:/sbin
   companion/protocol/scripts/run_g2_offline_guard.sh`: passed twice with **39
-  Python tests, 16 Swift tests, and 44 C# vectors** per deterministic pass under the reviewed
-  network-denied sandbox.
+  Python tests, 16 Swift tests, and 48 C# vectors** per deterministic pass under
+  the reviewed network-denied sandbox.
 - `companion/protocol/scripts/run_g2_artifact_scan.sh`: passed with **zero
   artifacts, forbidden imports, and out-of-scope paths**.
 - .NET SDK `8.0.130` and runtime `8.0.30` compiled and executed the C# DLL from
@@ -123,11 +127,14 @@ traps, stale evidence, and incomplete cross-language state cases. Source commit
 `3d58574...` then found terminal recovery and deletion-participant acceptance
 gaps in Python, typed retry-input drift, unchecked/fractional numeric domains,
 and a cross-language race between local raw-audio release and a prepared or
-in-flight provider effect. Source commits `c9bae11...` and `830025e...` resolve
-that second round, bind range resolution to the original effect owner/object,
-and add explicit Python/Swift/C# rejection and race-resolution cases. Because
-these changes create a new exact tree, neither prior blocked review is approval
-of this candidate.
+in-flight provider effect. Source commits `c9bae11...` and `830025e...` resolved
+that second round and bound range resolution to the original effect
+owner/object. Review of evidence commit `a1971e6...` then found a
+prepared-effect discard/invocation race, pre-fence quiescence acknowledgements,
+non-adjacent interval overlap, and permissive Python numeric helper inputs.
+Source commit `381f5bb...` resolves that third round with explicit
+Python/Swift/C# rejection and recovery cases. Because these changes create a
+new exact tree, none of the prior blocked reviews is approval of this candidate.
 
 ## Claim ceiling and remaining gate
 
