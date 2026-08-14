@@ -1,8 +1,10 @@
 # Native-Capture Launch Roadmap
 
-**Status:** Accepted sequencing plan; documentation and read-only audits only
-under the 2026-08-13 instruction. Every implementation and live-effect gate
-retains its own authority boundary.
+**Status:** Accepted sequencing plan with an owner-authorized G2-A0
+documentation amendment candidate. Documentation and read-only audits only
+remain in scope until the four-document amendment receives renewed exact-tree
+architecture and security/privacy approval. Every implementation and live-effect
+gate retains its own authority boundary.
 
 **Date:** 2026-08-13
 
@@ -23,8 +25,10 @@ virtual audio driver.
 
 ## 2. Current gap
 
-- Protocol 0002 has offline conformance evidence, but unresolved framing,
-  chunk/buffer, rotation, fencing-store, and forwarding-journal choices remain.
+- Protocol 0002 has offline conformance evidence, but protocol-v2 framing,
+  chunk/buffer, rotation, fencing-store, forwarding-journal, terminal-release,
+  and deletion-quiescence choices require the G2-A0 amendment and later source
+  evidence.
 - The active macOS lineage has qualified offline components through N11D-B and
   a partially committed N11D-C lineage, plus a large dirty, partially staged
   V1-to-V2 cutover that is not qualified.
@@ -127,9 +131,52 @@ salvage maps. No extraction or implementation begins inside G1.
 - platform-neutral capture health and lifecycle events; and
 - exact pre-capture disclosure acknowledgement.
 
+The source/offline quota defaults are explicit: per source, 50 audio events/s
+with a 100-event burst, 192,000 payload bytes/s with a 384,000-byte burst, and
+205,000 metadata-plus-prefix bytes/s with a 410,000-byte burst; a two-source
+session doubles those budgets. Tenant and process ceilings, pending
+pre-authentication handshakes, aggregate receive buffers, resident custody,
+and provider-attempt reservations are enforced separately and fail closed when
+their shared authority is unavailable. These are not hosted capacity or spend
+evidence.
+
 Protocol semantics that remain fixed are server-derived authority, the three
-watermarks, forwarding-based raw-audio release, fencing, idempotency,
-transcript-or-gap terminal coverage, and content-free logging.
+watermarks, `audio.forwarded` as the only successful provider-forwarding
+release watermark; a discard CAS that wins before provider preparation creates a
+durable gap, while named `local_privacy_discard`, durable discard, and
+emergency/privacy-timeout zeroization never attribute an already-pending effect
+to discard and preserve the original forwarded/ambiguous outcome. These are
+terminal privacy releases with visible gaps, fencing, idempotency,
+transcript-or-gap terminal coverage, deletion quiescence with late-callback
+fencing, and content-free logging. These v2 semantics become operative only
+after the G2-A0 amendment is approved at one exact documentation tree.
+
+### G2-A0: governing-artifact amendment
+
+**Entry:** Owner authorization for a documentation-only amendment to ADR 0002,
+ADR 0003, this roadmap, and the privacy contract. No source, hosted, provider,
+device, credential, capture, deployment, merge, or release action is included.
+
+**Required result:** The four documents must agree that admission is not a
+release, `audio.forwarded` is the only successful provider-forwarding watermark,
+and the named local `local_privacy_discard`, `audio.discard.durable`, plus local
+emergency/privacy-timeout zeroization follow the per-range discard CAS: a claim
+winning before provider preparation creates an exact or honest unknown-end gap;
+an already-pending effect remains with its original owner as forwarded or
+ambiguous. None attributes that effect to discard or claims provider forwarding.
+The documents must also agree on companion physical state versus gateway
+transport/coverage state, `delete_quiescing`/`deleting` sequencing, positive
+provider-effect quiescence, and late-callback fencing.
+
+**Exit:** One exact commit/tree receives independent architecture and
+security/privacy approval. A passing G2-A0 makes the later G2 source corridor
+eligible for a separate direct authorization; it does not authorize source
+implementation.
+
+### G2-A: v2 schema and source/offline implementation
+
+**Entry:** Approved G2-A0 exact tree plus a new direct source-implementation
+authorization naming the exact allowed paths.
 
 **Exit:** Swift, Python, and future Windows binding vectors pass twice with
 network denied, bounded long-duration fixtures, crash points, and clean
@@ -148,7 +195,8 @@ artifact scans. Protocol closure is source/offline evidence only.
 - authorization on REST, WebSocket, audio, transcript, notes, reports,
   exports, storage, and deletion;
 - one fenced capture lease and stale-client rejection;
-- bounded transient queues with no raw-audio persistence;
+- bounded transient queues with no raw-audio persistence beyond the approved
+  forwarding or terminal privacy-release semantics;
 - size, rate, duration, concurrency, and spend controls;
 - Google STT streaming and rotation;
 - content-free forwarding journal and exact watermarks;
@@ -187,8 +235,9 @@ artifact scans. Protocol closure is source/offline evidence only.
 - capture microphone and system audio independently;
 - implement permission denial/revocation, device changes, sleep/wake, and
   route recovery;
-- implement bounded memory, forwarding-based release, overflow gaps, pause,
-  stop, finalization, and immediate local kill control;
+- implement bounded memory, provider-forwarding release plus durable-discard and
+  emergency/privacy-timeout gap semantics, overflow gaps, pause, stop,
+  finalization, deletion quiescence, and immediate local kill control;
 - store only short-lived enrollment material in Keychain;
 - expose content-free per-source health and companion-authoritative states;
   and
@@ -213,10 +262,14 @@ or real-audio claim.
 ### G3C: Recruiter state and web integration contract
 
 **May be designed in parallel; implementation integrates only against the
-versioned protocol.**
+versioned protocol. Entry additionally requires a docs-only reconciliation of
+`docs/product/companion-web-state-contract.md` with the approved v2 precedence
+table and `local_privacy_discard` UX. This G2-A0 amendment does not update that
+product contract or authorize UI/source work.
 
 - Implement the ADR 0003 state model with independent physical capture,
-  transport, source health, coverage, finalization, and deletion axes.
+  transport, source health, coverage, finalization, and deletion axes; do not
+  assign gateway finalization or completion to companion events.
 - Block start until gateway enrollment, current disclosure acknowledgement,
   permissions, and both required sources are healthy.
 - Show persistent microphone and system-audio health with icon-plus-text, not
@@ -224,8 +277,9 @@ versioned protocol.**
 - Treat web start/pause/resume/stop actions as requests until companion events
   confirm them.
 - Make degraded ranges and gaps visible and non-editable.
-- Explain send-versus-discard consequences and block accidental close during
-  unresolved finalization.
+- Explain send-versus-discard consequences, show terminal privacy gaps, and
+  block accidental close during unresolved finalization or deletion
+  quiescence.
 - Preserve the report distinction: AI draft remains internal; only an
   explicitly approved client projection may be exported.
 

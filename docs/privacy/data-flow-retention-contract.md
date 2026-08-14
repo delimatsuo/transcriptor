@@ -1,8 +1,13 @@
 # T.A.R.S. Data Flow, Retention, and Deletion Contract
 
-**Status:** Normative target draft; current prototype is non-compliant. Phase 1A offline conformance passed at `9f3f3a0`; Phases 1B-1D remain blocked.
+**Status:** Normative target draft with an owner-authorized G2-A0 amendment
+candidate dated 2026-08-13. It becomes effective only after this exact
+four-document tree receives renewed architecture and security/privacy approval.
+The current prototype is non-compliant. Phase 1A offline conformance passed at
+`9f3f3a0` under the pre-amendment v1 contract; that result does not qualify the
+G2-A0/v2 semantics. Phases 1B-1D remain blocked.
 
-**Date:** 2026-07-15
+**Date:** 2026-08-13 amendment candidate; original v1 contract date was 2026-07-15.
 
 **Applies to:** Native companion, web workspace, FastAPI services, Firestore, GCS, Google Cloud STT, Vertex AI, provider adapters, logs, and exports
 
@@ -12,7 +17,7 @@ This document defines what T.A.R.S. collects, where each data class travels, wha
 
 The primary privacy promise is:
 
-> T.A.R.S. captures audio only while the user has an active transcription session. Raw audio is processed transiently and is not retained by T.A.R.S. by default. The transcript, recruiter notes, source documents, and approved assessment remain according to the user's or organization's retention policy.
+> T.A.R.S. captures audio only while the user has an active transcription session. Raw audio is processed transiently and is not retained by T.A.R.S. by default. A range is released from raw custody only as provider-forwarded under `audio.forwarded`, as the named local privacy release `local_privacy_discard` (immediate local zeroization followed by an exact/unknown gap when no provider effect is pending, or an original-owner forwarded/ambiguous outcome when one is already pending), as a durably discarded terminal gap under `audio.discard.durable`, or under an emergency/privacy-timeout zeroization rule. `local_privacy_discard`, `audio.discard.durable`, and emergency/privacy-timeout zeroization never claim provider-forwarding success. The transcript, recruiter notes, source documents, and approved assessment remain according to the user's or organization's retention policy.
 
 This promise is not publishable until the verification section passes in the intended production environment.
 
@@ -66,27 +71,66 @@ Restricted content must not appear in ordinary application logs, analytics event
 3. Frames enter a bounded in-memory queue.
 4. No raw-audio file is created by the default path.
 
-Initial spike limit: a maximum of 30 seconds of audio per source in memory. The Phase 1 report may recommend a different bound using measured memory, network, and loss behavior.
+Protocol-v2 custody is at most two seconds per source, independently for the
+companion and gateway: `retainedFrames <= min(96,000, 2 * sampleRate)` and
+`retainedPayloadBytes <= min(384,000, retainedFrames * channels * 2)`. Thus
+8-kHz mono permits 16,000 frames/32,000 bytes and 48-kHz stereo permits 96,000
+frames/384,000 bytes; mixed-rate sources retain independent limits. Each source
+also caps 100 queued events, 409,600 metadata bytes, 100 reservation objects,
+and 100 queue objects; resident allocation includes parsed/container overhead
+and is capped at 1,048,576 bytes per source and 2,097,152 bytes per session.
+Thirty seconds is only the absolute raw-custody expiry, not the retained-memory
+bound. At 10 seconds without forwarding or a terminal release, acquisition stops
+and bounded reconciliation begins. The deadline uses a continuous boot clock
+where available; an unannounced process suspension can delay execution, so
+evidence must not claim physical RAM erasure at the exact wall-clock instant
+while the process is frozen.
 
 ### Flow 5: Audio streaming and acknowledgement
 
 1. The companion sends ordered audio chunks over an authenticated TLS connection.
 2. The gateway validates session ownership, stream identity, limits, and ordering.
-3. The gateway forwards transient audio to Google Cloud STT.
+3. The gateway forwards transient audio to Google Cloud STT under the approved
+   bounded ingress, bitrate, custody, and provider-attempt quotas.
 4. A gateway-admission acknowledgement identifies the highest contiguous authenticated, authorized range copied into a bounded gateway queue. It does not permit client audio release.
 5. A provider-forwarding acknowledgement identifies the highest contiguous range written to the active STT stream with content-free forwarding metadata durably journaled.
-6. The companion releases raw audio from memory only through the highest contiguous provider-forwarding watermark for that source.
-7. A durable-transcript acknowledgement separately identifies final transcript events committed with stable IDs and coverage ranges.
-8. If a queue fills or a forwarded range cannot produce a durable transcript, the system persists and displays the proved source/sequence/sample/time gap. If process loss prevents proof of the end boundary, it displays unknown coverage rather than fabricated precision. It does not silently lose content or spill raw audio to disk.
+6. The companion releases raw audio from memory through the highest contiguous
+   provider-forwarding watermark for that source, or after an explicit local
+   discard/zeroization action. A discard CAS that wins before provider
+   preparation produces `audio.discard.durable`; an `effect_pending` response
+   leaves the original owner to produce a forwarded or ambiguous-effect outcome.
+   A local emergency kill, deletion command, or privacy deadline may zeroize
+   before acknowledgement; recovery records the exact or honest unknown-end gap
+   when no effect is pending and never attributes a pending effect to discard.
+7. Separate `transcript.segment.durable` and `transcript.coverage.durable`
+   acknowledgements identify immutable final segments and the complete atomic
+   coverage ranges claimed by them.
+8. If a queue fills, a forwarded range cannot produce a durable transcript, or
+   a terminal privacy release occurs, the system persists and displays the
+   proved source/sequence/sample/time gap. If process loss prevents proof of
+   the end boundary, it displays unknown coverage rather than fabricated
+   precision. It does not silently lose content or spill raw audio to disk.
 
 The complete custody, retry, fencing, and gap semantics are normative in `docs/architecture/0002-companion-stream-protocol.md`.
+
+Protocol-v2 source/offline ingress defaults are 50 audio events/s with a
+100-event burst per source, 192,000 payload bytes/s with a 384,000-byte burst,
+and 205,000 metadata-plus-prefix bytes/s with a 410,000-byte burst; a
+two-source session has the doubled budgets. Pending handshakes, aggregate
+receive buffers, resident custody, tenant/process totals, and provider-attempt
+reservations are separate ceilings. Retries consume budget, reconnect grants no
+new burst, and unavailable shared quota state fails closed. These values are
+not hosted capacity or spend evidence.
 
 ### Flow 6: Speech recognition
 
 1. Google Cloud STT returns interim and final transcript results.
 2. Interim results are broadcast but not persisted as the durable transcript.
-3. Final results receive stable, idempotent segment IDs.
-4. Final segments are persisted and broadcast to owned clients.
+3. Final results receive stable, idempotent segment IDs with provider ordinal,
+   provenance, text bounds, and intersecting atomic coverage IDs.
+4. Final segments are persisted and broadcast to owned clients; a separate
+   durable coverage projection claims complete atomic chunks exactly once and
+   creates a gap for any forwarded chunk without a valid final.
 5. STT data-logging configuration is verified in the exact production project.
 
 ### Flow 7: Recruiter notes
@@ -106,9 +150,18 @@ The complete custody, retry, fencing, and gap semantics are normative in `docs/a
 ### Flow 9: Stop and completion
 
 1. A stop request does not claim success. The companion confirms the exact boundary at which new audio capture stopped.
-2. Remaining admitted or captured frames are forwarded and finalized, or explicitly discarded and marked as an exact proved gap or honest unknown-boundary coverage.
+2. Remaining admitted or captured frames are forwarded and finalized, or the
+   user explicitly discards them as a local privacy action. When the gateway is
+   reachable, the discard CAS runs before zeroization; when it is not, discard
+   clears unforwarded bytes immediately, records the exact or unknown boundary,
+   and sends `audio.discard.requested` best-effort. `audio.discard.durable`
+   later confirms gateway gap persistence when the discard CAS wins; an
+   `effect_pending` result follows the original-owner forwarded/ambiguous rule.
+   An emergency/privacy timeout may likewise zeroize before acknowledgement but
+   never attributes a pending effect to discard.
 3. In-memory raw audio is cleared.
-4. Every captured range is represented by a durable final-transcript coverage event or a durable gap.
+4. Every captured range is represented by a durable `transcript.coverage.durable`
+   event or a durable gap.
 5. Final transcript state and assessment job state are durable.
 6. Completion does not imply recruiter approval of the assessment.
 
@@ -122,13 +175,37 @@ The complete custody, retry, fencing, and gap semantics are normative in `docs/a
 ### Flow 11: Deletion
 
 1. A user or authorized administrator requests session deletion.
-2. The session enters a non-restorable `deletion_pending` state.
-3. New reads, exports, and AI jobs are blocked.
-4. Pending AI jobs are cancelled or their output is discarded.
-5. Documents, extracted text, transcripts, notes, assessments, provider enrichment, and temporary exports are deleted.
-6. Search indexes and derived views are removed.
-7. A content-free audit tombstone records completion and policy basis.
-8. The UI shows a verified terminal state or a specific retryable failure.
+2. The session atomically enters non-restorable gateway `delete_quiescing`,
+   increments a durable deletion generation, and fences admission/effects. The
+   gateway then sends companion stop and the companion performs immediate local
+   `local_privacy_discard` zeroization of
+   retained unforwarded audio; the resulting exact or unknown boundary is
+   preserved as content-free metadata.
+3. New reads, exports, AI jobs, capture, reconnect, provider intents, and all
+   new content writes are blocked or fenced.
+4. Prepared-but-not-invoking provider intents become terminal discard gaps;
+   invoking intents remain with their original owner/fence and finish only by
+   journaling the already-issued effect or, after positive owner/stream
+   quiescence, recording an ambiguous-effect gap. They are never replayed or
+   taken over.
+5. Every worker, connection, and provider attempt acknowledges the deletion
+   generation. Late callbacks fail before content persistence.
+6. After the quiescence barrier, the session enters `deleting`; documents,
+   extracted text, transcripts, notes, assessments, provider enrichment, and
+   temporary exports are deleted.
+7. The first generation-fenced inventory covers session records,
+   enrollment/lease records, retry commitments, forwarding intents/journals,
+   transcript segments, coverage/gaps, blobs, caches, outboxes, logs/crash/
+   support artifacts, indexes, exports, provider-enrichment records, provider
+   retention surfaces, and backups within approved scope. An unavailable store
+   or unverified provider-retention surface produces retryable
+   `deletion_failed`; it never counts as absence.
+8. Search indexes and derived views are removed, and an independent second
+   inventory verifies absence before `deleted`.
+9. A content-free audit tombstone records completion and policy basis. The UI
+   shows `deleted` only after verified absence; an unavailable store or any
+   other retryable failure remains `deletion_failed` and never receives the
+   deleted treatment.
 
 ### Flow 12: Account or organization deletion
 
@@ -140,7 +217,7 @@ Values marked `TBD` require product, customer, and legal approval before externa
 
 | Artifact | Device | T.A.R.S. cloud | Subprocessor | Initial retention rule |
 | --- | --- | --- | --- | --- |
-| Raw audio | Memory only, target maximum 30 seconds/source | Transient request/stream memory only | Governed by verified STT configuration | Client releases only after contiguous provider-forwarding acknowledgement; never retained by default |
+| Raw audio | Memory only, two-second rate-derived bound/source; 30-second absolute expiry | Transient request/stream memory only; durable content-free gap metadata only after terminal release | Governed by verified STT configuration | Client releases after contiguous `audio.forwarded`, named `local_privacy_discard`, `audio.discard.durable`, or emergency/privacy-timeout zeroization; only the first is forwarding success |
 | Interim transcript | UI memory | WebSocket/event memory | STT stream lifetime | Do not persist as canonical transcript |
 | Final transcript | Optional encrypted text outbox until acknowledged | Durable | Included in selected Vertex prompts | `TBD`; configurable user/org policy |
 | Recruiter notes | Optional encrypted text outbox until acknowledged | Durable and versioned | Included in selected Vertex prompts | `TBD`; normally follows session policy |
@@ -177,8 +254,12 @@ Forbidden log fields:
 ## 6. Deletion semantics
 
 - Deletion is idempotent and retryable.
+- `delete_quiescing` fences new effects and waits for positive provider-effect
+  quiescence; lease expiry or heartbeat loss alone is not proof.
 - User-visible completion means every required datastore and derived index has confirmed deletion.
 - A partial failure remains visible to operations and does not falsely report success.
+- Late provider/transcript callbacks are rejected before content persistence by
+  deletion generation and fence; only content-free counters may advance.
 - Backups, if introduced, require a documented expiry and restoration-time deletion process.
 - Audit tombstones contain identifiers, timing, actor, policy, and result only.
 - Deleting a transcript must define whether evidence-linked assessments are also deleted or intentionally invalidated; the initial recommendation is to delete the full session bundle.
@@ -191,6 +272,9 @@ Forbidden log fields:
 - Verify STT data logging and applicable Vertex AI retention/cache behavior in that exact project.
 - Require authenticated, revocable companion enrollment and server-derived user/organization ownership.
 - Enforce stream leases, fencing, size/rate/duration/concurrency limits, and the protocol contract.
+- Enforce separate pre-authentication, control, audio-event, payload-byte,
+  metadata-byte, resident-custody, provider-attempt, and tenant/process quotas;
+  fail closed when shared quota state is unavailable.
 - Pass unauthenticated, revoked, stale-lease, and cross-tenant rejection tests.
 - Use synthetic fixtures until these controls and no-persistent-audio tests have direct evidence.
 
@@ -230,12 +314,17 @@ The privacy promise requires direct evidence, not code inspection alone.
 9. A signed privacy verification report tied to the exact app build and cloud revision.
 10. Unique synthetic canary scans across unified logs, crash reports, core dumps, diagnostic uploads, CI artifacts, Firestore, GCS, and Cloud Logging after success, overflow, disconnect, stop, logout, and forced termination.
 11. Network evidence showing no traffic in Phase 1A/1C and only authenticated gateway plus approved gateway-to-STT traffic in Phase 1B/1D, with no credentials in URLs or content in logs.
+12. Fault-injection evidence for `local_privacy_discard`,
+    `audio.discard.requested` / `audio.discard.durable`, local
+    privacy-timeout zeroization, deletion
+    quiescence, provider-effect fencing, and late-callback rejection.
 
 ## 10. Open policy decisions
 
 - Default retention period for transcripts, notes, documents, and assessments.
 - Whether an organization may require shorter retention than an individual user.
-- Whether any customer tier may opt into an encrypted raw-audio recovery spool.
+- Whether any future separately approved encrypted raw-audio recovery spool is
+  permitted; it is not part of G2-A0 and may not extend the raw-custody deadline.
 - Audit-event retention.
 - Export expiry window.
 - Backup strategy and deletion behavior.
