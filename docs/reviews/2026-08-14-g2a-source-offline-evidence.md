@@ -11,8 +11,8 @@ commit remains required before G2 exit may be recorded.
   `8398fa8b345e326320e54d2a598977e47ee67fa7`, tree
   `419feca4702be389c8f85129e0face1afe912419`.
 - Candidate final source checkpoint: commit
-  `381f5bb9b202fae7afe4d38e76ea6a6dcaf72124`, tree
-  `a71cbe91795267baeb4b75821531dc24f0048265`.
+  `8402d2dc629bd02952fe03189b0af1bf8e9afe6a`, tree
+  `f15444552f2ca9e48f3b581a6faa54cedaafe0c7`.
 - Framing/retry parity checkpoint: commit
   `2a10d6e6b107c473f4561ad65620c8de0787e8e8`, tree
   `0b5ccdbe75fe67a06e61ec8cc7b0aac414738235`.
@@ -64,12 +64,12 @@ The candidate source tree covers:
   interval set is checked for sample or sequence overlap;
 - durable owner/effect identity, single invocation, immutable journal before
   forwarded release, runtime-epoch and egress-fence recovery, foreign/stale
-  token rejection, terminal non-reopening, and positive provider/owner
-  quiescence; the custody ledger binds each live audio range to its original
-  prepared owner/effect before invocation, prevents generic forwarding around
-  that binding, and prevents a locally released range from acquiring a new
-  effect; quiescence acknowledgements are accepted only after the current
-  recovery epoch/fence is installed;
+  opaque-capability rejection, terminal non-reopening, and positive provider/
+  owner quiescence; the custody ledger binds each live audio range to its
+  original opaque owner/effect authority before invocation, prevents generic
+  forwarding around that binding, and prevents a locally released range from
+  acquiring a new effect; quiescence acknowledgements require distinct current-
+  fence provider/owner capabilities and matching actor identities;
 - exact durable-discard gap identity and idempotence, forwarding/discard
   conflict rejection, local privacy-timeout release without advancing the
   forwarded watermark, no discard claim while a provider effect is pending,
@@ -109,7 +109,7 @@ Swift, and C# all finish with zero retained quota custody.
   network-denied environment.
 - `PATH=/opt/homebrew/opt/dotnet@8/bin:/usr/bin:/bin:/usr/sbin:/sbin
   companion/protocol/scripts/run_g2_offline_guard.sh`: passed twice with **39
-  Python tests, 16 Swift tests, and 48 C# vectors** per deterministic pass under
+  Python tests, 16 Swift tests, and 53 C# vectors** per deterministic pass under
   the reviewed network-denied sandbox.
 - `companion/protocol/scripts/run_g2_artifact_scan.sh`: passed with **zero
   artifacts, forbidden imports, and out-of-scope paths**.
@@ -133,8 +133,14 @@ owner/object. Review of evidence commit `a1971e6...` then found a
 prepared-effect discard/invocation race, pre-fence quiescence acknowledgements,
 non-adjacent interval overlap, and permissive Python numeric helper inputs.
 Source commit `381f5bb...` resolves that third round with explicit
-Python/Swift/C# rejection and recovery cases. Because these changes create a
-new exact tree, none of the prior blocked reviews is approval of this candidate.
+Python/Swift/C# rejection and recovery cases. Review of evidence commit
+`9441bfa...` then found forgeable value-only effect authority, quiescence
+acknowledgements without current-fence actor capabilities, permissive Python
+numeric/restore coercions, and an identity omission on idempotent prepared-
+discard replay. Source commit `8402d2d...` resolves that fourth round with
+opaque authority, strict restore validation, and foreign/forged/stale/wrong-
+actor vectors. Because these changes create a new exact tree, none of the prior
+blocked reviews is approval of this candidate.
 
 ## Claim ceiling and remaining gate
 
