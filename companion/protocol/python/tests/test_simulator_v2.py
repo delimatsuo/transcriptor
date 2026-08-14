@@ -90,6 +90,10 @@ class ProtocolV2SimulatorTests(unittest.TestCase):
         self.assertFalse(effect.forwarded)
         effect.commit_journal(token)
         self.assertTrue(effect.forwarded)
+        with self.assertRaises(ProtocolV2Violation):
+            effect.acknowledge_provider_close()
+        with self.assertRaises(ProtocolV2Violation):
+            effect.acknowledge_owner_termination()
 
         restarted = ProviderEffectFence.restore(effect.snapshot())
         restarted.recovery_epoch(1, 1)
@@ -172,6 +176,14 @@ class ProtocolV2SimulatorTests(unittest.TestCase):
                 invalid.authorize(request, 9_999)
         with self.assertRaises(AdmissionRejected):
             authority.authorize(request, 10_000)
+        for name, invalid_value in (("captureGeneration", 4.0), ("fence", True), ("protocolVersion", 2.0)):
+            changed = dict(request)
+            changed[name] = invalid_value
+            with self.assertRaises(AdmissionRejected):
+                authority.authorize(changed, 9_999)
+        for invalid_now in (True, 9_999.5):
+            with self.assertRaises(AdmissionRejected):
+                authority.authorize(request, invalid_now)
 
     def test_custody_limits_forwarding_discard_and_wall_clock_release(self):
         custody = RawCustodyBuffer(8_000, 1)
@@ -241,6 +253,27 @@ class ProtocolV2SimulatorTests(unittest.TestCase):
         payload = bytes(range(160)) * 2
         custody = RawCustodyBuffer(8_000, 1)
         custody.reserve(
+            "prepared-discard", payload, frames=160, metadata_bytes=472,
+            resident_overhead_bytes=128, captured_at_ms=0,
+        )
+        prepared = ProviderEffectFence("effect-prepared-discard")
+        prepared_token = prepared.prepare("owner-a")
+        custody.register_effect("prepared-discard", prepared)
+        with self.assertRaises(ProtocolV2Violation):
+            custody.acknowledge_durable_discard("prepared-discard", "gap-deletion")
+        custody.cancel_prepared_effect_and_discard("prepared-discard", prepared, "gap-deletion")
+        custody.cancel_prepared_effect_and_discard("prepared-discard", prepared, "gap-deletion")
+        self.assertEqual(custody.gap_obligations["prepared-discard"], "gap-deletion")
+        self.assertTrue(prepared.cancelled_without_invoke)
+        with self.assertRaises(ProtocolV2Violation):
+            prepared.invoke(prepared_token)
+        with self.assertRaises(ProtocolV2Violation):
+            prepared.callback(prepared_token)
+        with self.assertRaises(ProtocolV2Violation):
+            custody.invoke_effect("prepared-discard", prepared, prepared_token)
+
+        custody = RawCustodyBuffer(8_000, 1)
+        custody.reserve(
             "forwarded", payload, frames=160, metadata_bytes=472,
             resident_overhead_bytes=128, captured_at_ms=0,
         )
@@ -248,6 +281,8 @@ class ProtocolV2SimulatorTests(unittest.TestCase):
         token = effect.prepare("owner-a")
         custody.register_effect("forwarded", effect)
         custody.invoke_effect("forwarded", effect, token)
+        with self.assertRaises(ProtocolV2Violation):
+            custody.cancel_prepared_effect_and_discard("forwarded", effect, "gap-forbidden")
         with self.assertRaises(ProtocolV2Violation):
             custody.acknowledge_forwarded("forwarded", journal_committed=True)
         custody.local_privacy_release("forwarded", "emergency_local")
@@ -292,6 +327,16 @@ class ProtocolV2SimulatorTests(unittest.TestCase):
 
     def test_transport_edge_bounds_pre_auth_audio_and_deadlines(self):
         edge = TransportEdgeBudget()
+        with self.assertRaises(ProtocolV2Violation):
+            edge.open_pending(
+                "fractional", "192.0.2.1", 0.5,
+                header_bytes=1, first_auth_bytes=1, receive_buffer_bytes=1,
+            )
+        with self.assertRaises(ProtocolV2Violation):
+            edge.open_pending(
+                "boolean", "192.0.2.1", 0,
+                header_bytes=True, first_auth_bytes=1, receive_buffer_bytes=1,
+            )
         for index in range(16):
             edge.open_pending(
                 f"connection-{index}", "192.0.2.1", 0,
@@ -316,6 +361,10 @@ class ProtocolV2SimulatorTests(unittest.TestCase):
         )
         with self.assertRaises(ProtocolV2Violation):
             edge.authenticate("future-clock", 9_999)
+        with self.assertRaises(ProtocolV2Violation):
+            edge.authenticate("future-clock", 10_000.5)
+        with self.assertRaises(ProtocolV2Violation):
+            edge.reject_pre_auth_audio(True)
 
     def test_lifecycle_axes_are_origin_separated_and_conservative(self):
         lifecycle = LifecycleProjection()
@@ -336,6 +385,10 @@ class ProtocolV2SimulatorTests(unittest.TestCase):
         self.assertEqual(lifecycle.derived(), DerivedDisplayState.DELETING)
         with self.assertRaises(ProtocolV2Violation):
             lifecycle.companion(2, PhysicalCaptureState.DEGRADED)
+        with self.assertRaises(ProtocolV2Violation):
+            lifecycle.companion(True, PhysicalCaptureState.DEGRADED)
+        with self.assertRaises(ProtocolV2Violation):
+            lifecycle.gateway_transport(2.5, TransportState.CLOSED)
 
 
 if __name__ == "__main__":

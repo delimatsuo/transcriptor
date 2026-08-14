@@ -145,11 +145,13 @@ final class ProtocolV2StateTests: XCTestCase {
         XCTAssertFalse(effect.journalCommitted)
         try effect.commitJournal(token)
         XCTAssertTrue(effect.journalCommitted)
+        XCTAssertThrowsError(try effect.acknowledgeProviderClose())
+        XCTAssertThrowsError(try effect.acknowledgeOwnerTermination())
         try effect.recover(runtimeEpoch: 1, egressFence: 1)
         XCTAssertThrowsError(try effect.terminalize())
-        effect.acknowledgeProviderClose()
+        try effect.acknowledgeProviderClose()
         XCTAssertThrowsError(try effect.terminalize())
-        effect.acknowledgeOwnerTermination()
+        try effect.acknowledgeOwnerTermination()
         try effect.terminalize()
         XCTAssertEqual(effect.state, .terminal)
         XCTAssertEqual(effect.invokeCount, 1)
@@ -162,12 +164,38 @@ final class ProtocolV2StateTests: XCTestCase {
             eventId: "forwarded", frames: 160, payloadBytes: 320,
             metadataBytes: 472, residentBytes: 920, capturedAtMs: 0
         )
+        var preparedCustody = try V2CustodyBudget(sampleRateHertz: 8_000, channelCount: 1)
+        try preparedCustody.reserve(V2CustodyReservation(
+            eventId: "prepared-discard", frames: 160, payloadBytes: 320,
+            metadataBytes: 472, residentBytes: 920, capturedAtMs: 0
+        ))
+        var prepared = try V2EffectFence(effectId: "effect-prepared-discard")
+        let preparedToken = try prepared.prepare(ownerId: "owner-a")
+        try preparedCustody.registerEffect(eventId: "prepared-discard", effect: prepared)
+        XCTAssertThrowsError(try preparedCustody.acknowledgeDurableDiscard("prepared-discard", gapId: "gap-deletion"))
+        try preparedCustody.cancelPreparedEffectAndDiscard(
+            eventId: "prepared-discard", effect: &prepared, gapId: "gap-deletion"
+        )
+        try preparedCustody.cancelPreparedEffectAndDiscard(
+            eventId: "prepared-discard", effect: &prepared, gapId: "gap-deletion"
+        )
+        XCTAssertTrue(prepared.cancelledWithoutInvoke)
+        XCTAssertEqual(preparedCustody.gapObligations["prepared-discard"], "gap-deletion")
+        XCTAssertThrowsError(try prepared.invoke(preparedToken))
+        XCTAssertThrowsError(try prepared.callback(preparedToken))
+        XCTAssertThrowsError(try preparedCustody.invokeEffect(
+            eventId: "prepared-discard", effect: &prepared, token: preparedToken
+        ))
+
         var custody = try V2CustodyBudget(sampleRateHertz: 8_000, channelCount: 1)
         try custody.reserve(reservation)
         var effect = try V2EffectFence(effectId: "effect-forwarded")
         let token = try effect.prepare(ownerId: "owner-a")
         try custody.registerEffect(eventId: "forwarded", effect: effect)
         try custody.invokeEffect(eventId: "forwarded", effect: &effect, token: token)
+        XCTAssertThrowsError(try custody.cancelPreparedEffectAndDiscard(
+            eventId: "forwarded", effect: &effect, gapId: "gap-forbidden"
+        ))
         XCTAssertThrowsError(try custody.acknowledgeForwarded("forwarded", journalCommitted: true))
         try custody.localPrivacyRelease("forwarded", reason: "emergency_local")
         XCTAssertTrue(custody.effectPendingReleases.contains("forwarded"))
@@ -199,8 +227,8 @@ final class ProtocolV2StateTests: XCTestCase {
         try custody.invokeEffect(eventId: "ambiguous", effect: &effect, token: ambiguousToken)
         try custody.localPrivacyRelease("ambiguous", reason: "deletion_local")
         try effect.recover(runtimeEpoch: 1, egressFence: 1)
-        effect.acknowledgeProviderClose()
-        effect.acknowledgeOwnerTermination()
+        try effect.acknowledgeProviderClose()
+        try effect.acknowledgeOwnerTermination()
         try effect.terminalize()
         try custody.resolvePendingEffect(eventId: "ambiguous", effect: effect, outcome: .ambiguousEffect)
         XCTAssertEqual(custody.gapObligations["ambiguous"], "ambiguous_effect")

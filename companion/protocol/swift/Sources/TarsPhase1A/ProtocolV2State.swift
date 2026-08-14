@@ -125,12 +125,36 @@ public struct V2CustodyBudget: Sendable {
     }
 
     public mutating func acknowledgeDurableDiscard(_ eventId: String, gapId: String) throws {
-        guard !gapId.isEmpty, !forwarded.contains(eventId), !effectPendingReleases.contains(eventId) else {
+        guard !gapId.isEmpty, !forwarded.contains(eventId), effectIds[eventId] == nil,
+              !effectPendingReleases.contains(eventId) else {
             throw ProtocolV2ValidationError.invalid("durable discard conflicts with forwarding")
         }
         if let existing = discardGapIds[eventId], existing != gapId {
             throw ProtocolV2ValidationError.invalid("durable discard identity replay conflicts")
         }
+        try release(eventId, outcome: "durable_discard")
+        discardGapIds[eventId] = gapId
+        gapObligations[eventId] = gapId
+    }
+
+    public mutating func cancelPreparedEffectAndDiscard(
+        eventId: String,
+        effect: inout V2EffectFence,
+        gapId: String
+    ) throws {
+        if released[eventId] == "durable_discard",
+           discardGapIds[eventId] == gapId,
+           effect.cancelledWithoutInvoke {
+            return
+        }
+        guard !gapId.isEmpty, entries[eventId] != nil,
+              effectIds[eventId] == effect.effectId,
+              effectOwnerIds[eventId] == effect.ownerId,
+              !effectPendingReleases.contains(eventId),
+              let token = effect.token else {
+            throw ProtocolV2ValidationError.invalid("prepared-effect discard is stale, active, or foreign")
+        }
+        try effect.cancelPrepared(token)
         try release(eventId, outcome: "durable_discard")
         discardGapIds[eventId] = gapId
         gapObligations[eventId] = gapId
@@ -366,6 +390,7 @@ public struct V2EffectFence: Sendable {
     public private(set) var journalCommitted = false
     public private(set) var providerClosed = false
     public private(set) var ownerTerminated = false
+    public private(set) var cancelledWithoutInvoke = false
 
     public init(effectId: String) throws {
         guard !effectId.isEmpty else {
@@ -404,6 +429,22 @@ public struct V2EffectFence: Sendable {
         invokeCount += 1
     }
 
+    public mutating func cancelPrepared(_ presented: V2EffectToken) throws {
+        try check(presented)
+        guard state == .prepared, invokeCount == 0, !journalCommitted else {
+            throw ProtocolV2ValidationError.invalid("only an uninvoked prepared effect can be cancelled")
+        }
+        cancelledWithoutInvoke = true
+        state = .terminal
+    }
+
+    public func callback(_ presented: V2EffectToken) throws {
+        try check(presented)
+        guard [.invoking, .providerReturned, .journaled].contains(state) else {
+            throw ProtocolV2ValidationError.invalid("provider callback is late or out of order")
+        }
+    }
+
     public mutating func providerReturned(_ presented: V2EffectToken) throws {
         try check(presented)
         guard state == .invoking else {
@@ -428,11 +469,24 @@ public struct V2EffectFence: Sendable {
         }
         self.runtimeEpoch = runtimeEpoch
         self.egressFence = egressFence
+        providerClosed = false
+        ownerTerminated = false
         state = .effectQuiescenceRequired
     }
 
-    public mutating func acknowledgeProviderClose() { providerClosed = true }
-    public mutating func acknowledgeOwnerTermination() { ownerTerminated = true }
+    public mutating func acknowledgeProviderClose() throws {
+        guard state == .effectQuiescenceRequired else {
+            throw ProtocolV2ValidationError.invalid("provider close must acknowledge the current recovery fence")
+        }
+        providerClosed = true
+    }
+
+    public mutating func acknowledgeOwnerTermination() throws {
+        guard state == .effectQuiescenceRequired else {
+            throw ProtocolV2ValidationError.invalid("owner termination must acknowledge the current recovery fence")
+        }
+        ownerTerminated = true
+    }
 
     public mutating func terminalize() throws {
         guard state == .effectQuiescenceRequired, providerClosed, ownerTerminated else {

@@ -184,9 +184,11 @@ internal static class Program
 
         internal int InvokeCount { get; private set; }
         internal string EffectId => effectId;
+        internal string? OwnerId => ownerId;
         internal bool JournalCommitted { get; private set; }
         internal string State => state;
         internal bool IsPreparedOwned => state == "prepared" && ownerId is not null && token.HasValue;
+        internal bool CancelledWithoutInvoke { get; private set; }
 
         internal EffectToken Prepare(string owner)
         {
@@ -209,6 +211,22 @@ internal static class Program
                 throw new InvalidOperationException("effect invocation is not single-use");
             state = "invoking";
             InvokeCount++;
+        }
+
+        internal void CancelPrepared(EffectToken presented)
+        {
+            Check(presented);
+            if (state != "prepared" || InvokeCount != 0 || JournalCommitted)
+                throw new InvalidOperationException("only an uninvoked prepared effect can be cancelled");
+            CancelledWithoutInvoke = true;
+            state = "terminal";
+        }
+
+        internal void Callback(EffectToken presented)
+        {
+            Check(presented);
+            if (state is not ("invoking" or "provider_returned" or "journaled"))
+                throw new InvalidOperationException("provider callback is late or out of order");
         }
 
         internal void ProviderReturned(EffectToken presented)
@@ -234,11 +252,24 @@ internal static class Program
                 throw new InvalidOperationException("recovery epoch or fence is invalid");
             runtimeEpoch = epoch;
             egressFence = fence;
+            providerClosed = false;
+            ownerTerminated = false;
             state = "effect_quiescence_required";
         }
 
-        internal void AcknowledgeProviderClose() => providerClosed = true;
-        internal void AcknowledgeOwnerTermination() => ownerTerminated = true;
+        internal void AcknowledgeProviderClose()
+        {
+            if (state != "effect_quiescence_required")
+                throw new InvalidOperationException("provider close must acknowledge the current recovery fence");
+            providerClosed = true;
+        }
+
+        internal void AcknowledgeOwnerTermination()
+        {
+            if (state != "effect_quiescence_required")
+                throw new InvalidOperationException("owner termination must acknowledge the current recovery fence");
+            ownerTerminated = true;
+        }
 
         internal void Terminalize()
         {
@@ -346,10 +377,30 @@ internal static class Program
 
         internal void Discard(string eventId, string gapId)
         {
-            if (string.IsNullOrEmpty(gapId) || forwarded.Contains(eventId) || pendingEffectReleases.Contains(eventId))
+            if (string.IsNullOrEmpty(gapId) || forwarded.Contains(eventId) || effects.ContainsKey(eventId) ||
+                pendingEffectReleases.Contains(eventId))
                 throw new InvalidOperationException("discard conflicts with forwarding");
             if (gapIds.TryGetValue(eventId, out string? existing) && existing != gapId)
                 throw new InvalidOperationException("discard identity replay conflicts");
+            Release(eventId, "durable_discard");
+            gapIds[eventId] = gapId;
+        }
+
+        internal void CancelPreparedEffectAndDiscard(string eventId, EffectFence effect, string gapId)
+        {
+            if (released.GetValueOrDefault(eventId) == "durable_discard" &&
+                gapIds.GetValueOrDefault(eventId) == gapId && effect.CancelledWithoutInvoke)
+            {
+                return;
+            }
+            if (string.IsNullOrEmpty(gapId) || !items.ContainsKey(eventId) ||
+                !effects.TryGetValue(eventId, out EffectFence? registered) || !ReferenceEquals(registered, effect) ||
+                pendingEffectReleases.Contains(eventId))
+            {
+                throw new InvalidOperationException("prepared-effect discard is stale, active, or foreign");
+            }
+            EffectToken token = effect.Prepare(effect.OwnerId!);
+            effect.CancelPrepared(token);
             Release(eventId, "durable_discard");
             gapIds[eventId] = gapId;
         }
@@ -692,7 +743,7 @@ internal static class Program
         RunStateMatrix();
         RunLongDurationMatrix();
 
-        Console.WriteLine("{\"phase\":\"2A-csharp-vectors\",\"successful\":true,\"vectorsRun\":44}");
+        Console.WriteLine("{\"phase\":\"2A-csharp-vectors\",\"successful\":true,\"vectorsRun\":48}");
     }
 
     private static void RunStateMatrix()
@@ -711,6 +762,8 @@ internal static class Program
         if (firstEffect.JournalCommitted)
             throw new InvalidOperationException("provider return advanced forwarding before journal");
         firstEffect.CommitJournal(token);
+        ExpectReject(firstEffect.AcknowledgeProviderClose);
+        ExpectReject(firstEffect.AcknowledgeOwnerTermination);
         firstEffect.Recover(1, 1);
         ExpectReject(firstEffect.Terminalize);
         firstEffect.AcknowledgeProviderClose();
@@ -742,6 +795,20 @@ internal static class Program
             throw new InvalidOperationException("custody privacy deadline mismatch");
 
         custody = new CustodyBudget(8_000, 1);
+        custody.Reserve("prepared-discard", new CustodyItem(160, 320, 472, 920, 0));
+        var preparedDiscard = new EffectFence("effect-prepared-discard");
+        EffectToken preparedDiscardToken = preparedDiscard.Prepare("owner-a");
+        custody.RegisterEffect("prepared-discard", preparedDiscard);
+        ExpectReject(() => custody.Discard("prepared-discard", "gap-deletion"));
+        custody.CancelPreparedEffectAndDiscard("prepared-discard", preparedDiscard, "gap-deletion");
+        custody.CancelPreparedEffectAndDiscard("prepared-discard", preparedDiscard, "gap-deletion");
+        ExpectReject(() => preparedDiscard.Invoke(preparedDiscardToken));
+        ExpectReject(() => preparedDiscard.Callback(preparedDiscardToken));
+        ExpectReject(() => custody.InvokeEffect("prepared-discard", preparedDiscard, preparedDiscardToken));
+        if (!preparedDiscard.CancelledWithoutInvoke || custody.GapFor("prepared-discard") != "gap-deletion")
+            throw new InvalidOperationException("prepared effect cancellation/discard mismatch");
+
+        custody = new CustodyBudget(8_000, 1);
         custody.Reserve("direct", new CustodyItem(160, 320, 472, 920, 0));
         var directEffect = new EffectFence("effect-direct");
         EffectToken directToken = directEffect.Prepare("owner-a");
@@ -760,6 +827,8 @@ internal static class Program
         EffectToken pendingToken = pendingForwarded.Prepare("owner-a");
         custody.RegisterEffect("pending-forwarded", pendingForwarded);
         custody.InvokeEffect("pending-forwarded", pendingForwarded, pendingToken);
+        ExpectReject(() => custody.CancelPreparedEffectAndDiscard(
+            "pending-forwarded", pendingForwarded, "gap-forbidden"));
         custody.LocalPrivacyRelease("pending-forwarded", "emergency_local");
         ExpectReject(() => custody.RegisterEffect("pending-forwarded", new EffectFence("replacement")));
         ExpectReject(() => custody.Discard("pending-forwarded", "gap-forbidden"));

@@ -51,6 +51,7 @@ class ProviderEffectFence:
         self.owner_termination_ack = False
         self.invoke_count = 0
         self.journal_committed = False
+        self.cancelled_without_invoke = False
 
     def prepare(self, owner_id: str) -> EffectToken:
         if self.state is not EffectState.PREPARED:
@@ -71,6 +72,13 @@ class ProviderEffectFence:
             raise ProtocolV2Violation("effect invocation is not single-use")
         self.state = EffectState.INVOKING
         self.invoke_count += 1
+
+    def cancel_prepared(self, token: EffectToken) -> None:
+        self._check_token(token)
+        if self.state is not EffectState.PREPARED or self.invoke_count != 0 or self.journal_committed:
+            raise ProtocolV2Violation("only an uninvoked prepared effect can be cancelled")
+        self.cancelled_without_invoke = True
+        self.state = EffectState.TERMINAL
 
     def provider_ack(self, token: EffectToken) -> None:
         self._check_token(token)
@@ -107,6 +115,8 @@ class ProviderEffectFence:
             raise ProtocolV2Violation("recovery epoch/fence must advance")
         self.runtime_epoch = new_runtime_epoch
         self.egress_fence = new_egress_fence
+        self.provider_close_ack = False
+        self.owner_termination_ack = False
         if self.state in (
             EffectState.PREPARED,
             EffectState.INVOKING,
@@ -117,10 +127,14 @@ class ProviderEffectFence:
             self.state = EffectState.EFFECT_QUIESCENCE_REQUIRED
 
     def acknowledge_provider_close(self) -> None:
+        if self.state is not EffectState.EFFECT_QUIESCENCE_REQUIRED:
+            raise ProtocolV2Violation("provider close must acknowledge the current recovery fence")
         self.provider_close_ack = True
         self._finish_quiescence_if_ready()
 
     def acknowledge_owner_termination(self) -> None:
+        if self.state is not EffectState.EFFECT_QUIESCENCE_REQUIRED:
+            raise ProtocolV2Violation("owner termination must acknowledge the current recovery fence")
         self.owner_termination_ack = True
         self._finish_quiescence_if_ready()
 
@@ -163,6 +177,7 @@ class ProviderEffectFence:
             "owner_termination_ack": self.owner_termination_ack,
             "invoke_count": self.invoke_count,
             "journal_committed": self.journal_committed,
+            "cancelled_without_invoke": self.cancelled_without_invoke,
         }
 
     @classmethod
@@ -187,6 +202,7 @@ class ProviderEffectFence:
         restored.owner_termination_ack = bool(snapshot["owner_termination_ack"])
         restored.invoke_count = int(snapshot["invoke_count"])
         restored.journal_committed = bool(snapshot["journal_committed"])
+        restored.cancelled_without_invoke = bool(snapshot.get("cancelled_without_invoke", False))
         return restored
 
 
@@ -476,6 +492,20 @@ class AdmissionAuthority:
         if (
             not self.authenticated
             or self.revoked
+            or any(
+                isinstance(value, bool) or not isinstance(value, int)
+                for value in (
+                    self.capture_generation,
+                    self.fence,
+                    self.protocol_version,
+                    self.expires_at_ms,
+                    now_ms,
+                )
+            )
+            or any(
+                isinstance(request.get(name), bool) or not isinstance(request.get(name), int)
+                for name in ("captureGeneration", "fence", "protocolVersion")
+            )
             or now_ms < 0
             or now_ms >= self.expires_at_ms
             or set(request) != set(expected)
@@ -599,11 +629,35 @@ class RawCustodyBuffer:
         self.forwarded.add(event_id)
 
     def acknowledge_durable_discard(self, event_id: str, gap_id: str) -> None:
-        if event_id in self.forwarded or event_id in self.effect_pending_releases or not gap_id:
+        if event_id in self.forwarded or event_id in self.effects or event_id in self.effect_pending_releases or not gap_id:
             raise ProtocolV2Violation("durable discard conflicts with forwarding or gap identity")
         existing_gap = self.gap_obligations.get(event_id)
         if existing_gap is not None and existing_gap != gap_id:
             raise ProtocolV2Violation("durable discard identity replay conflicts")
+        self._release(event_id, "durable_discard")
+        self.gap_obligations[event_id] = gap_id
+
+    def cancel_prepared_effect_and_discard(
+        self,
+        event_id: str,
+        effect: ProviderEffectFence,
+        gap_id: str,
+    ) -> None:
+        if (
+            self.released.get(event_id) == "durable_discard"
+            and self.gap_obligations.get(event_id) == gap_id
+            and effect.cancelled_without_invoke
+        ):
+            return
+        if (
+            not gap_id
+            or event_id not in self.items
+            or self.effects.get(event_id) is not effect
+            or event_id in self.effect_pending_releases
+            or effect.token is None
+        ):
+            raise ProtocolV2Violation("prepared-effect discard is stale, active, or foreign")
+        effect.cancel_prepared(effect.token)
         self._release(event_id, "durable_discard")
         self.gap_obligations[event_id] = gap_id
 
@@ -859,6 +913,10 @@ class TransportEdgeBudget:
         if (
             not connection_id
             or not source_ip
+            or any(
+                isinstance(value, bool) or not isinstance(value, int)
+                for value in (now_ms, header_bytes, first_auth_bytes, receive_buffer_bytes)
+            )
             or now_ms < 0
             or not 0 <= header_bytes <= 16_384
             or not 0 <= first_auth_bytes <= 8_192
@@ -871,7 +929,7 @@ class TransportEdgeBudget:
         self.pending[connection_id] = (source_ip, now_ms, receive_buffer_bytes)
 
     def reject_pre_auth_audio(self, declared_frame_bytes: int) -> None:
-        if declared_frame_bytes < 0:
+        if isinstance(declared_frame_bytes, bool) or not isinstance(declared_frame_bytes, int) or declared_frame_bytes < 0:
             raise ProtocolV2Violation("declared frame length is invalid")
         raise ProtocolV2Violation("binary audio is rejected before authentication")
 
@@ -879,6 +937,8 @@ class TransportEdgeBudget:
         pending = self.pending.get(connection_id)
         if (
             pending is None
+            or isinstance(now_ms, bool)
+            or not isinstance(now_ms, int)
             or now_ms < pending[1]
             or now_ms - pending[1] > 8_000
             or len(self.authenticated) >= 16
@@ -956,7 +1016,12 @@ class LifecycleProjection:
 
     @staticmethod
     def _advance(current: Optional[tuple[int, Any]], version: int, state: Any) -> tuple[int, Any]:
-        if version < 0 or (current is not None and version <= current[0]):
+        if (
+            isinstance(version, bool)
+            or not isinstance(version, int)
+            or version < 0
+            or (current is not None and version <= current[0])
+        ):
             raise ProtocolV2Violation("origin state version is stale")
         return version, state
 

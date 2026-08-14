@@ -53,6 +53,12 @@ class ProtocolV2ModelTests(unittest.TestCase):
         self.assertEqual([item.first_sequence for item in intervals.intervals], [0, 2])
         with self.assertRaises(ProtocolV2Violation):
             IntervalSet((Interval(0, 1, 0, 320), Interval(1, 2, 160, 480)))
+        with self.assertRaises(ProtocolV2Violation):
+            IntervalSet((
+                Interval(0, 0, 0, 100),
+                Interval(1, 1, 200, 300),
+                Interval(2, 2, 50, 60),
+            ))
 
     def test_custody_release_cannot_cross_unresolved_gap(self):
         ledger = CustodyLedger(self.key)

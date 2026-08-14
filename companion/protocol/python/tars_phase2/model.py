@@ -313,8 +313,8 @@ class IntervalSet:
 
     def __init__(self, intervals: Iterable[Interval] = ()) -> None:
         ordered = sorted(intervals, key=lambda item: (item.first_sequence, item.first_sample, item.last_sample_exclusive))
-        for previous, current in zip(ordered, ordered[1:]):
-            if previous.overlaps(current):
+        for index, current in enumerate(ordered):
+            if any(previous.overlaps(current) for previous in ordered[:index]):
                 raise ProtocolV2Violation("interval set contains overlap")
         self._intervals: tuple[Interval, ...] = tuple(ordered)
 
