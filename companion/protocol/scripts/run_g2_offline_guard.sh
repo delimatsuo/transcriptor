@@ -44,13 +44,39 @@ run_csharp() {
     return 2
   fi
   scratch=$(/usr/bin/mktemp -d /tmp/tars-g2a-dotnet.XXXXXX)
-  /bin/mkdir -p "$scratch/home" "$scratch/tmp" "$scratch/nuget"
+  /bin/mkdir -p "$scratch/home" "$scratch/tmp" "$scratch/nuget" "$scratch/obj" "$scratch/bin"
+  nuget_config="$scratch/NuGet.Config"
+  /usr/bin/printf '%s\n' \
+    '<?xml version="1.0" encoding="utf-8"?>' \
+    '<configuration><packageSources><clear /></packageSources></configuration>' \
+    >"$nuget_config"
   set +e
+  restore_output=$(
+    /usr/bin/env -i HOME="$scratch/home" LC_ALL=C PATH=/usr/bin:/bin:/usr/sbin:/sbin \
+      TMPDIR="$scratch/tmp" DOTNET_CLI_HOME="$scratch/home" DOTNET_CLI_TELEMETRY_OPTOUT=1 \
+      DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1 NUGET_PACKAGES="$scratch/nuget" \
+      /usr/bin/sandbox-exec -f "$SANDBOX_PROFILE" "$dotnet_path" restore \
+      "$PROTOCOL_ROOT/csharp/ProtocolV2Vectors.csproj" --configfile "$nuget_config" \
+      --property:BaseIntermediateOutputPath="$scratch/obj/" \
+      --property:MSBuildProjectExtensionsPath="$scratch/obj/" \
+      --property:BaseOutputPath="$scratch/bin/" 2>&1
+  )
+  restore_status=$?
+  if [ "$restore_status" -ne 0 ]; then
+    set -e
+    /bin/rm -rf "$scratch"
+    printf '%s\n' "$restore_output" >&2
+    return "$restore_status"
+  fi
   output=$(
     /usr/bin/env -i HOME="$scratch/home" LC_ALL=C PATH=/usr/bin:/bin:/usr/sbin:/sbin \
-      TMPDIR="$scratch/tmp" DOTNET_CLI_TELEMETRY_OPTOUT=1 DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1 \
+      TMPDIR="$scratch/tmp" DOTNET_CLI_HOME="$scratch/home" DOTNET_CLI_TELEMETRY_OPTOUT=1 \
+      DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1 \
       NUGET_PACKAGES="$scratch/nuget" /usr/bin/sandbox-exec -f "$SANDBOX_PROFILE" "$dotnet_path" run \
-      --project "$PROTOCOL_ROOT/csharp/ProtocolV2Vectors.csproj" --no-restore 2>&1
+      --project "$PROTOCOL_ROOT/csharp/ProtocolV2Vectors.csproj" --no-restore \
+      --property:BaseIntermediateOutputPath="$scratch/obj/" \
+      --property:MSBuildProjectExtensionsPath="$scratch/obj/" \
+      --property:BaseOutputPath="$scratch/bin/" 2>&1
   )
   result=$?
   set -e

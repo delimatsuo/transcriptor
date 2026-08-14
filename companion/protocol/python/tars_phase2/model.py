@@ -31,6 +31,7 @@ MAX_METADATA_BYTES_PER_SOURCE = 409_600
 MAX_QUEUED_AUDIO_EVENTS = 100
 MAX_RESERVATIONS = 100
 MAX_QUEUE_OBJECTS = 100
+MAX_SAFE_JSON_INTEGER = 2**53 - 1
 MAX_U32 = 2**32 - 1
 MAX_U64 = 2**64 - 1
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
@@ -79,7 +80,10 @@ def _nfc_string(name: str, value: str, *, identifier: bool = False) -> str:
     normalized = unicodedata.normalize("NFC", value)
     if normalized != value:
         raise ProtocolV2Violation(f"{name} must already be NFC")
-    encoded = value.encode("utf-8", "strict")
+    try:
+        encoded = value.encode("utf-8", "strict")
+    except UnicodeEncodeError as exc:
+        raise ProtocolV2Violation(f"{name} is not valid Unicode") from exc
     if len(encoded) > MAX_U32:
         raise ProtocolV2Violation(f"{name} exceeds uint32 byte length")
     if identifier:
@@ -113,36 +117,97 @@ def _identity_prefix(prefix: str, key: "StreamKey", extra: Sequence[str]) -> byt
 def canonical_json_bytes(value: Any) -> bytes:
     """Encode the restricted RFC-8785-compatible fixture subset.
 
-    Protocol vectors use strings, booleans, null, integers, arrays, and maps.
-    Floats are rejected rather than allowing platform-dependent spellings.
+    Protocol vectors use NFC strings, booleans, null, unsigned JSON-safe
+    integers, arrays, and maps. Floats are rejected rather than allowing
+    platform-dependent spellings. Object keys use RFC 8785 UTF-16 ordering.
     """
 
-    def reject_floats(item: Any) -> None:
+    def validate_and_order(item: Any) -> Any:
+        if item is None or isinstance(item, bool):
+            return item
+        if isinstance(item, int):
+            if item < 0 or item > MAX_SAFE_JSON_INTEGER:
+                raise ProtocolV2Violation("JSON integer is outside the unsigned safe domain")
+            return item
         if isinstance(item, float):
             if not math.isfinite(item):
                 raise ProtocolV2Violation("non-finite JSON number")
             raise ProtocolV2Violation("floating-point JSON is not in the fixture subset")
+        if isinstance(item, str):
+            return _nfc_string("JSON string", item)
         if isinstance(item, Mapping):
+            ordered: dict[str, Any] = {}
             for key, nested in item.items():
                 if not isinstance(key, str):
                     raise ProtocolV2Violation("JSON object keys must be strings")
-                reject_floats(nested)
-        elif isinstance(item, (list, tuple)):
-            for nested in item:
-                reject_floats(nested)
+                _nfc_string("JSON object key", key)
+            for key in sorted(item, key=lambda value: value.encode("utf-16-be")):
+                ordered[key] = validate_and_order(item[key])
+            return ordered
+        if isinstance(item, (list, tuple)):
+            return [validate_and_order(nested) for nested in item]
+        raise ProtocolV2Violation("value is not in the canonical JSON fixture subset")
 
-    reject_floats(value)
     try:
+        canonical = validate_and_order(value)
         encoded = json.dumps(
-            value,
+            canonical,
             ensure_ascii=False,
-            sort_keys=True,
+            sort_keys=False,
             separators=(",", ":"),
             allow_nan=False,
         ).encode("utf-8")
-    except (TypeError, ValueError) as exc:
+    except (TypeError, ValueError, UnicodeEncodeError, RecursionError) as exc:
+        if isinstance(exc, ProtocolV2Violation):
+            raise
         raise ProtocolV2Violation("value is not canonical JSON") from exc
+    if len(encoded) > MAX_CONTROL_BYTES:
+        raise ProtocolV2Violation("canonical JSON exceeds the control envelope")
     return encoded
+
+
+def parse_canonical_json_bytes(payload: bytes) -> Any:
+    """Parse only exact canonical bytes from the bounded unsigned profile."""
+
+    if not isinstance(payload, bytes) or not payload or len(payload) > MAX_CONTROL_BYTES:
+        raise ProtocolV2Violation("canonical JSON payload size is invalid")
+
+    def reject_constant(_: str) -> Any:
+        raise ProtocolV2Violation("non-finite JSON number")
+
+    def reject_float(_: str) -> Any:
+        raise ProtocolV2Violation("floating-point JSON is not in the fixture subset")
+
+    def parse_integer(value: str) -> int:
+        parsed = int(value)
+        if parsed < 0 or parsed > MAX_SAFE_JSON_INTEGER:
+            raise ProtocolV2Violation("JSON integer is outside the unsigned safe domain")
+        return parsed
+
+    def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, nested in pairs:
+            if key in result:
+                raise ProtocolV2Violation("duplicate JSON object key")
+            result[key] = nested
+        return result
+
+    try:
+        decoded = payload.decode("utf-8", "strict")
+        value = json.loads(
+            decoded,
+            object_pairs_hook=unique_object,
+            parse_constant=reject_constant,
+            parse_float=reject_float,
+            parse_int=parse_integer,
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError, TypeError, RecursionError) as exc:
+        if isinstance(exc, ProtocolV2Violation):
+            raise
+        raise ProtocolV2Violation("payload is not valid canonical JSON") from exc
+    if canonical_json_bytes(value) != payload:
+        raise ProtocolV2Violation("payload is not encoded in canonical JSON form")
+    return value
 
 
 @dataclass(frozen=True)

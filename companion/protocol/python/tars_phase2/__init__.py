@@ -12,6 +12,7 @@ from .model import (
     TerminalClaim,
     TranscriptSegment,
     canonical_json_bytes,
+    parse_canonical_json_bytes,
     terminal_coverage_id,
     transcript_segment_id,
 )
@@ -35,6 +36,7 @@ __all__ = [
     "QuotaLimits",
     "TokenBucketQuota",
     "canonical_json_bytes",
+    "parse_canonical_json_bytes",
     "terminal_coverage_id",
     "transcript_segment_id",
 ]
