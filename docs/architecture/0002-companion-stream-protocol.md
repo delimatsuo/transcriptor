@@ -122,10 +122,11 @@ Identity rules:
 - Retrying an event uses the same ID and identical payload. The gateway rejects an ID reused with different content.
 - A new capture after stop, permission loss, or device re-enrollment uses a new `captureGeneration` and new stream IDs.
 - Final transcript segment IDs are deterministically derived from protocol-v2
-  session/stream/capture/source, the ordered complete atomic chunks they
-  intersect, their narrower text sample bounds, provider result ordinal, and
-  provider provenance. STT attempt generation is provenance only. A replay uses
-  the same segment ID; changed text, bounds, ordinal, or provenance fails closed.
+  session/stream/capture/source, the complete ordered atomic `coverageId` list
+  they intersect, their narrower text sample bounds, provider result ordinal,
+  and provider provenance. STT attempt generation is provenance only. A replay
+  uses the same segment ID; changed text, bounds, ordinal, provenance, or
+  intersected list fails closed.
 - Notes and bookmarks use client-generated stable mutation IDs and server-assigned stable record IDs returned by the first durable acknowledgement.
 
 The server processes each source independently but preserves ordering within a source. It must not infer that microphone and system-audio sequence numbers share one clock or counter.
@@ -314,15 +315,24 @@ or under the deletion generation when deletion triggered the release.
 Terminal transcript and gap coverage for the same source/generation must not
 overlap. A transaction or equivalent single-writer projection enforces
 terminal uniqueness by coverage identity. A terminal coverage identity is
-`covr_` plus lowercase SHA-256 over the canonical NUL-separated fields
-`tars-terminal-coverage-v2`, session, stream, capture generation, source, the
-unsigned count of the complete ordered atomic `coverageId` list, and each
-length-prefixed `coverageId` in order. First/last sequence/sample values are
-display summaries only. This full-list identity distinguishes two finals in
-one chunk and sparse later success after an earlier gap even when endpoint
-ranges match. Crash tests cover failure before and after simulated/provider
-write, forwarding-journal commit, transcript commit, reconnect negotiation,
-and STT-attempt rotation.
+`covr_` plus lowercase SHA-256 over the canonical bytes:
+
+1. UTF-8 `tars-terminal-coverage-v2`, session, stream, capture generation, and
+   source fields separated by one NUL byte;
+2. a big-endian unsigned 32-bit count; and
+3. for each atomic `coverageId` in order, a big-endian unsigned 32-bit UTF-8
+   byte length followed by its UTF-8 bytes.
+
+The ordered list is sorted by `(sequence, firstSample, lastSampleExclusive,
+coverageId)` ascending; duplicate tuples, overlapping atomic ranges, embedded
+NUL bytes, non-NFC IDs, and lengths above `2^32-1` fail closed. First/last
+sequence/sample values are display summaries only. This full-list identity
+distinguishes two finals in one chunk and sparse later success after an earlier
+gap even when endpoint ranges match. Transcript segment IDs use the same
+ordered-list and length-prefix encoding, followed by their text bounds,
+provider ordinal, and provenance fields. Crash tests cover failure before and
+after simulated/provider write, forwarding-journal commit, transcript commit,
+reconnect negotiation, and STT-attempt rotation.
 
 Atomic audio chunks are custody and terminal-claim units, not transcript-result
 units. A provider may emit multiple ordered finals inside one chunk or one final
@@ -420,11 +430,15 @@ Before native audio reaches any hosted endpoint, automated tests must prove:
   rejects late callbacks before content persistence, and requires an
   independent absence inventory before `session.deleted`;
 - logs contain no audio, transcript, notes, documents, credentials, or payload digests usable as content identifiers;
-- a 60- and 90-minute synthetic test stays within approved memory and message limits.
+- canonical terminal/segment list-order and length-prefix vectors match across
+  Python, Swift, and C#;
+- a 60-, 90-, and 120-minute simultaneous two-source synthetic test stays
+  within approved memory and message limits.
 
 Future G2/v2 source evidence must run these semantics against one canonical
-versioned schema, Swift and Python binding validation, a deterministic provider
-simulator, fixed synthetic-byte manifests, and process networking disabled. The
+versioned schema, Swift, Python, and C# binding validation, a deterministic
+provider simulator, fixed synthetic-byte manifests, and process networking
+disabled. The
 existing Phase 1A result is v1-only and does not qualify this amendment. G2 must
 abort on credential lookup, implicit environment/project selection, network
 access, non-fixture input, or persistent audio. Hosted authentication and

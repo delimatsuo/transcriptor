@@ -21,6 +21,13 @@ The primary privacy promise is:
 
 This promise is not publishable until the verification section passes in the intended production environment.
 
+Any prior candidate disclosure script that says audio is simply “not recorded
+or stored” is stale for v2 and is not launch or pilot evidence. G3C must bind
+the replacement copy to this bounded claim, the notice version/locale,
+legal-basis acknowledgement, refusal path, and the distinction between
+T.A.R.S.-controlled durable artifacts and provider or operating-system
+retention surfaces before UI or consented audio work.
+
 The current prototype does not satisfy this promise: it writes local FLAC audio, lacks application-layer ownership enforcement, and has no verified retention/deletion implementation. Real candidate or customer data must not be used.
 
 ## 2. Data classes

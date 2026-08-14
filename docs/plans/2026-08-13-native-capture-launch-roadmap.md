@@ -286,6 +286,13 @@ versioned protocol. Entry additionally requires a docs-only reconciliation of
 table and `local_privacy_discard` UX. This G2-A0 amendment does not update that
 product contract or authorize UI/source work.
 
+The same G3C artifact must reconcile the existing candidate disclosure script's
+v1 “audio is not recorded or stored” wording with the amended bounded privacy
+claim, exact notice version/locale, legal-basis acknowledgement, refusal path,
+and the distinction between T.A.R.S.-controlled durable artifacts and provider
+or operating-system retention surfaces. Until that reconciliation is reviewed,
+the old script is not launch or pilot evidence.
+
 - Implement the ADR 0003 state model with independent physical capture,
   transport, source health, coverage, finalization, and deletion axes; do not
   assign gateway finalization or completion to companion events.

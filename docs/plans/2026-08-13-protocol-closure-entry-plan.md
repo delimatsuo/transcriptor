@@ -15,7 +15,7 @@ document.
 - `docs/privacy/data-flow-retention-contract.md`
 - `docs/reviews/2026-08-13-pr8-native-launch-salvage-audit.md`
 - `docs/reviews/2026-08-13-n11dc-native-launch-salvage-audit.md`
-- `docs/reviews/2026-08-14-g2a0-panel-review.md`
+- `docs/reviews/2026-08-14-g2a0-second-pass-review.md`
 
 ## 1. Purpose
 
@@ -442,7 +442,7 @@ these governing artifacts must be reviewed together:
 - `docs/architecture/0003-native-capture-launch-boundary.md`;
 - `docs/plans/2026-08-13-native-capture-launch-roadmap.md`; and
 - `docs/privacy/data-flow-retention-contract.md`; and
-- `docs/reviews/2026-08-14-g2a0-panel-review.md`.
+- `docs/reviews/2026-08-14-g2a0-second-pass-review.md`.
 
 The amendment must name durable discard and local emergency/privacy-timeout
 zeroization as terminal privacy releases distinct from successful provider
@@ -491,32 +491,32 @@ v2 session, stream, capture generation, source, sequence, and half-open sample
 range. A terminal outcome has `terminalCoverageId` equal to `covr_` plus
 lowercase SHA-256 over a canonical NUL-separated UTF-8 encoding of:
 
-1. literal `tars-terminal-coverage-v2`;
-2. session ID;
-3. stream ID;
-4. capture generation;
-5. source;
-6. the unsigned count of the complete ordered atomic `coverageId` list; and
-7. each `coverageId` in canonical order, length-prefixed so concatenation is
-   unambiguous.
+1. UTF-8 `tars-terminal-coverage-v2`, session, stream, capture generation, and
+   source fields separated by one NUL byte;
+2. a big-endian unsigned 32-bit count; and
+3. for each atomic `coverageId` in order, a big-endian unsigned 32-bit UTF-8
+   byte length followed by its UTF-8 bytes.
 
-The first/last sequence and sample values are derived display summaries only
-and are not identity inputs. This full-list digest is required because two
-provider finals can share one chunk and sparse success can contain a later
-forwarded range after an earlier gap. A terminal claim with a different ordered
-atomic list is a different claim even when endpoint ranges match. Integers use
-base-10 without leading zeroes. IDs may not contain NUL. Terminal **audio
-coverage** and transcript-segment identity are separate:
+The ordered list is sorted by `(sequence, firstSample, lastSampleExclusive,
+coverageId)` ascending; duplicate tuples, overlapping atomic ranges, embedded
+NUL bytes, non-NFC IDs, and lengths above `2^32-1` fail closed. The first/last
+sequence and sample values are derived display summaries only and are not
+identity inputs. This full-list digest is required because two provider finals
+can share one chunk and sparse success can contain a later forwarded range
+after an earlier gap. A terminal claim with a different ordered atomic list is
+a different claim even when endpoint ranges match. Terminal **audio coverage**
+and transcript-segment identity are separate:
 
 - `transcript.segment.durable` stores one immutable final-text segment with a
   `segmentId`, ordered provider-result ordinal, exact provider provenance,
   `textFirstSample`, `textLastSampleExclusive`, and the ordered complete atomic
   chunks it intersects. Its ID is `seg_` plus lowercase SHA-256 over these
-  NUL-separated UTF-8 fields: literal `tars-transcript-segment-v2`, session ID,
-  stream ID, capture generation, source, first and last intersected atomic
-  `coverageId`, the two text sample bounds, and the non-negative result ordinal,
-  using the same canonical-integer rules. The text is not an ID input; replay
-  with the same ID and different text or provenance fails closed.
+  canonical fields: literal `tars-transcript-segment-v2`, session ID, stream ID,
+  capture generation, source, the complete ordered atomic `coverageId` list
+  encoded with the same count/length-prefix rules, the two text sample bounds,
+  and the non-negative result ordinal and provider provenance. The text is not
+  an ID input; replay with the same ID and different text, provenance, bounds,
+  ordinal, or intersected list fails closed.
 - Multiple ordered segments may reference the same atomic chunk. A final
   inside one chunk, two finals inside one chunk, and one final spanning several
   chunks are therefore representable without making transcript text itself an
@@ -737,6 +737,17 @@ exact allowed paths are reviewed.
 - Inject owner crash before/after `invoking`, journal failure after the provider
   call, stale-owner resumption, recovery takeover attempts, and delayed
   provider callbacks; prove no second invocation and no post-terminal write.
+- Inject an earlier durable gap followed by a later forwarded interval; prove
+  acknowledgement and reconnect payloads carry the ordered disjoint interval
+  set, never a scalar that crosses the gap, and release only the later proven
+  interval.
+- Generate canonical terminal and segment identities with two finals in one
+  chunk, sparse ranges, duplicate/overlapping atomic lists, non-NFC IDs, and
+  length-prefix boundary values; compare Python, Swift, and C# bytes.
+- Inject egress-fence publication, runtime-epoch mismatch, provider-close
+  acknowledgement loss, owner termination acknowledgement loss, and recovery
+  into persistent `effect_quiescence_required`; prove no completion, deletion,
+  ambiguous-gap, or replacement-effect claim occurs without the required fence.
 - Exercise lease replacement across companion-known/unadmitted,
   admitted/unprepared, prepared/ambiguous, and forwarded/untranscribed ranges,
   including an unknowable tail.
