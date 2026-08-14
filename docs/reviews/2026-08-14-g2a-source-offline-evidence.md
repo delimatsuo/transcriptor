@@ -11,8 +11,8 @@ commit remains required before G2 exit may be recorded.
   `8398fa8b345e326320e54d2a598977e47ee67fa7`, tree
   `419feca4702be389c8f85129e0face1afe912419`.
 - Candidate final source checkpoint: commit
-  `92a8e9362f113642545c50c57b44265d0e975182`, tree
-  `3a5938b5881a3368e3e98dafa816a92b11986f72`.
+  `c9bae116bc68647d65c6dc9727c2cb34d3aa9ec8`, tree
+  `2609696a3002332a1275b7f01cd15c26b3258b77`.
 - Framing/retry parity checkpoint: commit
   `2a10d6e6b107c473f4561ad65620c8de0787e8e8`, tree
   `0b5ccdbe75fe67a06e61ec8cc7b0aac414738235`.
@@ -64,11 +64,16 @@ The candidate source tree covers:
 - durable owner/effect identity, single invocation, immutable journal before
   forwarded release, runtime-epoch and egress-fence recovery, foreign/stale
   token rejection, terminal non-reopening, and positive provider/owner
-  quiescence;
+  quiescence; the custody ledger binds each live audio range to its original
+  prepared owner/effect before invocation, prevents generic forwarding around
+  that binding, and prevents a locally released range from acquiring a new
+  effect;
 - exact durable-discard gap identity and idempotence, forwarding/discard
   conflict rejection, local privacy-timeout release without advancing the
-  forwarded watermark, the 10-second reconcile threshold, and 30-second
-  absolute custody expiry scheduling model;
+  forwarded watermark, no discard claim while a provider effect is pending,
+  original-effect journal resolution to forwarded coverage or post-quiescence
+  resolution to an exact ambiguous-effect gap, the 10-second reconcile
+  threshold, and 30-second absolute custody expiry scheduling model;
 - 20–250 ms per-event alignment, 64,000-byte event limit, sample-rate-derived
   two-second frame/raw-byte limits, 100-event/metadata/reservation/resident
   limits, and fail-before-mutation oversized-event cases;
@@ -95,12 +100,12 @@ Swift, and C# all finish with zero retained quota custody.
 ## Verification at the candidate source checkpoint
 
 - `git diff --check`: passed.
-- `companion/protocol/scripts/run_offline_guard.sh`: passed twice with **92
-  Python tests and 15 Swift tests** per run under a scrubbed, network-denied
+- `companion/protocol/scripts/run_offline_guard.sh`: passed twice with **93
+  Python tests and 16 Swift tests** per deterministic pass under a scrubbed, network-denied
   environment.
 - `PATH=/opt/homebrew/opt/dotnet@8/bin:/usr/bin:/bin:/usr/sbin:/sbin
-  companion/protocol/scripts/run_g2_offline_guard.sh`: passed twice with **38
-  Python tests, 15 Swift tests, and 39 C# vectors** per run under the reviewed
+  companion/protocol/scripts/run_g2_offline_guard.sh`: passed twice with **39
+  Python tests, 16 Swift tests, and 43 C# vectors** per deterministic pass under the reviewed
   network-denied sandbox.
 - `companion/protocol/scripts/run_g2_artifact_scan.sh`: passed with **zero
   artifacts, forbidden imports, and out-of-scope paths**.
@@ -114,9 +119,14 @@ Staff and security/privacy independently reviewed `794a191...` /
 recovery, conflicting discard replay, per-event custody bypass, negative quota
 rows, backward pre-auth time, arbitrary Swift retry metadata, Swift overflow
 traps, stale evidence, and incomplete cross-language state cases. Source commit
-`92a8e93...` resolves those findings and adds explicit Python/Swift/C# tests.
-Because those changes create a new exact tree, the prior blocked reviews are
-not approval of this candidate.
+`92a8e93...` resolved that round. Their review of the following evidence commit
+`3d58574...` then found terminal recovery and deletion-participant acceptance
+gaps in Python, typed retry-input drift, unchecked/fractional numeric domains,
+and a cross-language race between local raw-audio release and a prepared or
+in-flight provider effect. Source commit `c9bae11...` resolves that second round
+and adds explicit Python/Swift/C# rejection and race-resolution cases. Because
+these changes create a new exact tree, neither prior blocked review is approval
+of this candidate.
 
 ## Claim ceiling and remaining gate
 
@@ -134,3 +144,8 @@ exact source parent with no unresolved P0–P3 finding. Any correction expires
 that approval and requires a new exact commit/tree review. Later G3A gateway
 and G3B native-capture work remain separately planned and separately
 authorized.
+
+The evidence file binds its exact source parent above. Its enclosing evidence
+commit cannot self-identify without changing itself; final binding therefore
+must be supplied by the independent reviewer dispositions and the exported
+offline bundle manifest, each naming the same enclosing commit and tree.
