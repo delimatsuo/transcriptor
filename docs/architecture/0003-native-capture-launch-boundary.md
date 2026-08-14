@@ -92,7 +92,7 @@ erase useful implementation evidence from the Week 1 through Week 4 branches.
 - one active fenced capture lease per session;
 - schema, ordering, size, rate, duration, concurrency, and quota enforcement;
 - bounded transient gateway custody and Google STT stream lifecycle;
-- content-free forwarding journals and protocol watermarks;
+- content-free forwarding journals and protocol interval sets/derived prefixes;
 - idempotent transcript-or-gap persistence;
 - retention, deletion, audit, provider configuration, and kill controls; and
 - content-free operational observability.
@@ -138,8 +138,9 @@ three authoritative axes rather than one actor-owned top-level lifecycle:
 `microphoneHealth` and `systemAudioHealth`, each `unknown`, `healthy`,
 `permission_missing`, `permission_revoked`, `device_unavailable`, `overflow`,
 or `failed`, plus the last captured sequence/sample. `coverageState` owns
-durable finalization and deletion; `transportState` owns connectivity and
-watermarks. No axis may synthesize another axis's authority.
+durable finalization and deletion; `transportState` owns connectivity,
+acknowledgement interval sets, and derived prefixes. No axis may synthesize
+another axis's authority.
 
 The web derives display labels such as `finalizing`, `completed`, and
 `completed_with_gaps` only from a versioned precedence table over these axes.
@@ -230,8 +231,10 @@ parallel after their respective plans and authority are approved. The
 observable protocol semantics are shared and frozen before the tracks diverge:
 
 - server-derived tenancy and fenced session authority;
-- admission, provider-forwarding, and durable-transcript watermarks;
-- `audio.forwarded` as the only successful provider-forwarding watermark;
+- admission, provider-forwarding, and durable-transcript interval sets plus
+  derived prefixes;
+- `audio.forwarded` as the only successful provider-forwarding release
+  authority;
 - a discard CAS that wins before provider preparation creates a durable gap;
   named `local_privacy_discard`, durable discard, and emergency/privacy-timeout
   zeroization never attribute an already-pending provider effect to the discard

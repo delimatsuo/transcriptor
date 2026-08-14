@@ -344,13 +344,21 @@ coverageId)` ascending; duplicate tuples, overlapping atomic ranges, embedded
 NUL bytes, non-NFC IDs, and lengths above `2^32-1` fail closed. First/last
 sequence/sample values are display summaries only. This full-list identity
 distinguishes two finals in one chunk and sparse later success after an earlier
-gap even when endpoint ranges match. Transcript segment IDs use the same
-ordered-list and length-prefix encoding, followed by big-endian uint64 text
-start/end bounds and provider ordinal, then length-prefixed UTF-8
-`providerName`/`providerResultId`, a one-byte presence flag and optional
-big-endian uint64 `sttAttemptGeneration`. Strings are NFC, reject embedded NUL,
-and are capped at `2^32-1` bytes; all integer overflow and invalid presence
-flags fail closed. Crash tests cover failure before and after simulated/provider
+gap even when endpoint ranges match. A transcript segment ID is `seg_` plus
+SHA-256 over these canonical bytes, in order:
+
+1. UTF-8 `tars-transcript-segment-v2`, session, stream, capture generation, and
+   source fields separated by one NUL byte;
+2. the big-endian uint32 count and length-prefixed atomic `coverageId` list
+   defined above;
+3. big-endian uint64 `textFirstSample`, `textLastSampleExclusive`, and provider
+   result ordinal; and
+4. length-prefixed UTF-8 `providerName` and `providerResultId`, then a one-byte
+   presence flag and optional big-endian uint64 `sttAttemptGeneration`.
+
+Strings are NFC, reject embedded NUL, and are capped at `2^32-1` bytes; all
+integer overflow and invalid presence flags fail closed. The text itself is
+not an ID input. Crash tests cover failure before and after simulated/provider
 write, forwarding-journal commit, transcript commit,
 reconnect negotiation, and STT-attempt rotation.
 

@@ -57,7 +57,7 @@ virtual audio driver.
 
 | Workstream | Owns | Must not own |
 | --- | --- | --- |
-| Protocol | Versioned messages, identities, watermarks, coverage, gaps, compatibility | Platform capture or cloud identity implementation |
+| Protocol | Versioned messages, identities, interval sets/derived prefixes, coverage, gaps, compatibility | Platform capture or cloud identity implementation |
 | Gateway | Enrollment, tenancy, leases/fencing, quotas, transient custody, STT, persistence, deletion, audit, kill switch | Physical capture or UI claims |
 | macOS companion | Permissions, mic/system capture, health, bounded buffer, protocol client, Keychain, updates | Session tenancy or report authority |
 | Windows companion | WASAPI mic/system capture, health, bounded buffer, protocol client, secure token storage, updates | Session tenancy or report authority |
@@ -141,8 +141,9 @@ their shared authority is unavailable. These are not hosted capacity or spend
 evidence.
 
 Protocol semantics that remain fixed are server-derived authority, the three
-watermarks, `audio.forwarded` as the only successful provider-forwarding
-release watermark; a discard CAS that wins before provider preparation creates a
+acknowledgement stages represented as interval sets/derived prefixes,
+`audio.forwarded` as the only successful provider-forwarding release authority;
+a discard CAS that wins before provider preparation creates a
 durable gap, while named `local_privacy_discard`, durable discard, and
 emergency/privacy-timeout zeroization never attribute an already-pending effect
 to discard and preserve the original forwarded/ambiguous outcome. These are
@@ -158,7 +159,8 @@ ADR 0003, this roadmap, and the privacy contract. No source, hosted, provider,
 device, credential, capture, deployment, merge, or release action is included.
 
 **Required result:** The four documents must agree that admission is not a
-release, `audio.forwarded` is the only successful provider-forwarding watermark,
+release, `audio.forwarded` is the only successful provider-forwarding release
+authority,
 and the named local `local_privacy_discard`, `audio.discard.durable`, plus local
 emergency/privacy-timeout zeroization follow the per-range discard CAS: a claim
 winning before provider preparation creates an exact or honest unknown-end gap;
@@ -215,7 +217,7 @@ Protocol closure is source/offline evidence only.
 - size, rate, duration, concurrency, distributed ingress, authentication, and
   spend controls;
 - Google STT streaming and rotation;
-- content-free forwarding journal and exact watermarks;
+- content-free forwarding journal and exact interval sets/derived prefixes;
 - idempotent durable transcripts and gaps;
 - retention/deletion and content-free audit tombstones;
 - non-enumerating failures, least-privilege runtime identity, and kill switch;
@@ -400,7 +402,7 @@ compatible exact gateway, companion, STT, and web artifact versions.
 - Handle silent render, endpoint changes, headset switching, exclusive-mode
   detection, whole-system contamination, keepalive cadence, and secure token
   storage.
-- Reuse the same custody, watermarks, gaps, capture states, pt-BR terminology,
+- Reuse the same custody, interval sets/derived prefixes, gaps, capture states, pt-BR terminology,
   and web workflow.
 - Run a 90-to-120-minute matrix on named recruiter machines, plus Narrator,
   keyboard, 200-percent zoom, packaging, update, uninstall, and rollback.
