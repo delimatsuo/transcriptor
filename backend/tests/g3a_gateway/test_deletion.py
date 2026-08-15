@@ -21,6 +21,16 @@ def test_delete_requires_positive_worker_and_effect_quiescence() -> None:
     assert final.state is DeletionState.DELETED
 
 
+def test_effect_ack_without_positive_quiescence_remains_blocked() -> None:
+    coordinator = DeletionCoordinator()
+    coordinator.register_effect("effect")
+    generation = coordinator.request()
+    coordinator.acknowledge_effect("effect", generation)
+    snapshot = coordinator.progress()
+    assert snapshot.state is DeletionState.EFFECT_QUIESCENCE_REQUIRED
+    assert snapshot.missing_effects == 1
+
+
 def test_late_generation_and_unverified_inventory_fail_closed() -> None:
     coordinator = DeletionCoordinator()
     generation = coordinator.request()

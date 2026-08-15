@@ -122,6 +122,9 @@ class DeletionCoordinator:
             self.state,
             self.admission_fenced,
             sum(not value for value in self._workers.values()),
-            sum(not value for value in self._effects.values()),
+            sum(
+                not self._effects[effect_id] or not self._effect_quiesced[effect_id]
+                for effect_id in self._effects
+            ),
             self._absence_passes,
         )
