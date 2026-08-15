@@ -8,8 +8,8 @@ erasure, deployment, pilot, launch, or production readiness.
 
 - G2-A merged parent: `65051a8863ec9b3430318b63b091369d668cd1b0`;
 - G2-A tree: `b5e0358b286e5f71e731f17653acffaf78aaeebd`;
-- G3A source remediation commit: `38c8893e9bdf0ff85c368b2a3fd748bb2fa27dcb`;
-- G3A source remediation tree: `2d37fcb901ad5976e54e28b04c20ee30174e6a1a`;
+- G3A source remediation commit: `fd5b930ad7e54b1e1daa1a15e21251cb570fd46f`;
+- G3A source remediation tree: `d2288aadc74031cf6811586947ebb5b5076f73ad`;
 - implementation branch: `codex/native-g3a-source`;
 - implementation worktree: `/private/tmp/transcriptor-native-g3a-source`.
 

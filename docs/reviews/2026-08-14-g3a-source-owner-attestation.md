@@ -7,8 +7,8 @@ repository/artifact boundaries.
 ## Exact reviewed inputs
 
 - merged G2-A parent: `65051a8863ec9b3430318b63b091369d668cd1b0`;
-- source implementation/remediation commit: `38c8893e9bdf0ff85c368b2a3fd748bb2fa27dcb`;
-- source implementation/remediation tree: `2d37fcb901ad5976e54e28b04c20ee30174e6a1a`;
+- source implementation/remediation commit: `fd5b930ad7e54b1e1daa1a15e21251cb570fd46f`;
+- source implementation/remediation tree: `d2288aadc74031cf6811586947ebb5b5076f73ad`;
 - evidence and attestation records: the final documentation checkpoint on this branch;
 - branch: `codex/native-g3a-source`;
 - worktree: `/private/tmp/transcriptor-native-g3a-source`.
