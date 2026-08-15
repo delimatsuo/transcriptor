@@ -9,8 +9,8 @@ hosted, deployment, release, or real-data result.
 - authorization package tree: `5c747f93592a21e29254e610aa1d0bbeb324828f`;
 - implementation parent commit: `47fc798885be4d09d983d16ddc14c26a1c90d366`;
 - implementation parent tree: `160584b1fd9ddcb436a9c158f8658a6c6415fda3`;
-- source implementation commit: `a2022b58d18857470e8fbe6056e22110d7f9f1d9`;
-- source implementation tree: `311a52dbac9ffd22e85652fa7bf3c31111b90677`;
+- source implementation commit: `4a04e2eebc836f2e0a481a35d85c45f850866ea6`;
+- source implementation tree: `b0c911e5f4d7eab4be6318015254e344f9e9a5b8`;
 - implementation worktree: `/private/tmp/transcriptor-native-g3b-source`;
 - implementation branch: `codex/native-g3b-source`;
 - source paths: the exact runtime, test, guard, sandbox, and evidence paths in
@@ -42,7 +42,7 @@ cloud path is invoked by this checkpoint.
 Commands run from `companion/native-macos`:
 
 ```text
-swift test --disable-sandbox                         PASS (35 tests)
+swift test --disable-sandbox                         PASS (36 tests)
 Scripts/run_g3b_offline_guard.sh                     PASS twice
 Scripts/run_g3b_artifact_scan.sh                     PASS
 git diff --check 47fc7988..HEAD                      PASS
