@@ -11,8 +11,8 @@ I reviewed the G3B source implementation against authorization package
 `160584b1fd9ddcb436a9c158f8658a6c6415fda3`.
 
 The source implementation checkpoint is commit
-`ac60992eb7e5259bb866646304eeb6e8abbf0932` / tree
-`c1df248baef48cb84dc2447e06fbf7d533456e25`.
+`6255e1fe093d5b135551058d91ee1ad2f68b157a` / tree
+`662c0ca1168d7cca954a98c19873a86ebd8c9abd`.
 
 The implementation is limited to the approved G3B companion, test, guard,
 sandbox, and evidence paths. No existing protocol, backend, frontend,
@@ -31,6 +31,11 @@ The evidence claim is limited to deterministic source/offline behavior. It is
 not evidence of physical erasure, provider delivery/deletion, gateway
 coverage, device reliability, hosted integration, pilot readiness, release, or
 launch readiness.
+
+This checkpoint is a remediation candidate, not an approval: the first exact
+source review identified custody, protocol, deletion, and health blockers, and
+fresh independent staff and security/privacy review must bind this new tree
+before publication.
 
 ## Required next gate
 
