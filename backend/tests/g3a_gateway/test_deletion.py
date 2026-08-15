@@ -14,7 +14,7 @@ def test_delete_requires_positive_worker_and_effect_quiescence() -> None:
     assert coordinator.state is DeletionState.DELETE_QUIESCING
     assert coordinator.progress().state is DeletionState.EFFECT_QUIESCENCE_REQUIRED
     coordinator.acknowledge_worker("worker", generation)
-    coordinator.acknowledge_effect("effect", generation)
+    coordinator.acknowledge_effect("effect", generation, quiesced=True)
     assert coordinator.progress().state is DeletionState.DELETING
     coordinator.absence_pass(generation, set())
     final = coordinator.absence_pass(generation, set())

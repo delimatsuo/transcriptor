@@ -17,18 +17,18 @@ def test_interval_set_preserves_sparse_ranges_and_prefix() -> None:
     assert overlap.value.code is FailureCode.OVERLAP
 
 
-def test_terminal_claim_rejects_duplicate_and_segment_overlap() -> None:
+def test_terminal_claim_merges_multiple_finals_inside_one_atomic_range() -> None:
     ledger = CoverageLedger()
     atomic = AtomicRange(0, 0)
     ledger.admit_range(atomic)
     first = Segment("a", 0, 500, "digest-a")
     second = Segment("b", 400, 800, "digest-b")
-    with pytest.raises(GatewayError) as overlap:
-        ledger.terminalize(TerminalClaim(atomic, TerminalOutcome.TRANSCRIPT, (first, second)))
-    assert overlap.value.code is FailureCode.OVERLAP
-    claim = TerminalClaim(atomic, TerminalOutcome.TRANSCRIPT, (first,))
-    ledger.terminalize(claim)
-    ledger.terminalize(claim)
+    ledger.terminalize(TerminalClaim(atomic, TerminalOutcome.TRANSCRIPT, (first,)))
+    ledger.terminalize(TerminalClaim(atomic, TerminalOutcome.TRANSCRIPT, (second,)))
+    ledger.terminalize(TerminalClaim(atomic, TerminalOutcome.TRANSCRIPT, (first,)))
+    snapshot = ledger.complete()
+    assert snapshot.state is CoverageState.COMPLETED
+    assert len(snapshot.claims[0].segments) == 2
     with pytest.raises(GatewayError) as conflict:
         ledger.terminalize(TerminalClaim(atomic, TerminalOutcome.GAP, reason="different"))
     assert conflict.value.code is FailureCode.CONFLICT
@@ -46,3 +46,13 @@ def test_two_finals_inside_one_atomic_range_keep_distinct_segments() -> None:
     snapshot = ledger.complete()
     assert snapshot.state is CoverageState.COMPLETED
     assert len(snapshot.claims[0].segments) == 2
+
+
+def test_completion_persists_a_gap_for_every_unclaimed_atomic_range() -> None:
+    ledger = CoverageLedger()
+    ledger.admit_range(AtomicRange(0, 0))
+    ledger.admit_range(AtomicRange(1, 1))
+    snapshot = ledger.complete()
+    assert snapshot.state is CoverageState.COMPLETED_WITH_GAPS
+    assert snapshot.gap_count == 2
+    assert all(claim.outcome is TerminalOutcome.GAP for claim in snapshot.claims)

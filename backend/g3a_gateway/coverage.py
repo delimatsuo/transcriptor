@@ -82,23 +82,44 @@ class CoverageLedger:
     def terminalize(self, claim: TerminalClaim) -> None:
         if claim.atomic_range not in self._admitted:
             raise GatewayError(FailureCode.CONFLICT)
-        if claim.atomic_range in self._claims:
-            existing = self._claims[claim.atomic_range]
-            if existing.claim_id == claim.claim_id:
-                return
-            raise GatewayError(FailureCode.CONFLICT)
         self._validate_segments(claim.segments)
-        self._claims[claim.atomic_range] = claim
+        existing = self._claims.get(claim.atomic_range)
+        if existing is None:
+            self._claims[claim.atomic_range] = claim
+            return
+        if existing.outcome is not claim.outcome:
+            raise GatewayError(FailureCode.CONFLICT)
+        if claim.outcome is TerminalOutcome.GAP:
+            if existing.claim_id != claim.claim_id:
+                raise GatewayError(FailureCode.CONFLICT)
+            return
+
+        # Provider finals are independent segments. Multiple finals may fall
+        # inside or straddle one atomic audio chunk, so merge exact segment
+        # identities into the single terminal audio-coverage claim instead of
+        # treating a second final as a duplicate/conflict.
+        by_id = {segment.segment_id: segment for segment in existing.segments}
+        for segment in claim.segments:
+            previous = by_id.get(segment.segment_id)
+            if previous is not None and previous != segment:
+                raise GatewayError(FailureCode.CONFLICT)
+            by_id[segment.segment_id] = segment
+        merged = tuple(
+            sorted(by_id.values(), key=lambda item: (item.start_sample, item.end_sample_exclusive, item.segment_id))
+        )
+        if merged == existing.segments:
+            return
+        self._claims[claim.atomic_range] = TerminalClaim(
+            claim.atomic_range,
+            TerminalOutcome.TRANSCRIPT,
+            merged,
+        )
 
     @staticmethod
     def _validate_segments(segments: tuple[Segment, ...]) -> None:
-        ordered = sorted(segments, key=lambda item: (item.start_sample, item.end_sample_exclusive))
-        for left, right in zip(ordered, ordered[1:]):
-            if _overlaps(
-                (left.start_sample, left.end_sample_exclusive),
-                (right.start_sample, right.end_sample_exclusive),
-            ):
-                raise GatewayError(FailureCode.OVERLAP)
+        segment_ids = [segment.segment_id for segment in segments]
+        if len(segment_ids) != len(set(segment_ids)):
+            raise GatewayError(FailureCode.CONFLICT)
 
     def begin_finalization(self) -> None:
         if self.state is not CoverageState.OPEN:
@@ -108,10 +129,21 @@ class CoverageLedger:
     def complete(self) -> CoverageSnapshot:
         if self.state not in (CoverageState.OPEN, CoverageState.FINALIZING):
             raise GatewayError(FailureCode.CONFLICT)
-        missing = len(self._admitted) - len(self._claims)
-        self.state = CoverageState.COMPLETED_WITH_GAPS if missing else CoverageState.COMPLETED
-        return self.snapshot(missing)
+        for atomic_range in self._admitted:
+            if atomic_range not in self._claims:
+                self._claims[atomic_range] = TerminalClaim(
+                    atomic_range,
+                    TerminalOutcome.GAP,
+                    reason="missing_terminal_outcome",
+                )
+        gap_count = sum(claim.outcome is TerminalOutcome.GAP for claim in self._claims.values())
+        self.state = CoverageState.COMPLETED_WITH_GAPS if gap_count else CoverageState.COMPLETED
+        return self.snapshot(gap_count)
 
     def snapshot(self, gap_count: int | None = None) -> CoverageSnapshot:
-        gaps = gap_count if gap_count is not None else len(self._admitted) - len(self._claims)
+        gaps = (
+            gap_count
+            if gap_count is not None
+            else sum(claim.outcome is TerminalOutcome.GAP for claim in self._claims.values())
+        )
         return CoverageSnapshot(self.state, tuple(self._admitted), self.claims, gaps)

@@ -127,6 +127,7 @@ class AudioFrame:
     captured_at_ms: int
     payload: bytes
     metadata_bytes: int = 0
+    source: Source = Source.MICROPHONE
 
     @property
     def payload_bytes(self) -> int:
@@ -141,12 +142,32 @@ class AudioFrame:
         return sha256(self.payload).hexdigest()
 
     @property
-    def identity(self) -> tuple[str, int, int, int]:
+    def identity(self) -> tuple[str, str, Source, int, int, int]:
         return (
+            self.context.session_id,
             self.context.stream_id,
+            self.source,
             self.context.capture_generation,
             self.sequence,
             self.first_sample,
+        )
+
+    @property
+    def retry_identity(self) -> tuple[object, ...]:
+        """Typed fields that must match before an ingress retry is accepted."""
+        return (
+            self.context.session_id,
+            self.context.stream_id,
+            self.context.capture_generation,
+            self.source,
+            self.event_id,
+            self.sequence,
+            self.first_sample,
+            self.last_sample_exclusive,
+            self.sample_rate,
+            self.channels,
+            self.payload_bytes,
+            self.metadata_bytes,
         )
 
 
@@ -180,6 +201,12 @@ class TerminalClaim:
     outcome: TerminalOutcome
     segments: tuple[Segment, ...] = ()
     reason: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.outcome is TerminalOutcome.TRANSCRIPT and not self.segments:
+            raise ValueError("transcript claims require at least one segment")
+        if self.outcome is TerminalOutcome.GAP and self.segments:
+            raise ValueError("gap claims cannot contain transcript segments")
 
     @property
     def claim_id(self) -> str:

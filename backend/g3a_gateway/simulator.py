@@ -99,7 +99,11 @@ class G3ASimulator:
             if intent.state.value in ("prepared", "invoking"):
                 self.effects.require_quiescence(intent.intent_id, intent.owner)
                 self.effects.acknowledge_quiescence(intent.intent_id, intent.owner)
-            self.deletion.acknowledge_effect(intent.intent_id, generation)
+            self.deletion.acknowledge_effect(
+                intent.intent_id,
+                generation,
+                quiesced=self.effects.all_quiesced(),
+            )
         self.deletion.progress()
         self.deletion.absence_pass(generation, set())
         self.deletion.absence_pass(generation, set())

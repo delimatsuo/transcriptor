@@ -22,6 +22,7 @@ class TransportLedger:
         self.state = TransportState.ADMITTING
         self._frames: dict[int, AudioFrame] = {}
         self._digests: dict[int, str] = {}
+        self._identities: dict[int, tuple[object, ...]] = {}
         self._next_sequence = 0
         self._forwarded_prefix = -1
         self._journal: list[ForwardedRange] = []
@@ -41,22 +42,32 @@ class TransportLedger:
     def capture(self, frame: AudioFrame, *, owner_id: str, runtime_epoch: int, now_ms: int) -> None:
         if self.state in (TransportState.FENCED, TransportState.CLOSED):
             raise GatewayError(FailureCode.STALE_FENCE)
+        # Validate the current lease before inspecting retry identity. A stale
+        # owner must not learn whether a sequence/digest is present or obtain a
+        # duplicate acceptance from the old fence.
+        self.admission.authority.require_lease(frame.context.session_id, owner_id, runtime_epoch)
         if frame.sequence != self._next_sequence:
-            if frame.sequence in self._digests and self._digests[frame.sequence] == frame.payload_digest:
+            if (
+                frame.sequence in self._digests
+                and self._digests[frame.sequence] == frame.payload_digest
+                and self._identities[frame.sequence] == frame.retry_identity
+            ):
+                self.admission.quotas.reserve_retry(frame, now_ms)
                 return
             raise GatewayError(FailureCode.OUT_OF_ORDER)
         self.admission.admit(frame, owner_id=owner_id, runtime_epoch=runtime_epoch, now_ms=now_ms)
         self._frames[frame.sequence] = frame
         self._digests[frame.sequence] = frame.payload_digest
+        self._identities[frame.sequence] = frame.retry_identity
         self._next_sequence += 1
         self.state = TransportState.FORWARDING
 
     def retry(self, frame: AudioFrame, *, owner_id: str, runtime_epoch: int, now_ms: int) -> None:
+        self.admission.authority.require_lease(frame.context.session_id, owner_id, runtime_epoch)
         if frame.sequence not in self._digests:
             raise GatewayError(FailureCode.CONFLICT)
         if self._digests[frame.sequence] != frame.payload_digest:
             raise GatewayError(FailureCode.CONFLICT)
-        self.admission.authority.require_lease(frame.context.session_id, owner_id, runtime_epoch)
         self.capture(frame, owner_id=owner_id, runtime_epoch=runtime_epoch, now_ms=now_ms)
 
     def journal_forward(self, first_sequence: int, last_sequence_inclusive: int) -> ForwardedRange:

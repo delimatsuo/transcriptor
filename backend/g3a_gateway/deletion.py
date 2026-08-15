@@ -34,6 +34,7 @@ class DeletionCoordinator:
         self.admission_fenced = False
         self._workers: dict[str, bool] = {}
         self._effects: dict[str, bool] = {}
+        self._effect_quiesced: dict[str, bool] = {}
         self._inventory = set(inventory or ())
         self._absence_passes = 0
 
@@ -43,12 +44,19 @@ class DeletionCoordinator:
         self._workers[worker_id] = False
 
     def register_effect(self, effect_id: str) -> None:
-        if self.state is DeletionState.DELETED:
-            raise GatewayError(FailureCode.REVOKED)
+        if self.state is not DeletionState.ACTIVE:
+            raise GatewayError(FailureCode.QUIESCENCE_REQUIRED)
         self._effects[effect_id] = False
+        self._effect_quiesced[effect_id] = False
 
     def request(self) -> int:
         if self.state is DeletionState.DELETED:
+            return self.generation
+        if self.state in (
+            DeletionState.DELETE_QUIESCING,
+            DeletionState.EFFECT_QUIESCENCE_REQUIRED,
+            DeletionState.DELETING,
+        ):
             return self.generation
         self.generation += 1
         self.state = DeletionState.DELETE_QUIESCING
@@ -61,11 +69,12 @@ class DeletionCoordinator:
             raise GatewayError(FailureCode.CONFLICT)
         self._workers[worker_id] = True
 
-    def acknowledge_effect(self, effect_id: str, generation: int) -> None:
+    def acknowledge_effect(self, effect_id: str, generation: int, *, quiesced: bool = False) -> None:
         self._require_generation(generation)
         if effect_id not in self._effects:
             raise GatewayError(FailureCode.CONFLICT)
         self._effects[effect_id] = True
+        self._effect_quiesced[effect_id] = quiesced
 
     def _require_generation(self, generation: int) -> None:
         if generation != self.generation:
@@ -83,7 +92,10 @@ class DeletionCoordinator:
         ):
             return self.snapshot()
         missing_workers = sum(not value for value in self._workers.values())
-        missing_effects = sum(not value for value in self._effects.values())
+        missing_effects = sum(
+            not self._effects[effect_id] or not self._effect_quiesced[effect_id]
+            for effect_id in self._effects
+        )
         if missing_effects:
             self.state = DeletionState.EFFECT_QUIESCENCE_REQUIRED
             return self.snapshot()

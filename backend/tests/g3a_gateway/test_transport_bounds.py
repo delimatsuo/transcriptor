@@ -57,3 +57,14 @@ def test_fence_rejects_new_capture() -> None:
     with pytest.raises(GatewayError) as exc:
         transport.capture(_frame(context, 0), owner_id=lease.owner_id, runtime_epoch=lease.runtime_epoch, now_ms=1000)
     assert exc.value.code is FailureCode.STALE_FENCE
+
+
+def test_duplicate_capture_revalidates_the_current_lease() -> None:
+    transport, context, lease = _transport()
+    first = _frame(context, 0)
+    transport.capture(first, owner_id=lease.owner_id, runtime_epoch=lease.runtime_epoch, now_ms=1000)
+    replacement = transport.admission.authority.acquire_lease(context.session_id, "replacement", 1)
+    with pytest.raises(GatewayError) as stale:
+        transport.capture(first, owner_id=lease.owner_id, runtime_epoch=lease.runtime_epoch, now_ms=1000)
+    assert stale.value.code is FailureCode.STALE_FENCE
+    transport.capture(first, owner_id=replacement.owner_id, runtime_epoch=replacement.runtime_epoch, now_ms=1000)

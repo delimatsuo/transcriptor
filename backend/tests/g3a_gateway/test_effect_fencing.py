@@ -36,3 +36,18 @@ def test_discard_cas_cannot_claim_an_existing_effect() -> None:
     with pytest.raises(GatewayError) as exc:
         ledger.discard_before_prepare(AtomicRange(2, 2))
     assert exc.value.code is FailureCode.CONFLICT
+
+
+def test_discard_cas_blocks_a_later_prepare_and_cannot_claim_invoking_effect() -> None:
+    ledger = EffectLedger()
+    discarded = AtomicRange(3, 3)
+    ledger.discard_before_prepare(discarded)
+    with pytest.raises(GatewayError) as resurrect:
+        ledger.prepare(discarded, "owner", 1)
+    assert resurrect.value.code is FailureCode.CONFLICT
+
+    intent = ledger.prepare(AtomicRange(4, 4), "owner", 1)
+    ledger.begin_invocation(intent.intent_id, intent.owner)
+    with pytest.raises(GatewayError) as pending:
+        ledger.mark_discarded(intent.intent_id, intent.owner)
+    assert pending.value.code is FailureCode.QUIESCENCE_REQUIRED

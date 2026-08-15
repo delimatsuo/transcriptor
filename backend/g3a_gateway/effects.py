@@ -20,8 +20,13 @@ class EffectLedger:
     def __init__(self) -> None:
         self._intents: dict[str, EffectIntent] = {}
         self._next_generation = 0
+        self._discarded_ranges: set[AtomicRange] = set()
 
     def prepare(self, atomic_range: AtomicRange, owner_id: str, runtime_epoch: int) -> EffectIntent:
+        if atomic_range in self._discarded_ranges or any(
+            intent.atomic_range == atomic_range for intent in self._intents.values()
+        ):
+            raise GatewayError(FailureCode.CONFLICT)
         self._next_generation += 1
         owner = EffectOwner(owner_id, runtime_epoch, self._next_generation)
         intent_id = f"effect-{self._next_generation}"
@@ -42,6 +47,10 @@ class EffectLedger:
     def discard_before_prepare(self, atomic_range: AtomicRange) -> None:
         if any(intent.atomic_range == atomic_range for intent in self._intents.values()):
             raise GatewayError(FailureCode.CONFLICT)
+        # This is the durable compare-and-set winner for an admitted range.
+        # Repeating the exact request is idempotent; a later prepare cannot
+        # resurrect the released bytes into a provider effect.
+        self._discarded_ranges.add(atomic_range)
 
     def begin_invocation(self, intent_id: str, owner: EffectOwner) -> EffectIntent:
         intent = self.get(intent_id)
@@ -64,8 +73,13 @@ class EffectLedger:
     def mark_discarded(self, intent_id: str, owner: EffectOwner) -> EffectIntent:
         intent = self.get(intent_id)
         self._require_owner(intent, owner)
-        if intent.state not in (EffectState.PREPARED, EffectState.INVOKING):
+        if intent.state is EffectState.INVOKING:
+            # A provider call may already have escaped. It must remain with
+            # its original owner and later become forwarded or ambiguous.
+            raise GatewayError(FailureCode.QUIESCENCE_REQUIRED)
+        if intent.state is not EffectState.PREPARED:
             raise GatewayError(FailureCode.CONFLICT)
+        self._discarded_ranges.add(intent.atomic_range)
         updated = replace(intent, state=EffectState.DISCARDED)
         self._intents[intent_id] = updated
         return updated
