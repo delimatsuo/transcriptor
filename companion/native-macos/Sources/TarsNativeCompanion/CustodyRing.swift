@@ -129,7 +129,9 @@ public struct CustodyRing: Sendable {
     public var released: [String: CustodyRelease] { releases }
     public var pendingEffects: Set<String> { pendingAfterLocalRelease }
     public var hasPendingProviderEffects: Bool {
-        !pendingAfterLocalRelease.isEmpty || effects.values.contains { $0.state == .prepared || $0.state == .invoking }
+        !pendingAfterLocalRelease.isEmpty || effects.values.contains {
+            $0.state == .prepared || $0.state == .invoking || $0.state == .terminal
+        }
     }
     public var gapObligations: [String: CustodyRelease] { gapReasons }
 
@@ -207,6 +209,7 @@ public struct CustodyRing: Sendable {
             throw CompanionError.callbackFenced
         }
         try release(eventID: eventID, reason: .forwarded)
+        effects.removeValue(forKey: eventID)
     }
 
     public mutating func localDiscard(eventID: String, reason: CustodyRelease) throws {
@@ -267,6 +270,7 @@ public struct CustodyRing: Sendable {
             try recordGapObligation(eventID: eventID, reason: .ambiguousEffect)
         }
         pendingAfterLocalRelease.remove(eventID)
+        effects.removeValue(forKey: eventID)
     }
 
     public mutating func resolveEffectAmbiguous(eventID: String, token: ProviderEffectToken) throws {
@@ -279,6 +283,7 @@ public struct CustodyRing: Sendable {
         try ensureGapCapacity(for: eventID)
         try release(eventID: eventID, reason: .ambiguousEffect)
         try recordGapObligation(eventID: eventID, reason: .ambiguousEffect)
+        effects.removeValue(forKey: eventID)
     }
 
     @discardableResult
