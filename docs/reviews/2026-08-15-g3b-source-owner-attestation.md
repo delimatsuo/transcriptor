@@ -10,6 +10,10 @@ I reviewed the G3B source implementation against authorization package
 `47fc798885be4d09d983d16ddc14c26a1c90d366` / tree
 `160584b1fd9ddcb436a9c158f8658a6c6415fda3`.
 
+The source implementation checkpoint is commit
+`ac60992eb7e5259bb866646304eeb6e8abbf0932` / tree
+`c1df248baef48cb84dc2447e06fbf7d533456e25`.
+
 The implementation is limited to the approved G3B companion, test, guard,
 sandbox, and evidence paths. No existing protocol, backend, frontend,
 extension, PR, protected worktree, or unrelated path was changed.

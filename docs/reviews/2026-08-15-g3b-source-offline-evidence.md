@@ -9,6 +9,8 @@ hosted, deployment, release, or real-data result.
 - authorization package tree: `5c747f93592a21e29254e610aa1d0bbeb324828f`;
 - implementation parent commit: `47fc798885be4d09d983d16ddc14c26a1c90d366`;
 - implementation parent tree: `160584b1fd9ddcb436a9c158f8658a6c6415fda3`;
+- source implementation commit: `ac60992eb7e5259bb866646304eeb6e8abbf0932`;
+- source implementation tree: `c1df248baef48cb84dc2447e06fbf7d533456e25`;
 - implementation worktree: `/private/tmp/transcriptor-native-g3b-source`;
 - implementation branch: `codex/native-g3b-source`;
 - source paths: the exact runtime, test, guard, sandbox, and evidence paths in
