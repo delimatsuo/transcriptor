@@ -8,8 +8,8 @@ erasure, deployment, pilot, launch, or production readiness.
 
 - G2-A merged parent: `65051a8863ec9b3430318b63b091369d668cd1b0`;
 - G2-A tree: `b5e0358b286e5f71e731f17653acffaf78aaeebd`;
-- G3A source remediation commit: `e4668ee6e162bbe4540f4c2bc28ebcad1cf605eb`;
-- G3A source remediation tree: `115b8941df5a119723a65e9147696a3de96d47ed`;
+- G3A source remediation commit: `38c8893e9bdf0ff85c368b2a3fd748bb2fa27dcb`;
+- G3A source remediation tree: `2d37fcb901ad5976e54e28b04c20ee30174e6a1a`;
 - implementation branch: `codex/native-g3a-source`;
 - implementation worktree: `/private/tmp/transcriptor-native-g3a-source`.
 
@@ -39,8 +39,8 @@ The corridor is pure Python, memory-only, and generated-byte only. It models:
 
 ## Verification
 
-- deterministic G3A tests: **25 passed**;
-- `run_g3a_offline_guard.sh`: passed, including the same 25 tests and forbidden
+- deterministic G3A tests: **26 passed**;
+- `run_g3a_offline_guard.sh`: passed, including the same 26 tests and forbidden
   import/path checks;
 - `run_g3a_artifact_scan.sh`: passed with **zero artifacts, forbidden imports,
   and out-of-scope paths**;

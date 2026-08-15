@@ -7,15 +7,15 @@ repository/artifact boundaries.
 ## Exact reviewed inputs
 
 - merged G2-A parent: `65051a8863ec9b3430318b63b091369d668cd1b0`;
-- source implementation/remediation commit: `e4668ee6e162bbe4540f4c2bc28ebcad1cf605eb`;
-- source implementation/remediation tree: `115b8941df5a119723a65e9147696a3de96d47ed`;
+- source implementation/remediation commit: `38c8893e9bdf0ff85c368b2a3fd748bb2fa27dcb`;
+- source implementation/remediation tree: `2d37fcb901ad5976e54e28b04c20ee30174e6a1a`;
 - evidence and attestation records: the final documentation checkpoint on this branch;
 - branch: `codex/native-g3a-source`;
 - worktree: `/private/tmp/transcriptor-native-g3a-source`.
 
 The owner reviewed the exact path set, the new pure gateway namespace, the
 negative boundary against legacy backend/capture/provider/cloud paths, the
-25-test deterministic suite, the offline guard, and the artifact scan.
+26-test deterministic suite, the offline guard, and the artifact scan.
 
 ## Attestation
 
