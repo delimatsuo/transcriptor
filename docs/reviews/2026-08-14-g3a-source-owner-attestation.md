@@ -7,28 +7,28 @@ repository/artifact boundaries.
 ## Exact reviewed inputs
 
 - merged G2-A parent: `65051a8863ec9b3430318b63b091369d668cd1b0`;
-- source implementation commit: `ca397439931f19e7fbaf16f18b7e5e9e56856636`;
-- source implementation tree: `5c5126f93fc98a3bd0a57624af18e4712308b77e`;
-- evidence commit: `1064fe4c0008e3f33684d555d4b0845cba4165ae`;
-- evidence tree: `68865e42ed7cc524fc00d582d600b0d233d64669`;
+- source implementation/remediation commit: `e4668ee6e162bbe4540f4c2bc28ebcad1cf605eb`;
+- source implementation/remediation tree: `115b8941df5a119723a65e9147696a3de96d47ed`;
+- evidence and attestation records: the final documentation checkpoint on this branch;
 - branch: `codex/native-g3a-source`;
 - worktree: `/private/tmp/transcriptor-native-g3a-source`.
 
 The owner reviewed the exact path set, the new pure gateway namespace, the
 negative boundary against legacy backend/capture/provider/cloud paths, the
-21-test deterministic suite, the offline guard, and the artifact scan.
+25-test deterministic suite, the offline guard, and the artifact scan.
 
 ## Attestation
 
-No unresolved P0-P3 finding remains within the approved G3A source/offline
-scope. The source implementation does not invoke a provider, open a network
+The known source findings from the prior PR review are addressed in the
+remediation commit; fresh exact-tree staff and security/privacy review remains
+required before merge. The source implementation does not invoke a provider, open a network
 socket, load credentials, use a device or capture API, write payload files,
 modify a deployment, or consume real audio/candidate data.
 
 The owner accepts the following claim ceiling:
 
 - supported: deterministic generated-byte authority, admission, bounded
-  transport, effect fencing, coverage, deletion ordering, recovery, and
+  transport, source-bound quotas, effect fencing, coverage, deletion ordering, recovery, and
   content-free diagnostics in the exact pure-Python corridor;
 - not supported: FastAPI/hosted behavior, distributed ingress, cloud quota or
   spend, provider delivery/deletion, native capture, physical erasure,
