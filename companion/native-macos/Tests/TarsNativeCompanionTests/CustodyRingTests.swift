@@ -22,6 +22,7 @@ final class CustodyRingTests: XCTestCase {
         _ = try ring.reserve(CustodyEntry(frame: frame))
         let token = try ProviderEffectToken(effectID: "effect", ownerGeneration: 1)
         try ring.prepareEffect(for: frame.eventID, token: token)
+        try ring.markEffectInvoking(eventID: frame.eventID, token: token)
         try ring.localDiscard(eventID: frame.eventID, reason: .deletion)
         XCTAssertTrue(ring.pendingEffects.contains(frame.eventID))
         var effect = try XCTUnwrap(ring.effect(for: frame.eventID))
@@ -29,6 +30,28 @@ final class CustodyRingTests: XCTestCase {
         try ring.markEffectTerminal(eventID: frame.eventID, token: token, journalCommitted: false)
         try ring.resolvePendingEffect(eventID: frame.eventID, token: token, outcome: .ambiguous)
         XCTAssertEqual(ring.gapObligations[frame.eventID], .ambiguousEffect)
+    }
+
+    func testPreparedEffectIsCancelledByLocalDiscardAndCannotResume() throws {
+        let identity = try SourceIdentity(sessionID: "session", streamID: "mic", captureGeneration: 1, source: .microphone, sampleRate: 16_000, channelCount: 1)
+        let frame = try GeneratedFixtureSource(identity: identity).makeFrames(count: 1)[0]
+        var ring = CustodyRing(limits: try CustodyLimits(sampleRate: 16_000, channelCount: 1))
+        _ = try ring.reserve(CustodyEntry(frame: frame))
+        let token = try ProviderEffectToken(effectID: "effect", ownerGeneration: 1)
+        try ring.prepareEffect(for: frame.eventID, token: token)
+        try ring.localDiscard(eventID: frame.eventID, reason: .deletion)
+        XCTAssertEqual(ring.effect(for: frame.eventID)?.state, .cancelled)
+        XCTAssertThrowsError(try ring.markEffectInvoking(eventID: frame.eventID, token: token))
+        XCTAssertFalse(ring.pendingEffects.contains(frame.eventID))
+    }
+
+    func testEffectGenerationMustMatchCustodyGeneration() throws {
+        let identity = try SourceIdentity(sessionID: "session", streamID: "mic", captureGeneration: 2, source: .microphone, sampleRate: 16_000, channelCount: 1)
+        let frame = try GeneratedFixtureSource(identity: identity).makeFrames(count: 1)[0]
+        var ring = CustodyRing(limits: try CustodyLimits(sampleRate: 16_000, channelCount: 1))
+        _ = try ring.reserve(CustodyEntry(frame: frame))
+        let stale = try ProviderEffectToken(effectID: "effect", ownerGeneration: 1)
+        XCTAssertThrowsError(try ring.prepareEffect(for: frame.eventID, token: stale))
     }
 
     func testTwoSecondsIsARealDurationBound() throws {

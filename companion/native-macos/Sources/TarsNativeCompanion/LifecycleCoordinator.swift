@@ -22,7 +22,7 @@ public struct LifecycleCoordinator: Sendable {
     public mutating func updateHealth(_ health: SourceHealth, for source: AudioSource) throws {
         guard physical != .deleting else { throw CompanionError.deletionInProgress }
         sourceHealth[source] = health
-        if health.permission == .denied || health.permission == .revoked || health.route == .unavailable || health.route == .ambiguous {
+        if !health.isHealthy {
             physical = .degraded
         } else if sourceHealth.values.allSatisfy(\.isHealthy) && (physical == .checkingPermissionsAndDevices || physical == .degraded || physical == .setupRequired) {
             physical = .readyBothSources
@@ -81,13 +81,21 @@ public struct LifecycleCoordinator: Sendable {
 
     /// Coverage is gateway-owned. The companion can only observe a gateway state; it cannot assert completion itself.
     public mutating func observeGatewayCoverage(_ state: CoverageState) throws {
-        guard state != .open || physical == .capturing || physical == .paused else {
-            throw CompanionError.invalidTransition("gateway coverage observation")
-        }
-        if state == .completed || state == .completedWithGaps {
+        switch state {
+        case .open:
+            guard physical == .capturing || physical == .paused else {
+                throw CompanionError.invalidTransition("gateway open coverage observation")
+            }
+        case .completed, .completedWithGaps:
             guard physical == .stopped, transport == .closed else {
                 throw CompanionError.invalidTransition("gateway terminal coverage before local stop/close")
             }
+        case .deleteQuiescing, .deleted, .deletionFailed:
+            guard physical == .deleting else {
+                throw CompanionError.invalidTransition("gateway deletion state outside local deletion")
+            }
+        case .notStarted, .finalizing:
+            break
         }
         coverage = state
     }
@@ -105,7 +113,9 @@ public struct LifecycleCoordinator: Sendable {
     }
 
     public mutating func finishDeletion(success: Bool) throws {
-        guard physical == .deleting else { throw CompanionError.invalidTransition("finish deletion") }
+        guard physical == .deleting, pendingCallbacks == 0 else {
+            throw CompanionError.invalidTransition("finish deletion requires callback quiescence")
+        }
         coverage = success ? .deleted : .deletionFailed
         physical = .stopped
     }

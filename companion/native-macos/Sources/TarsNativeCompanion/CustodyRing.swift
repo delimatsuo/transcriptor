@@ -7,6 +7,7 @@ public struct CustodyLimits: Equatable, Sendable {
     public let maxFrames: Int
     public let maxPayloadBytes: Int
     public let maxMetadataBytes: Int
+    public let maxTerminalRecords: Int
 
     public init(sampleRate: Int, channelCount: Int) throws {
         guard (8_000...48_000).contains(sampleRate), (1...2).contains(channelCount) else {
@@ -18,6 +19,7 @@ public struct CustodyLimits: Equatable, Sendable {
         self.maxFrames = min(96_000, sampleRate * 2)
         self.maxPayloadBytes = min(384_000, self.maxFrames * channelCount * 2)
         self.maxMetadataBytes = 409_600
+        self.maxTerminalRecords = 1_024
     }
 }
 
@@ -149,9 +151,20 @@ public struct CustodyRing: Sendable {
 
     public func entry(for eventID: String) -> CustodyEntry? { entries[eventID] }
 
+    /// Removes a reservation that has not yet been committed to the reducer.
+    /// This is the only rollback path; it never creates a terminal release or gap.
+    public mutating func rollbackReservation(eventID: String) throws {
+        guard var entry = entries.removeValue(forKey: eventID), releases[eventID] == nil else {
+            throw CompanionError.invalid("reservation rollback is stale or already released")
+        }
+        zeroize(&entry.frame.payload)
+    }
+
     public mutating func prepareEffect(for eventID: String, token: ProviderEffectToken) throws {
-        guard entries[eventID] != nil, releases[eventID] == nil,
-              effects[eventID] == nil, pendingAfterLocalRelease.isEmpty || !pendingAfterLocalRelease.contains(eventID) else {
+        guard let entry = entries[eventID], releases[eventID] == nil,
+              effects[eventID] == nil, !pendingAfterLocalRelease.contains(eventID),
+              effects.count < limits.maxTerminalRecords,
+              token.ownerGeneration == entry.frame.identity.captureGeneration else {
             throw CompanionError.invalid("provider effect requires live unreleased custody")
         }
         effects[eventID] = ProviderEffectFence(token: token)
@@ -160,7 +173,8 @@ public struct CustodyRing: Sendable {
     public func effect(for eventID: String) -> ProviderEffectFence? { effects[eventID] }
 
     public mutating func markEffectInvoking(eventID: String, token: ProviderEffectToken) throws {
-        guard var effect = effects[eventID], effect.token == token else { throw CompanionError.callbackFenced }
+        guard !pendingAfterLocalRelease.contains(eventID),
+              var effect = effects[eventID], effect.token == token else { throw CompanionError.callbackFenced }
         try effect.markInvoking()
         effects[eventID] = effect
     }
@@ -189,12 +203,22 @@ public struct CustodyRing: Sendable {
         guard [.localPrivacyDiscard, .privacyTimeout, .deletion, .emergency].contains(reason), releases[eventID] == nil else {
             throw CompanionError.invalid("local discard reason or release state is invalid")
         }
-        let hasEffect = effects[eventID] != nil
+        if var effect = effects[eventID], effect.state == .prepared {
+            // A prepared but not invoked effect can be cancelled atomically;
+            // this prevents a suspended owner from invoking after zeroization.
+            try effect.cancelPrepared()
+            effects[eventID] = effect
+        }
+        let hasInvokingEffect = effects[eventID]?.state == .invoking
+        if !hasInvokingEffect {
+            try ensureTerminalCapacity(for: eventID)
+            try ensureGapCapacity(for: eventID)
+        }
         try release(eventID: eventID, reason: reason)
-        if hasEffect {
+        if hasInvokingEffect {
             pendingAfterLocalRelease.insert(eventID)
         } else {
-            gapReasons[eventID] = reason
+            try recordGapObligation(eventID: eventID, reason: reason)
         }
     }
 
@@ -204,13 +228,16 @@ public struct CustodyRing: Sendable {
         gapReason: CustodyRelease = .durableDiscard
     ) throws {
         guard var effect = effects[eventID], effect.token == token, effect.state == .prepared,
-              pendingAfterLocalRelease.isEmpty || !pendingAfterLocalRelease.contains(eventID) else {
+              pendingAfterLocalRelease.isEmpty || !pendingAfterLocalRelease.contains(eventID),
+              gapReason == .durableDiscard else {
             throw CompanionError.callbackFenced
         }
         try effect.cancelPrepared()
         effects[eventID] = effect
+        try ensureTerminalCapacity(for: eventID)
+        try ensureGapCapacity(for: eventID)
         try release(eventID: eventID, reason: gapReason)
-        gapReasons[eventID] = gapReason
+        try recordGapObligation(eventID: eventID, reason: gapReason)
     }
 
     public mutating func resolvePendingEffect(eventID: String, token: ProviderEffectToken, outcome: PendingEffectOutcome) throws {
@@ -222,7 +249,7 @@ public struct CustodyRing: Sendable {
             releases[eventID] = .forwardedAfterLocalRelease
         case .ambiguous:
             guard !effect.journalCommitted else { throw CompanionError.invalid("ambiguous effect has a committed journal") }
-            gapReasons[eventID] = .ambiguousEffect
+            try recordGapObligation(eventID: eventID, reason: .ambiguousEffect)
         }
         pendingAfterLocalRelease.remove(eventID)
     }
@@ -246,12 +273,30 @@ public struct CustodyRing: Sendable {
     }
 
     private mutating func release(eventID: String, reason: CustodyRelease) throws {
+        try ensureTerminalCapacity(for: eventID)
         guard var entry = entries.removeValue(forKey: eventID) else {
             guard releases[eventID] == reason else { throw CompanionError.invalid("release references missing or conflicting custody") }
             return
         }
         zeroize(&entry.frame.payload)
         releases[eventID] = reason
+    }
+
+    private func ensureTerminalCapacity(for eventID: String) throws {
+        guard releases[eventID] != nil || releases.count < limits.maxTerminalRecords else {
+            throw CompanionError.custodyLimitExceeded
+        }
+    }
+
+    private mutating func recordGapObligation(eventID: String, reason: CustodyRelease) throws {
+        try ensureGapCapacity(for: eventID)
+        gapReasons[eventID] = reason
+    }
+
+    private func ensureGapCapacity(for eventID: String) throws {
+        guard gapReasons[eventID] != nil || gapReasons.count < limits.maxTerminalRecords else {
+            throw CompanionError.custodyLimitExceeded
+        }
     }
 
     private func zeroize(_ data: inout Data) {

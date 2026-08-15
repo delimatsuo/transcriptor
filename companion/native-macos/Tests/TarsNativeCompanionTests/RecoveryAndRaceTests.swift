@@ -25,4 +25,20 @@ final class RecoveryAndRaceTests: XCTestCase {
         XCTAssertTrue(ring.acquisitionStopped)
         XCTAssertEqual(ring.retainedCount, 0)
     }
+
+    func testCustodyReservationRollsBackWhenReducerRejectsFrame() throws {
+        var simulator = try OfflineCompanionSimulator()
+        try simulator.start()
+        let mismatchedIdentity = try SourceIdentity(
+            sessionID: simulator.microphone.sessionID,
+            streamID: "other-mic",
+            captureGeneration: simulator.microphone.captureGeneration,
+            source: .microphone,
+            sampleRate: simulator.microphone.sampleRate,
+            channelCount: simulator.microphone.channelCount
+        )
+        let frame = try GeneratedFixtureSource(identity: mismatchedIdentity).makeFrames(count: 1)[0]
+        XCTAssertThrowsError(try simulator.ingest(frame))
+        XCTAssertEqual(simulator.microphoneCustody.retainedCount, 0)
+    }
 }

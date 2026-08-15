@@ -28,4 +28,16 @@ final class DeletionTests: XCTestCase {
         XCTAssertFalse(deletion.acceptCallback(fence))
         XCTAssertEqual(deletion.lateCallbacksRejected, 1)
     }
+
+    func testCallbackMustFinishBeforeLocalZeroization() throws {
+        var deletion = DeletionCoordinator()
+        let fence = try DeletionFence(sessionID: "session", generation: 1)
+        try deletion.begin(fence: fence)
+        try deletion.callbackStarted(fence)
+        XCTAssertThrowsError(try deletion.markLocalZeroized(fence))
+        try deletion.callbackFinished(fence)
+        try deletion.markLocalZeroized(fence)
+        try deletion.awaitGatewayAcknowledgement(fence)
+        try deletion.gatewayAcknowledged(fence, deleted: true)
+    }
 }

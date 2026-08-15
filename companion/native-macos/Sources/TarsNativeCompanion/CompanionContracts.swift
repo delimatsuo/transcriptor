@@ -84,7 +84,8 @@ public struct SourceHealth: Equatable, Codable, Sendable {
     }
 
     public var isHealthy: Bool {
-        permission == .granted && route == .healthy && interruption == .clear && sleep != .sleeping && !overflowed
+        permission == .granted && route == .healthy && interruption == .clear && sleep != .sleeping && !overflowed &&
+            deviceIdentity.map(SourceIdentity.isIdentifier) == true
     }
 }
 
@@ -119,7 +120,9 @@ public struct SourceIdentity: Equatable, Hashable, Codable, Sendable {
     }
 
     public var key: String {
-        "\(sessionID):\(streamID):\(captureGeneration):\(source.rawValue)"
+        // NUL is excluded from identifiers, so this remains unambiguous even
+        // when an identifier contains one of the printable separators.
+        [sessionID, streamID, String(captureGeneration), source.rawValue].joined(separator: "\0")
     }
 
     public static func isIdentifier(_ value: String) -> Bool {
@@ -134,11 +137,46 @@ public struct SourceIdentity: Equatable, Hashable, Codable, Sendable {
     }
 }
 
+/// Companion-owned event context that is carried alongside the frozen audio
+/// body. The v2 audio body remains byte-for-byte compatible; transport
+/// adapters must bind this context to the event envelope before forwarding.
+public struct CaptureEventContext: Equatable, Hashable, Sendable {
+    public let deviceID: String
+    public let capturedAtMonotonicNs: UInt64
+    public let capturedAtWallClockMs: UInt64
+
+    public init(deviceID: String, capturedAtMonotonicNs: UInt64, capturedAtWallClockMs: UInt64) throws {
+        guard SourceIdentity.isIdentifier(deviceID) else {
+            throw CompanionError.invalid("device identifier is invalid")
+        }
+        self.deviceID = deviceID
+        self.capturedAtMonotonicNs = capturedAtMonotonicNs
+        self.capturedAtWallClockMs = capturedAtWallClockMs
+    }
+
+    fileprivate init(uncheckedDeviceID: String, capturedAtMonotonicNs: UInt64, capturedAtWallClockMs: UInt64) {
+        self.deviceID = uncheckedDeviceID
+        self.capturedAtMonotonicNs = capturedAtMonotonicNs
+        self.capturedAtWallClockMs = capturedAtWallClockMs
+    }
+
+    fileprivate static func fixture(capturedAtMs: UInt64) -> CaptureEventContext {
+        // The generated source has no wall-clock authority; this deterministic
+        // placeholder keeps the metadata present without claiming real time.
+        CaptureEventContext(
+            uncheckedDeviceID: "unknown-device",
+            capturedAtMonotonicNs: capturedAtMs.multipliedReportingOverflow(by: 1_000_000).partialValue,
+            capturedAtWallClockMs: capturedAtMs
+        )
+    }
+}
+
 public struct AudioFrame: Equatable, Sendable {
     public let identity: SourceIdentity
     public let sequence: UInt64
     public let firstSample: UInt64
     public let capturedAtMs: UInt64
+    public let eventContext: CaptureEventContext
     public var payload: Data
 
     public init(
@@ -146,6 +184,7 @@ public struct AudioFrame: Equatable, Sendable {
         sequence: UInt64,
         firstSample: UInt64,
         capturedAtMs: UInt64,
+        eventContext: CaptureEventContext? = nil,
         payload: Data
     ) throws {
         let bytesPerSample = identity.channelCount * 2
@@ -162,6 +201,7 @@ public struct AudioFrame: Equatable, Sendable {
         self.sequence = sequence
         self.firstSample = firstSample
         self.capturedAtMs = capturedAtMs
+        self.eventContext = eventContext ?? .fixture(capturedAtMs: capturedAtMs)
         self.payload = payload
     }
 
@@ -193,15 +233,65 @@ public struct CoverageRange: Equatable, Hashable, Sendable {
         self.lastSampleExclusive = frame.lastSampleExclusive
     }
 
+    public init(identity: SourceIdentity, sequence: UInt64, firstSample: UInt64, lastSampleExclusive: UInt64) throws {
+        guard lastSampleExclusive > firstSample else {
+            throw CompanionError.invalid("coverage range is empty")
+        }
+        self.identity = identity
+        self.sequence = sequence
+        self.firstSample = firstSample
+        self.lastSampleExclusive = lastSampleExclusive
+    }
+
+    init(uncheckedIdentity: SourceIdentity, sequence: UInt64, firstSample: UInt64, lastSampleExclusive: UInt64) {
+        precondition(lastSampleExclusive > firstSample, "validated coverage range must be non-empty")
+        self.identity = uncheckedIdentity
+        self.sequence = sequence
+        self.firstSample = firstSample
+        self.lastSampleExclusive = lastSampleExclusive
+    }
+
     public var coverageID: String {
-        var data = Data("tars-atomic-coverage-v2\0".utf8)
-        data.append(contentsOf: identity.key.utf8)
-        data.append(0)
-        appendUInt64(sequence, to: &data)
-        appendUInt64(firstSample, to: &data)
-        appendUInt64(lastSampleExclusive, to: &data)
+        let fields = [
+            "tars-atomic-coverage-v2", identity.sessionID, identity.streamID,
+            String(identity.captureGeneration), identity.source.rawValue,
+            "\(sequence)", "\(firstSample)", "\(lastSampleExclusive)"
+        ]
+        let data = Data(fields.joined(separator: "\0").utf8)
         return "acov_" + SHA256.hash(data: data).hexString
     }
+}
+
+public func v2TerminalCoverageID(identity: SourceIdentity, ranges: [CoverageRange]) throws -> String {
+    guard !ranges.isEmpty, ranges.allSatisfy({ $0.identity == identity }) else {
+        throw CompanionError.invalid("terminal coverage ranges are invalid")
+    }
+    let ordered = ranges.sorted {
+        ($0.sequence, $0.firstSample, $0.lastSampleExclusive, $0.coverageID) <
+            ($1.sequence, $1.firstSample, $1.lastSampleExclusive, $1.coverageID)
+    }
+    for leftIndex in ordered.indices {
+        for rightIndex in ordered.indices where rightIndex > leftIndex {
+            let left = ordered[leftIndex]
+            let right = ordered[rightIndex]
+            guard left.sequence != right.sequence,
+                  left.lastSampleExclusive <= right.firstSample || right.lastSampleExclusive <= left.firstSample else {
+                throw CompanionError.invalid("terminal coverage ranges overlap")
+            }
+        }
+    }
+    let prefix = [
+        "tars-terminal-coverage-v2", identity.sessionID, identity.streamID,
+        String(identity.captureGeneration), identity.source.rawValue
+    ].joined(separator: "\0")
+    var data = Data(prefix.utf8)
+    appendUInt32ForCoverage(UInt32(ordered.count), to: &data)
+    for range in ordered {
+        let id = Data(range.coverageID.utf8)
+        appendUInt32ForCoverage(UInt32(id.count), to: &data)
+        data.append(id)
+    }
+    return "covr_" + SHA256.hash(data: data).hexString
 }
 
 public enum GapReason: String, Codable, Sendable {
@@ -219,18 +309,68 @@ public struct CoverageGap: Equatable, Sendable {
     public let identity: SourceIdentity
     public let firstSample: UInt64?
     public let lastSampleExclusive: UInt64?
+    public let firstSequence: UInt64?
+    public let lastSequenceExclusive: UInt64?
+    public let firstCapturedAtMs: UInt64?
+    public let lastCapturedAtMs: UInt64?
     public let reason: GapReason
 
-    public init(identity: SourceIdentity, firstSample: UInt64?, lastSampleExclusive: UInt64?, reason: GapReason) throws {
+    public init(
+        identity: SourceIdentity,
+        firstSample: UInt64?,
+        lastSampleExclusive: UInt64?,
+        reason: GapReason,
+        firstSequence: UInt64? = nil,
+        lastSequenceExclusive: UInt64? = nil,
+        firstCapturedAtMs: UInt64? = nil,
+        lastCapturedAtMs: UInt64? = nil
+    ) throws {
         if let firstSample, let lastSampleExclusive {
             guard lastSampleExclusive > firstSample else {
                 throw CompanionError.invalid("gap range is empty")
             }
         }
+        if let firstSequence, let lastSequenceExclusive {
+            guard lastSequenceExclusive > firstSequence else {
+                throw CompanionError.invalid("gap sequence range is empty")
+            }
+        } else if lastSequenceExclusive != nil {
+            throw CompanionError.invalid("gap sequence end requires a sequence start")
+        }
+        if firstSample == nil, lastSampleExclusive != nil {
+            throw CompanionError.invalid("gap sample end requires a sample start")
+        }
+        if let firstCapturedAtMs, let lastCapturedAtMs {
+            guard lastCapturedAtMs >= firstCapturedAtMs else {
+                throw CompanionError.invalid("gap timestamps are reversed")
+            }
+        }
         self.identity = identity
         self.firstSample = firstSample
         self.lastSampleExclusive = lastSampleExclusive
+        self.firstSequence = firstSequence
+        self.lastSequenceExclusive = lastSequenceExclusive
+        self.firstCapturedAtMs = firstCapturedAtMs
+        self.lastCapturedAtMs = lastCapturedAtMs
         self.reason = reason
+    }
+
+    public var gapID: String {
+        let fields: [String] = [
+            "tars-gap-v2",
+            identity.sessionID,
+            identity.streamID,
+            String(identity.captureGeneration),
+            identity.source.rawValue,
+            firstSequence.map { String($0) } ?? "?",
+            lastSequenceExclusive.map { String($0) } ?? "?",
+            firstSample.map { String($0) } ?? "?",
+            lastSampleExclusive.map { String($0) } ?? "?",
+            firstCapturedAtMs.map { String($0) } ?? "?",
+            lastCapturedAtMs.map { String($0) } ?? "?",
+            reason.rawValue
+        ]
+        return "gap_" + SHA256.hash(data: Data(fields.joined(separator: "\0").utf8)).hexString
     }
 }
 
@@ -290,6 +430,11 @@ public struct DiagnosticEvent: Equatable, Sendable {
 }
 
 private func appendUInt64(_ value: UInt64, to data: inout Data) {
+    var big = value.bigEndian
+    withUnsafeBytes(of: &big) { data.append(contentsOf: $0) }
+}
+
+private func appendUInt32ForCoverage(_ value: UInt32, to data: inout Data) {
     var big = value.bigEndian
     withUnsafeBytes(of: &big) { data.append(contentsOf: $0) }
 }

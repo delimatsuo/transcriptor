@@ -1,7 +1,7 @@
 import Foundation
 
 public struct OfflineSimulationTrace: Equatable, Sendable {
-    public let frames: [AudioFrame]
+    public let frames: [ReducedFrame]
     public let gaps: [CoverageGap]
     public let diagnostics: [DiagnosticEvent]
     public let snapshot: CompanionSnapshot
@@ -62,11 +62,21 @@ public struct OfflineCompanionSimulator: Sendable {
         }
         switch frame.identity.source {
         case .microphone:
-            _ = try microphoneReducer.ingest(frame)
-            _ = try microphoneCustody.reserve(CustodyEntry(frame: frame))
+            let didReserve = try microphoneCustody.reserve(CustodyEntry(frame: frame))
+            do {
+                _ = try microphoneReducer.ingest(frame)
+            } catch {
+                if didReserve { try microphoneCustody.rollbackReservation(eventID: frame.eventID) }
+                throw error
+            }
         case .systemAudio:
-            _ = try systemAudioReducer.ingest(frame)
-            _ = try systemAudioCustody.reserve(CustodyEntry(frame: frame))
+            let didReserve = try systemAudioCustody.reserve(CustodyEntry(frame: frame))
+            do {
+                _ = try systemAudioReducer.ingest(frame)
+            } catch {
+                if didReserve { try systemAudioCustody.rollbackReservation(eventID: frame.eventID) }
+                throw error
+            }
         }
         try lifecycle.recordAcceptedFrame()
     }
@@ -74,13 +84,34 @@ public struct OfflineCompanionSimulator: Sendable {
     public mutating func recordGap(for source: AudioSource, reason: GapReason) throws {
         let identity = source == .microphone ? microphone : systemAudio
         let expected = source == .microphone
-            ? microphoneReducer.acceptedFrames.last?.lastSampleExclusive ?? 0
-            : systemAudioReducer.acceptedFrames.last?.lastSampleExclusive ?? 0
-        let gap = try CoverageGap(identity: identity, firstSample: expected, lastSampleExclusive: nil, reason: reason)
+            ? microphoneReducer.expected(identity: identity)
+            : systemAudioReducer.expected(identity: identity)
+        let gap = try CoverageGap(
+            identity: identity,
+            firstSample: expected.firstSample,
+            lastSampleExclusive: nil,
+            reason: reason,
+            firstSequence: expected.sequence,
+            lastSequenceExclusive: nil
+        )
         if source == .microphone {
-            _ = try microphoneReducer.recordGap(identity: identity, firstSample: expected, lastSampleExclusive: nil, reason: reason)
+            _ = try microphoneReducer.recordGap(
+                identity: identity,
+                firstSample: expected.firstSample,
+                lastSampleExclusive: nil,
+                reason: reason,
+                firstSequence: expected.sequence,
+                lastSequenceExclusive: nil
+            )
         } else {
-            _ = try systemAudioReducer.recordGap(identity: identity, firstSample: expected, lastSampleExclusive: nil, reason: reason)
+            _ = try systemAudioReducer.recordGap(
+                identity: identity,
+                firstSample: expected.firstSample,
+                lastSampleExclusive: nil,
+                reason: reason,
+                firstSequence: expected.sequence,
+                lastSequenceExclusive: nil
+            )
         }
         diagnostics.record(DiagnosticEvent(code: "gap_recorded", source: source, generation: identity.captureGeneration))
         _ = gap

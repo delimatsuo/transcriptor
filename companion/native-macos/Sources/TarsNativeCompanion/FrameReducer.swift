@@ -2,20 +2,52 @@ import CryptoKit
 import Foundation
 
 public enum ReducerEvent: Equatable, Sendable {
-    case accepted(AudioFrame)
+    case accepted(ReducedFrame)
     case gap(CoverageGap)
+}
+
+public struct ReducedFrame: Equatable, Sendable {
+    public let identity: SourceIdentity
+    public let sequence: UInt64
+    public let firstSample: UInt64
+    public let lastSampleExclusive: UInt64
+    public let capturedAtMs: UInt64
+    public let eventContext: CaptureEventContext
+    public let eventID: String
+
+    public init(frame: AudioFrame) {
+        self.identity = frame.identity
+        self.sequence = frame.sequence
+        self.firstSample = frame.firstSample
+        self.lastSampleExclusive = frame.lastSampleExclusive
+        self.capturedAtMs = frame.capturedAtMs
+        self.eventContext = frame.eventContext
+        self.eventID = frame.eventID
+    }
+
+    public var coverageRange: CoverageRange {
+        // ReducedFrame is constructed only from a validated AudioFrame, so
+        // its range is an invariant. Keep the invariant constructor local to
+        // avoid exposing a throwing accessor to every reducer consumer.
+        CoverageRange(
+            uncheckedIdentity: identity,
+            sequence: sequence,
+            firstSample: firstSample,
+            lastSampleExclusive: lastSampleExclusive
+        )
+    }
 }
 
 public struct FrameReducer: Sendable {
     private var activeIdentity: [AudioSource: SourceIdentity] = [:]
     private var tracker = SourceSequenceTracker()
     private var seenEvents: Set<String> = []
-    private var frames: [AudioFrame] = []
+    private var frames: [ReducedFrame] = []
     private var gaps: [CoverageGap] = []
 
     public init() {}
 
-    public var acceptedFrames: [AudioFrame] { frames }
+    public var acceptedFrames: [ReducedFrame] { frames }
     public var recordedGaps: [CoverageGap] { gaps }
     public var acceptedCount: Int { frames.count }
 
@@ -49,8 +81,9 @@ public struct FrameReducer: Sendable {
         guard !seenEvents.contains(frame.eventID) else { throw CompanionError.duplicateFrame }
         try tracker.validate(frame)
         seenEvents.insert(frame.eventID)
-        frames.append(frame)
-        return .accepted(frame)
+        let reduced = ReducedFrame(frame: frame)
+        frames.append(reduced)
+        return .accepted(reduced)
     }
 
     @discardableResult
@@ -58,25 +91,48 @@ public struct FrameReducer: Sendable {
         identity: SourceIdentity,
         firstSample: UInt64?,
         lastSampleExclusive: UInt64?,
-        reason: GapReason
+        reason: GapReason,
+        firstSequence: UInt64? = nil,
+        lastSequenceExclusive: UInt64? = nil,
+        firstCapturedAtMs: UInt64? = nil,
+        lastCapturedAtMs: UInt64? = nil
     ) throws -> CoverageGap {
         guard activeIdentity[identity.source] == identity else {
             throw CompanionError.staleGeneration
         }
+        let expected = tracker.expected(identity: identity)
+        if let firstSequence {
+            guard firstSequence == expected.sequence else {
+                throw CompanionError.gapRequired("gap does not start at the next expected sequence")
+            }
+        }
         if let firstSample, let lastSampleExclusive {
-            let expected = tracker.expected(identity: identity).firstSample
-            guard firstSample == expected else {
+            guard firstSample == expected.firstSample else {
                 throw CompanionError.gapRequired("gap does not start at the next provable sample")
             }
-            tracker.advance(identity: identity, sequence: nextSequenceAfterGap(identity), firstSample: lastSampleExclusive)
+            let expectedSequence = expected.sequence
+            let sequenceEnd = lastSequenceExclusive ?? (expectedSequence + 1)
+            guard sequenceEnd > expectedSequence else {
+                throw CompanionError.gapRequired("gap sequence range does not advance the tracker")
+            }
+            tracker.advance(identity: identity, sequence: sequenceEnd, firstSample: lastSampleExclusive)
         }
-        let gap = try CoverageGap(identity: identity, firstSample: firstSample, lastSampleExclusive: lastSampleExclusive, reason: reason)
+        let gap = try CoverageGap(
+            identity: identity,
+            firstSample: firstSample,
+            lastSampleExclusive: lastSampleExclusive,
+            reason: reason,
+            firstSequence: firstSequence,
+            lastSequenceExclusive: lastSequenceExclusive,
+            firstCapturedAtMs: firstCapturedAtMs,
+            lastCapturedAtMs: lastCapturedAtMs
+        )
         gaps.append(gap)
         return gap
     }
 
-    private func nextSequenceAfterGap(_ identity: SourceIdentity) -> UInt64 {
-        tracker.expected(identity: identity).sequence + 1
+    public func expected(identity: SourceIdentity) -> (sequence: UInt64, firstSample: UInt64) {
+        tracker.expected(identity: identity)
     }
 }
 

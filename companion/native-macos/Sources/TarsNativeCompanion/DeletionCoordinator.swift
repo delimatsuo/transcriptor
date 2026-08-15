@@ -25,6 +25,7 @@ public struct DeletionCoordinator: Sendable {
     public private(set) var activeFence: DeletionFence?
     public private(set) var activeWorkers = 0
     public private(set) var activeStreams = 0
+    public private(set) var activeCallbacks = 0
     public private(set) var lateCallbacksRejected = 0
 
     public init() {}
@@ -61,7 +62,7 @@ public struct DeletionCoordinator: Sendable {
 
     public mutating func markLocalZeroized(_ fence: DeletionFence) throws {
         try validateActive(fence)
-        guard phase == .quiescing, activeWorkers == 0, activeStreams == 0 else {
+        guard phase == .quiescing, activeWorkers == 0, activeStreams == 0, activeCallbacks == 0 else {
             throw CompanionError.invalidTransition("local zeroization before quiescence")
         }
         phase = .localZeroized
@@ -80,16 +81,26 @@ public struct DeletionCoordinator: Sendable {
     }
 
     public mutating func acceptCallback(_ fence: DeletionFence) -> Bool {
-        guard activeFence == fence, phase != .deleted, phase != .failed else {
+        guard activeFence == fence, phase == .quiescing else {
             lateCallbacksRejected += 1
             return false
         }
         return true
     }
 
+    public mutating func callbackStarted(_ fence: DeletionFence) throws {
+        guard acceptCallback(fence) else { throw CompanionError.callbackFenced }
+        activeCallbacks += 1
+    }
+
+    public mutating func callbackFinished(_ fence: DeletionFence) throws {
+        guard activeFence == fence, activeCallbacks > 0 else { throw CompanionError.callbackFenced }
+        activeCallbacks -= 1
+    }
+
     public mutating func replaceFence(_ fence: DeletionFence) throws {
         guard phase == .failed else { throw CompanionError.invalidTransition("replace deletion fence") }
-        guard activeWorkers == 0, activeStreams == 0 else { throw CompanionError.invalidTransition("replace fence while active") }
+        guard activeWorkers == 0, activeStreams == 0, activeCallbacks == 0 else { throw CompanionError.invalidTransition("replace fence while active") }
         activeFence = fence
         phase = .quiescing
     }

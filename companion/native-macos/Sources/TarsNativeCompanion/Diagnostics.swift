@@ -1,6 +1,7 @@
 import Foundation
 
 public struct Diagnostics: Sendable {
+    private static let maxEvents = 256
     private var events: [DiagnosticEvent] = []
 
     public init() {}
@@ -9,6 +10,9 @@ public struct Diagnostics: Sendable {
 
     public mutating func record(_ event: DiagnosticEvent) {
         events.append(event)
+        if events.count > Self.maxEvents {
+            events.removeFirst(events.count - Self.maxEvents)
+        }
     }
 
     public mutating func recordSourceHealth(_ health: SourceHealth, source: AudioSource, generation: UInt64) {

@@ -32,13 +32,12 @@ public protocol CaptureFrameSink: Sendable {
 }
 
 public struct GeneratedFrameSink: CaptureFrameSink {
-    public private(set) var frames: [AudioFrame] = []
     public private(set) var gaps: [CoverageGap] = []
 
     public init() {}
 
     public func receive(_ frame: AudioFrame) async throws {
-        // The sink is intentionally value-typed for deterministic tests; use the simulator for collection.
+        // Deliberately do not retain payload bytes outside the custody owner.
         _ = frame
     }
 
