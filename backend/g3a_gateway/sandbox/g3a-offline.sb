@@ -1,0 +1,14 @@
+; G3A source/offline sandbox declaration.
+; The runner remains pure and memory-only; this profile documents the denied
+; capabilities that a later platform-specific harness must enforce.
+(version 1)
+(deny default)
+(allow process-fork)
+(allow process-exec)
+(allow signal (target self))
+(allow sysctl-read)
+(allow file-read* (subpath "/usr"))
+(allow file-read* (subpath "/System"))
+(allow file-read* (subpath "/private/tmp/transcriptor-native-g3a-source"))
+(allow file-write* (subpath "/private/tmp/transcriptor-native-g3a-source"))
+(deny network*)
