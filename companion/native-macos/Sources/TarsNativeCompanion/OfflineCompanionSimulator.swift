@@ -44,11 +44,11 @@ public struct OfflineCompanionSimulator: Sendable {
 
     public mutating func run(frameCount: Int = 10) throws -> OfflineSimulationTrace {
         if lifecycle.physical != .capturing { try start() }
-        let microphoneFrames = try GeneratedFixtureSource(identity: microphone, seed: 0x4D4943).makeFrames(count: frameCount)
-        let systemFrames = try GeneratedFixtureSource(identity: systemAudio, seed: 0x535953).makeFrames(count: frameCount)
+        let microphoneSource = try GeneratedFixtureSource(identity: microphone, seed: 0x4D4943)
+        let systemAudioSource = try GeneratedFixtureSource(identity: systemAudio, seed: 0x535953)
         for index in 0..<frameCount {
-            try ingest(microphoneFrames[index])
-            try ingest(systemFrames[index])
+            try ingest(try microphoneSource.makeFrame(index: index))
+            try ingest(try systemAudioSource.makeFrame(index: index))
         }
         try lifecycle.stopCapture()
         try lifecycle.beginTransportDrain()
@@ -92,7 +92,11 @@ public struct OfflineCompanionSimulator: Sendable {
             lastSampleExclusive: nil,
             reason: reason,
             firstSequence: expected.sequence,
-            lastSequenceExclusive: nil
+            lastSequenceExclusive: nil,
+            deviceID: lifecycle.sourceHealth[source]?.deviceIdentity,
+            firstCapturedAtMonotonicNs: expected.sequence * 20_000_000,
+            firstCapturedAtWallClockMs: expected.sequence * 20,
+            boundary: .unknownEnd
         )
         if source == .microphone {
             _ = try microphoneReducer.recordGap(
@@ -101,7 +105,11 @@ public struct OfflineCompanionSimulator: Sendable {
                 lastSampleExclusive: nil,
                 reason: reason,
                 firstSequence: expected.sequence,
-                lastSequenceExclusive: nil
+                lastSequenceExclusive: nil,
+                deviceID: lifecycle.sourceHealth[source]?.deviceIdentity,
+                firstCapturedAtMonotonicNs: expected.sequence * 20_000_000,
+                firstCapturedAtWallClockMs: expected.sequence * 20,
+                boundary: .unknownEnd
             )
         } else {
             _ = try systemAudioReducer.recordGap(
@@ -110,7 +118,11 @@ public struct OfflineCompanionSimulator: Sendable {
                 lastSampleExclusive: nil,
                 reason: reason,
                 firstSequence: expected.sequence,
-                lastSequenceExclusive: nil
+                lastSequenceExclusive: nil,
+                deviceID: lifecycle.sourceHealth[source]?.deviceIdentity,
+                firstCapturedAtMonotonicNs: expected.sequence * 20_000_000,
+                firstCapturedAtWallClockMs: expected.sequence * 20,
+                boundary: .unknownEnd
             )
         }
         diagnostics.record(DiagnosticEvent(code: "gap_recorded", source: source, generation: identity.captureGeneration))
@@ -118,6 +130,10 @@ public struct OfflineCompanionSimulator: Sendable {
     }
 
     public mutating func beginDeletion() throws -> DeletionFence {
+        guard !microphoneCustody.hasPendingProviderEffects,
+              !systemAudioCustody.hasPendingProviderEffects else {
+            throw CompanionError.invalidTransition("deletion requires provider-effect quiescence")
+        }
         let fence = try DeletionFence(sessionID: microphone.sessionID, generation: microphone.captureGeneration)
         try lifecycle.beginDeletion()
         try deletion.begin(fence: fence)

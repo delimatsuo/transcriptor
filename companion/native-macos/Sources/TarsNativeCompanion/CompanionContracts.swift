@@ -171,13 +171,54 @@ public struct CaptureEventContext: Equatable, Hashable, Sendable {
     }
 }
 
+/// A reference-owned mutable buffer is used so every value copy of an
+/// `AudioFrame` observes the same zeroization. The source boundary creates the
+/// buffer once; callers must not materialize a second payload copy.
+public final class SecureAudioBuffer: @unchecked Sendable, Equatable {
+    private let lock = NSLock()
+    private var storage: Data
+
+    public init(data: Data) {
+        self.storage = data
+    }
+
+    public var count: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage.count
+    }
+
+    public var isEmpty: Bool { count == 0 }
+
+    /// Internal codec/test access. The returned value is a short-lived copy;
+    /// custody and reducers never retain it.
+    internal func copyData() -> Data {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage
+    }
+
+    internal func zeroize() {
+        lock.lock()
+        defer { lock.unlock() }
+        storage.withUnsafeMutableBytes { bytes in
+            guard let base = bytes.baseAddress else { return }
+            base.initializeMemory(as: UInt8.self, repeating: 0, count: bytes.count)
+        }
+    }
+
+    public static func == (lhs: SecureAudioBuffer, rhs: SecureAudioBuffer) -> Bool {
+        lhs.copyData() == rhs.copyData()
+    }
+}
+
 public struct AudioFrame: Equatable, Sendable {
     public let identity: SourceIdentity
     public let sequence: UInt64
     public let firstSample: UInt64
     public let capturedAtMs: UInt64
     public let eventContext: CaptureEventContext
-    public var payload: Data
+    public let payload: SecureAudioBuffer
 
     public init(
         identity: SourceIdentity,
@@ -202,7 +243,7 @@ public struct AudioFrame: Equatable, Sendable {
         self.firstSample = firstSample
         self.capturedAtMs = capturedAtMs
         self.eventContext = eventContext ?? .fixture(capturedAtMs: capturedAtMs)
-        self.payload = payload
+        self.payload = SecureAudioBuffer(data: payload)
     }
 
     public var sampleCount: UInt64 { UInt64(payload.count / (identity.channelCount * 2)) }
@@ -263,7 +304,7 @@ public struct CoverageRange: Equatable, Hashable, Sendable {
 }
 
 public func v2TerminalCoverageID(identity: SourceIdentity, ranges: [CoverageRange]) throws -> String {
-    guard !ranges.isEmpty, ranges.allSatisfy({ $0.identity == identity }) else {
+    guard !ranges.isEmpty, ranges.count <= 100, ranges.allSatisfy({ $0.identity == identity }) else {
         throw CompanionError.invalid("terminal coverage ranges are invalid")
     }
     let ordered = ranges.sorted {
@@ -274,8 +315,13 @@ public func v2TerminalCoverageID(identity: SourceIdentity, ranges: [CoverageRang
         for rightIndex in ordered.indices where rightIndex > leftIndex {
             let left = ordered[leftIndex]
             let right = ordered[rightIndex]
-            guard left.sequence != right.sequence,
-                  left.lastSampleExclusive <= right.firstSample || right.lastSampleExclusive <= left.firstSample else {
+            guard left != right else {
+                throw CompanionError.invalid("terminal coverage contains a duplicate range")
+            }
+            guard left.sequence != right.sequence else {
+                throw CompanionError.invalid("terminal coverage contains same-sequence ranges")
+            }
+            guard left.lastSampleExclusive <= right.firstSample || right.lastSampleExclusive <= left.firstSample else {
                 throw CompanionError.invalid("terminal coverage ranges overlap")
             }
         }
@@ -305,6 +351,11 @@ public enum GapReason: String, Codable, Sendable {
     case staleGeneration = "stale_generation"
 }
 
+public enum GapBoundary: String, Codable, Sendable {
+    case knownRange = "known_range"
+    case unknownEnd = "unknown_end"
+}
+
 public struct CoverageGap: Equatable, Sendable {
     public let identity: SourceIdentity
     public let firstSample: UInt64?
@@ -313,6 +364,12 @@ public struct CoverageGap: Equatable, Sendable {
     public let lastSequenceExclusive: UInt64?
     public let firstCapturedAtMs: UInt64?
     public let lastCapturedAtMs: UInt64?
+    public let deviceID: String?
+    public let firstCapturedAtMonotonicNs: UInt64?
+    public let lastCapturedAtMonotonicNs: UInt64?
+    public let firstCapturedAtWallClockMs: UInt64?
+    public let lastCapturedAtWallClockMs: UInt64?
+    public let boundary: GapBoundary
     public let reason: GapReason
 
     public init(
@@ -323,26 +380,68 @@ public struct CoverageGap: Equatable, Sendable {
         firstSequence: UInt64? = nil,
         lastSequenceExclusive: UInt64? = nil,
         firstCapturedAtMs: UInt64? = nil,
-        lastCapturedAtMs: UInt64? = nil
+        lastCapturedAtMs: UInt64? = nil,
+        deviceID: String? = nil,
+        firstCapturedAtMonotonicNs: UInt64? = nil,
+        lastCapturedAtMonotonicNs: UInt64? = nil,
+        firstCapturedAtWallClockMs: UInt64? = nil,
+        lastCapturedAtWallClockMs: UInt64? = nil,
+        boundary: GapBoundary? = nil
     ) throws {
+        guard let firstSequence else {
+            throw CompanionError.invalid("gap requires a first sequence")
+        }
         if let firstSample, let lastSampleExclusive {
             guard lastSampleExclusive > firstSample else {
                 throw CompanionError.invalid("gap range is empty")
             }
         }
-        if let firstSequence, let lastSequenceExclusive {
+        if let lastSequenceExclusive {
             guard lastSequenceExclusive > firstSequence else {
                 throw CompanionError.invalid("gap sequence range is empty")
             }
-        } else if lastSequenceExclusive != nil {
-            throw CompanionError.invalid("gap sequence end requires a sequence start")
         }
         if firstSample == nil, lastSampleExclusive != nil {
             throw CompanionError.invalid("gap sample end requires a sample start")
         }
+        let resolvedBoundary = boundary ?? (lastSampleExclusive == nil ? .unknownEnd : .knownRange)
+        if resolvedBoundary == .knownRange {
+            guard firstSample != nil, lastSampleExclusive != nil, lastSequenceExclusive != nil else {
+                throw CompanionError.invalid("known gap requires complete sample and sequence bounds")
+            }
+        } else {
+            guard lastSampleExclusive == nil, lastSequenceExclusive == nil else {
+                throw CompanionError.invalid("unknown-end gap cannot claim a terminal end")
+            }
+        }
+        guard let deviceID, SourceIdentity.isIdentifier(deviceID) else {
+            throw CompanionError.invalid("gap device identifier is required and invalid")
+        }
+        guard let firstCapturedAtMonotonicNs, let firstCapturedAtWallClockMs else {
+            throw CompanionError.invalid("gap requires first monotonic and wall-clock timestamps")
+        }
         if let firstCapturedAtMs, let lastCapturedAtMs {
             guard lastCapturedAtMs >= firstCapturedAtMs else {
                 throw CompanionError.invalid("gap timestamps are reversed")
+            }
+        }
+        if let lastCapturedAtMonotonicNs {
+            guard lastCapturedAtMonotonicNs >= firstCapturedAtMonotonicNs else {
+                throw CompanionError.invalid("gap monotonic timestamps are reversed")
+            }
+        }
+        if let lastCapturedAtWallClockMs {
+            guard lastCapturedAtWallClockMs >= firstCapturedAtWallClockMs else {
+                throw CompanionError.invalid("gap wall-clock timestamps are reversed")
+            }
+        }
+        if resolvedBoundary == .knownRange {
+            guard lastCapturedAtMonotonicNs != nil, lastCapturedAtWallClockMs != nil else {
+                throw CompanionError.invalid("known gap requires terminal timestamps")
+            }
+        } else {
+            guard lastCapturedAtMonotonicNs == nil, lastCapturedAtWallClockMs == nil else {
+                throw CompanionError.invalid("unknown-end gap cannot claim terminal timestamps")
             }
         }
         self.identity = identity
@@ -352,6 +451,12 @@ public struct CoverageGap: Equatable, Sendable {
         self.lastSequenceExclusive = lastSequenceExclusive
         self.firstCapturedAtMs = firstCapturedAtMs
         self.lastCapturedAtMs = lastCapturedAtMs
+        self.deviceID = deviceID
+        self.firstCapturedAtMonotonicNs = firstCapturedAtMonotonicNs
+        self.lastCapturedAtMonotonicNs = lastCapturedAtMonotonicNs
+        self.firstCapturedAtWallClockMs = firstCapturedAtWallClockMs
+        self.lastCapturedAtWallClockMs = lastCapturedAtWallClockMs
+        self.boundary = resolvedBoundary
         self.reason = reason
     }
 
@@ -368,6 +473,12 @@ public struct CoverageGap: Equatable, Sendable {
             lastSampleExclusive.map { String($0) } ?? "?",
             firstCapturedAtMs.map { String($0) } ?? "?",
             lastCapturedAtMs.map { String($0) } ?? "?",
+            deviceID ?? "?",
+            firstCapturedAtMonotonicNs.map { String($0) } ?? "?",
+            lastCapturedAtMonotonicNs.map { String($0) } ?? "?",
+            firstCapturedAtWallClockMs.map { String($0) } ?? "?",
+            lastCapturedAtWallClockMs.map { String($0) } ?? "?",
+            boundary.rawValue,
             reason.rawValue
         ]
         return "gap_" + SHA256.hash(data: Data(fields.joined(separator: "\0").utf8)).hexString

@@ -44,13 +44,15 @@ public enum ProviderEffectState: Equatable, Sendable {
 public struct ProviderEffectToken: Hashable, Equatable, Sendable {
     public let effectID: String
     public let ownerGeneration: UInt64
+    public let ownerEpoch: UUID
 
-    public init(effectID: String, ownerGeneration: UInt64) throws {
+    public init(effectID: String, ownerGeneration: UInt64, ownerEpoch: UUID = UUID()) throws {
         guard SourceIdentity.isIdentifier(effectID) else {
             throw CompanionError.invalid("effect identifier is invalid")
         }
         self.effectID = effectID
         self.ownerGeneration = ownerGeneration
+        self.ownerEpoch = ownerEpoch
     }
 }
 
@@ -69,7 +71,7 @@ public struct ProviderEffectFence: Equatable, Sendable {
     }
 
     public mutating func markTerminal(journalCommitted: Bool) throws {
-        guard state == .invoking || state == .prepared else { throw CompanionError.callbackFenced }
+        guard state == .invoking else { throw CompanionError.callbackFenced }
         self.journalCommitted = journalCommitted
         state = .terminal
     }
@@ -102,6 +104,9 @@ public struct CustodyEntry: Equatable, Sendable {
 
 public struct CustodyRing: Sendable {
     public let limits: CustodyLimits
+    /// Tokens are scoped to this custody owner's lifetime. A token from a
+    /// replaced ring or deletion epoch cannot be replayed against new data.
+    public let ownerEpoch: UUID
     private var entries: [String: CustodyEntry] = [:]
     private var releases: [String: CustodyRelease] = [:]
     private var effects: [String: ProviderEffectFence] = [:]
@@ -110,8 +115,9 @@ public struct CustodyRing: Sendable {
     public private(set) var acquisitionStopped = false
     public private(set) var lastClockMs: UInt64 = 0
 
-    public init(limits: CustodyLimits) {
+    public init(limits: CustodyLimits, ownerEpoch: UUID = UUID()) {
         self.limits = limits
+        self.ownerEpoch = ownerEpoch
     }
 
     public var retainedCount: Int { entries.count }
@@ -122,6 +128,9 @@ public struct CustodyRing: Sendable {
     }
     public var released: [String: CustodyRelease] { releases }
     public var pendingEffects: Set<String> { pendingAfterLocalRelease }
+    public var hasPendingProviderEffects: Bool {
+        !pendingAfterLocalRelease.isEmpty || effects.values.contains { $0.state == .prepared || $0.state == .invoking }
+    }
     public var gapObligations: [String: CustodyRelease] { gapReasons }
 
     @discardableResult
@@ -154,17 +163,18 @@ public struct CustodyRing: Sendable {
     /// Removes a reservation that has not yet been committed to the reducer.
     /// This is the only rollback path; it never creates a terminal release or gap.
     public mutating func rollbackReservation(eventID: String) throws {
-        guard var entry = entries.removeValue(forKey: eventID), releases[eventID] == nil else {
+        guard let entry = entries.removeValue(forKey: eventID), releases[eventID] == nil else {
             throw CompanionError.invalid("reservation rollback is stale or already released")
         }
-        zeroize(&entry.frame.payload)
+        entry.frame.payload.zeroize()
     }
 
     public mutating func prepareEffect(for eventID: String, token: ProviderEffectToken) throws {
         guard let entry = entries[eventID], releases[eventID] == nil,
               effects[eventID] == nil, !pendingAfterLocalRelease.contains(eventID),
               effects.count < limits.maxTerminalRecords,
-              token.ownerGeneration == entry.frame.identity.captureGeneration else {
+              token.ownerGeneration == entry.frame.identity.captureGeneration,
+              token.ownerEpoch == ownerEpoch else {
             throw CompanionError.invalid("provider effect requires live unreleased custody")
         }
         effects[eventID] = ProviderEffectFence(token: token)
@@ -202,6 +212,11 @@ public struct CustodyRing: Sendable {
     public mutating func localDiscard(eventID: String, reason: CustodyRelease) throws {
         guard [.localPrivacyDiscard, .privacyTimeout, .deletion, .emergency].contains(reason), releases[eventID] == nil else {
             throw CompanionError.invalid("local discard reason or release state is invalid")
+        }
+        if let effect = effects[eventID], effect.state == .terminal {
+            // A terminal effect must first resolve to forwarded or ambiguous;
+            // local discard may not overwrite its provider outcome.
+            throw CompanionError.callbackFenced
         }
         if var effect = effects[eventID], effect.state == .prepared {
             // A prepared but not invoked effect can be cancelled atomically;
@@ -254,6 +269,18 @@ public struct CustodyRing: Sendable {
         pendingAfterLocalRelease.remove(eventID)
     }
 
+    public mutating func resolveEffectAmbiguous(eventID: String, token: ProviderEffectToken) throws {
+        guard let effect = effects[eventID], effect.token == token,
+              effect.state == .terminal, !effect.journalCommitted,
+              !pendingAfterLocalRelease.contains(eventID) else {
+            throw CompanionError.callbackFenced
+        }
+        try ensureTerminalCapacity(for: eventID)
+        try ensureGapCapacity(for: eventID)
+        try release(eventID: eventID, reason: .ambiguousEffect)
+        try recordGapObligation(eventID: eventID, reason: .ambiguousEffect)
+    }
+
     @discardableResult
     public mutating func advanceClock(_ nowMs: UInt64, clockCertain: Bool = true) throws -> [String] {
         guard nowMs >= lastClockMs else { throw CompanionError.invalid("clock moved backwards") }
@@ -274,11 +301,11 @@ public struct CustodyRing: Sendable {
 
     private mutating func release(eventID: String, reason: CustodyRelease) throws {
         try ensureTerminalCapacity(for: eventID)
-        guard var entry = entries.removeValue(forKey: eventID) else {
+        guard let entry = entries.removeValue(forKey: eventID) else {
             guard releases[eventID] == reason else { throw CompanionError.invalid("release references missing or conflicting custody") }
             return
         }
-        zeroize(&entry.frame.payload)
+        entry.frame.payload.zeroize()
         releases[eventID] = reason
     }
 
@@ -299,10 +326,4 @@ public struct CustodyRing: Sendable {
         }
     }
 
-    private func zeroize(_ data: inout Data) {
-        data.withUnsafeMutableBytes { rawBuffer in
-            guard let base = rawBuffer.baseAddress else { return }
-            base.initializeMemory(as: UInt8.self, repeating: 0, count: rawBuffer.count)
-        }
-    }
 }

@@ -2,6 +2,14 @@ import XCTest
 @testable import TarsNativeCompanion
 
 final class LifecycleTests: XCTestCase {
+    func testLifecycleAlwaysRequiresBothCaptureAxes() throws {
+        var lifecycle = LifecycleCoordinator(sources: [.microphone])
+        XCTAssertEqual(Set(lifecycle.sourceHealth.keys), Set(AudioSource.allCases))
+        try lifecycle.beginPermissionAndDeviceCheck()
+        try lifecycle.updateHealth(SourceHealth(permission: .granted, route: .healthy, deviceIdentity: "mic-device"), for: .microphone)
+        XCTAssertThrowsError(try lifecycle.startCapture())
+    }
+
     func testGatewayOwnsTerminalCoverage() throws {
         var lifecycle = LifecycleCoordinator()
         try lifecycle.beginPermissionAndDeviceCheck()

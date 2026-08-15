@@ -20,7 +20,7 @@ final class CustodyRingTests: XCTestCase {
         let frame = try GeneratedFixtureSource(identity: identity).makeFrames(count: 1)[0]
         var ring = CustodyRing(limits: try CustodyLimits(sampleRate: 16_000, channelCount: 1))
         _ = try ring.reserve(CustodyEntry(frame: frame))
-        let token = try ProviderEffectToken(effectID: "effect", ownerGeneration: 1)
+        let token = try ProviderEffectToken(effectID: "effect", ownerGeneration: 1, ownerEpoch: ring.ownerEpoch)
         try ring.prepareEffect(for: frame.eventID, token: token)
         try ring.markEffectInvoking(eventID: frame.eventID, token: token)
         try ring.localDiscard(eventID: frame.eventID, reason: .deletion)
@@ -37,7 +37,7 @@ final class CustodyRingTests: XCTestCase {
         let frame = try GeneratedFixtureSource(identity: identity).makeFrames(count: 1)[0]
         var ring = CustodyRing(limits: try CustodyLimits(sampleRate: 16_000, channelCount: 1))
         _ = try ring.reserve(CustodyEntry(frame: frame))
-        let token = try ProviderEffectToken(effectID: "effect", ownerGeneration: 1)
+        let token = try ProviderEffectToken(effectID: "effect", ownerGeneration: 1, ownerEpoch: ring.ownerEpoch)
         try ring.prepareEffect(for: frame.eventID, token: token)
         try ring.localDiscard(eventID: frame.eventID, reason: .deletion)
         XCTAssertEqual(ring.effect(for: frame.eventID)?.state, .cancelled)
@@ -45,12 +45,38 @@ final class CustodyRingTests: XCTestCase {
         XCTAssertFalse(ring.pendingEffects.contains(frame.eventID))
     }
 
+    func testAudioFrameCopiesShareZeroizableCustodyBuffer() throws {
+        let identity = try SourceIdentity(sessionID: "session", streamID: "mic", captureGeneration: 1, source: .microphone, sampleRate: 16_000, channelCount: 1)
+        let frame = try GeneratedFixtureSource(identity: identity).makeFrames(count: 1)[0]
+        let frameCopy = frame
+        var ring = CustodyRing(limits: try CustodyLimits(sampleRate: 16_000, channelCount: 1))
+        _ = try ring.reserve(CustodyEntry(frame: frame))
+        try ring.localDiscard(eventID: frame.eventID, reason: .localPrivacyDiscard)
+        XCTAssertTrue(frame.payload.copyData().allSatisfy { $0 == 0 })
+        XCTAssertTrue(frameCopy.payload.copyData().allSatisfy { $0 == 0 })
+    }
+
+    func testProviderEffectCannotTerminalizeBeforeInvocationOrAfterDiscardRace() throws {
+        let identity = try SourceIdentity(sessionID: "session", streamID: "mic", captureGeneration: 1, source: .microphone, sampleRate: 16_000, channelCount: 1)
+        let frame = try GeneratedFixtureSource(identity: identity).makeFrames(count: 1)[0]
+        var ring = CustodyRing(limits: try CustodyLimits(sampleRate: 16_000, channelCount: 1))
+        _ = try ring.reserve(CustodyEntry(frame: frame))
+        let token = try ProviderEffectToken(effectID: "effect", ownerGeneration: 1, ownerEpoch: ring.ownerEpoch)
+        try ring.prepareEffect(for: frame.eventID, token: token)
+        XCTAssertThrowsError(try ring.markEffectTerminal(eventID: frame.eventID, token: token, journalCommitted: false))
+        try ring.markEffectInvoking(eventID: frame.eventID, token: token)
+        try ring.markEffectTerminal(eventID: frame.eventID, token: token, journalCommitted: false)
+        XCTAssertThrowsError(try ring.localDiscard(eventID: frame.eventID, reason: .deletion))
+        try ring.resolveEffectAmbiguous(eventID: frame.eventID, token: token)
+        XCTAssertEqual(ring.gapObligations[frame.eventID], .ambiguousEffect)
+    }
+
     func testEffectGenerationMustMatchCustodyGeneration() throws {
         let identity = try SourceIdentity(sessionID: "session", streamID: "mic", captureGeneration: 2, source: .microphone, sampleRate: 16_000, channelCount: 1)
         let frame = try GeneratedFixtureSource(identity: identity).makeFrames(count: 1)[0]
         var ring = CustodyRing(limits: try CustodyLimits(sampleRate: 16_000, channelCount: 1))
         _ = try ring.reserve(CustodyEntry(frame: frame))
-        let stale = try ProviderEffectToken(effectID: "effect", ownerGeneration: 1)
+        let stale = try ProviderEffectToken(effectID: "effect", ownerGeneration: 1, ownerEpoch: ring.ownerEpoch)
         XCTAssertThrowsError(try ring.prepareEffect(for: frame.eventID, token: stale))
     }
 

@@ -22,9 +22,22 @@ final class FrameReducerTests: XCTestCase {
         try reducer.activate(identity)
         let frame = try GeneratedFixtureSource(identity: identity).makeFrames(count: 1)[0]
         _ = try reducer.ingest(frame)
-        let gap = try reducer.recordGap(identity: identity, firstSample: frame.lastSampleExclusive, lastSampleExclusive: nil, reason: .unknownEnd)
+        let gap = try reducer.recordGap(
+            identity: identity,
+            firstSample: frame.lastSampleExclusive,
+            lastSampleExclusive: nil,
+            reason: .unknownEnd,
+            deviceID: "mic-device",
+            firstCapturedAtMonotonicNs: 20_000_000,
+            firstCapturedAtWallClockMs: 20,
+            boundary: .unknownEnd
+        )
         XCTAssertEqual(gap.reason, .unknownEnd)
+        XCTAssertEqual(gap.deviceID, "mic-device")
+        XCTAssertEqual(gap.firstCapturedAtMonotonicNs, 20_000_000)
+        XCTAssertEqual(gap.boundary, .unknownEnd)
         XCTAssertEqual(reducer.recordedGaps.count, 1)
+        XCTAssertThrowsError(try reducer.ingest(frame))
     }
 
     func testReducerPreservesExactKnownGapBounds() throws {
@@ -41,7 +54,13 @@ final class FrameReducerTests: XCTestCase {
             firstSequence: 1,
             lastSequenceExclusive: 3,
             firstCapturedAtMs: 20,
-            lastCapturedAtMs: 60
+            lastCapturedAtMs: 60,
+            deviceID: "mic-device",
+            firstCapturedAtMonotonicNs: 20_000_000,
+            lastCapturedAtMonotonicNs: 60_000_000,
+            firstCapturedAtWallClockMs: 20,
+            lastCapturedAtWallClockMs: 60,
+            boundary: .knownRange
         )
         XCTAssertEqual(gap.firstSequence, 1)
         XCTAssertEqual(gap.lastSequenceExclusive, 3)
@@ -49,6 +68,17 @@ final class FrameReducerTests: XCTestCase {
         XCTAssertEqual(gap.lastCapturedAtMs, 60)
         let resumed = try AudioFrame(identity: identity, sequence: 3, firstSample: 960, capturedAtMs: 60, payload: Data(repeating: 4, count: 640))
         XCTAssertNoThrow(try reducer.ingest(resumed))
-        XCTAssertThrowsError(try reducer.recordGap(identity: identity, firstSample: 1_280, lastSampleExclusive: nil, reason: .unknownEnd, firstSequence: 9))
+        XCTAssertThrowsError(try reducer.recordGap(identity: identity, firstSample: 1_280, lastSampleExclusive: nil, reason: .unknownEnd, firstSequence: 9, deviceID: "mic-device", firstCapturedAtMonotonicNs: 80_000_000, firstCapturedAtWallClockMs: 80, boundary: .unknownEnd))
+    }
+
+    func testReducerCapsResidentFrameHistory() throws {
+        let identity = try SourceIdentity(sessionID: "session", streamID: "mic", captureGeneration: 1, source: .microphone, sampleRate: 16_000, channelCount: 1)
+        var reducer = FrameReducer()
+        try reducer.activate(identity)
+        let source = try GeneratedFixtureSource(identity: identity)
+        for index in 0..<100 { _ = try reducer.ingest(source.makeFrame(index: index)) }
+        let overCap = try AudioFrame(identity: identity, sequence: 100, firstSample: 32_000, capturedAtMs: 2_000, payload: Data(repeating: 4, count: 640))
+        XCTAssertThrowsError(try reducer.ingest(overCap))
+        XCTAssertEqual(reducer.acceptedCount, 100)
     }
 }

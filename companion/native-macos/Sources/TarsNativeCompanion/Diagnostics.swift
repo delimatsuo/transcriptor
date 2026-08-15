@@ -2,6 +2,7 @@ import Foundation
 
 public struct Diagnostics: Sendable {
     private static let maxEvents = 256
+    private static let maxCodeBytes = 256
     private var events: [DiagnosticEvent] = []
 
     public init() {}
@@ -9,6 +10,7 @@ public struct Diagnostics: Sendable {
     public var snapshot: [DiagnosticEvent] { events }
 
     public mutating func record(_ event: DiagnosticEvent) {
+        guard event.code.utf8.count <= Self.maxCodeBytes else { return }
         events.append(event)
         if events.count > Self.maxEvents {
             events.removeFirst(events.count - Self.maxEvents)

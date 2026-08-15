@@ -54,6 +54,11 @@ final class CompanionContractsTests: XCTestCase {
         XCTAssertEqual(metadata.count, 472)
         XCTAssertEqual(encoded.count, 796)
         XCTAssertEqual(try v2ParseAudioFrame(encoded).frame, frame)
+        let context = try CaptureEventContext(deviceID: "fixture-device", capturedAtMonotonicNs: 123_000_000, capturedAtWallClockMs: 123)
+        let rebound = try v2ParseAudioFrame(encoded, eventContext: context).frame
+        XCTAssertEqual(rebound.eventContext, context)
+        let envelope = try v2CanonicalEventEnvelopeMetadata(rebound)
+        XCTAssertEqual(String(decoding: envelope, as: UTF8.self), "{\"captureGeneration\":\"4\",\"capturedAtMonotonicNs\":\"123000000\",\"capturedAtWallClockMs\":\"123\",\"deviceId\":\"fixture-device\",\"eventId\":\"aevt_93876bd7ae88af5c4c875e668bae680ce508d9982fc7f0f8d8e009c234f6dca2\",\"eventType\":\"audio.chunk\",\"protocolVersion\":2,\"sessionId\":\"session-v2\",\"streamId\":\"stream-mic\"}")
         let commitment = try v2RetryCommitment(sessionKey: Data((0..<32).map(UInt8.init)), metadata: metadata, payload: payload)
         XCTAssertEqual(commitment.count, 32)
     }
@@ -75,6 +80,9 @@ final class CompanionContractsTests: XCTestCase {
             try v2TerminalCoverageID(identity: identity, ranges: [second, first]),
             "covr_b501309bf531e3b7dc293857fc50752387fa7de3b48650820fff33d4024bb939"
         )
+        XCTAssertThrowsError(try v2TerminalCoverageID(identity: identity, ranges: [first, first]))
+        let sameSequence = try CoverageRange(identity: identity, sequence: 0, firstSample: 320, lastSampleExclusive: 480)
+        XCTAssertThrowsError(try v2TerminalCoverageID(identity: identity, ranges: [first, sameSequence]))
 
         let left = try SourceIdentity(sessionID: "a:b", streamID: "c", captureGeneration: 1, source: .microphone, sampleRate: 8_000, channelCount: 1)
         let right = try SourceIdentity(sessionID: "a", streamID: "b:c", captureGeneration: 1, source: .microphone, sampleRate: 8_000, channelCount: 1)
@@ -96,5 +104,7 @@ final class CompanionContractsTests: XCTestCase {
         }
         XCTAssertEqual(diagnostics.snapshot.count, 256)
         XCTAssertEqual(diagnostics.snapshot.first?.code, "event-44")
+        diagnostics.record(DiagnosticEvent(code: String(repeating: "x", count: 257)))
+        XCTAssertEqual(diagnostics.snapshot.count, 256)
     }
 }

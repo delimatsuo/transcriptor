@@ -44,6 +44,10 @@ public struct FrameReducer: Sendable {
     private var seenEvents: Set<String> = []
     private var frames: [ReducedFrame] = []
     private var gaps: [CoverageGap] = []
+    private var terminalizedSources: Set<AudioSource> = []
+
+    private static let maxFrames = 100
+    private static let maxGaps = 100
 
     public init() {}
 
@@ -60,6 +64,13 @@ public struct FrameReducer: Sendable {
                 guard identity == current else { throw CompanionError.invalid("source identity changed within a generation") }
                 return
             }
+            activeIdentity[identity.source] = identity
+            tracker.reset(identity: identity)
+            seenEvents.removeAll(keepingCapacity: true)
+            frames.removeAll(keepingCapacity: true)
+            gaps.removeAll(keepingCapacity: true)
+            terminalizedSources.remove(identity.source)
+            return
         }
         activeIdentity[identity.source] = identity
         tracker.reset(identity: identity)
@@ -74,11 +85,15 @@ public struct FrameReducer: Sendable {
         guard let identity = activeIdentity[frame.identity.source] else {
             throw CompanionError.invalid("source generation is not active")
         }
+        guard !terminalizedSources.contains(frame.identity.source) else {
+            throw CompanionError.gapRequired("unknown-end gap requires a new capture generation")
+        }
         guard identity == frame.identity else {
             if frame.identity.captureGeneration < identity.captureGeneration { throw CompanionError.staleGeneration }
             throw CompanionError.invalid("frame identity does not match active source")
         }
         guard !seenEvents.contains(frame.eventID) else { throw CompanionError.duplicateFrame }
+        guard frames.count < Self.maxFrames else { throw CompanionError.custodyLimitExceeded }
         try tracker.validate(frame)
         seenEvents.insert(frame.eventID)
         let reduced = ReducedFrame(frame: frame)
@@ -95,23 +110,35 @@ public struct FrameReducer: Sendable {
         firstSequence: UInt64? = nil,
         lastSequenceExclusive: UInt64? = nil,
         firstCapturedAtMs: UInt64? = nil,
-        lastCapturedAtMs: UInt64? = nil
+        lastCapturedAtMs: UInt64? = nil,
+        deviceID: String? = nil,
+        firstCapturedAtMonotonicNs: UInt64? = nil,
+        lastCapturedAtMonotonicNs: UInt64? = nil,
+        firstCapturedAtWallClockMs: UInt64? = nil,
+        lastCapturedAtWallClockMs: UInt64? = nil,
+        boundary: GapBoundary? = nil
     ) throws -> CoverageGap {
         guard activeIdentity[identity.source] == identity else {
             throw CompanionError.staleGeneration
         }
+        guard !terminalizedSources.contains(identity.source) else {
+            throw CompanionError.gapRequired("unknown-end gap requires a new capture generation")
+        }
+        guard gaps.count < Self.maxGaps else { throw CompanionError.custodyLimitExceeded }
         let expected = tracker.expected(identity: identity)
-        if let firstSequence {
-            guard firstSequence == expected.sequence else {
+        let effectiveFirstSequence = firstSequence ?? expected.sequence
+        guard effectiveFirstSequence == expected.sequence else {
                 throw CompanionError.gapRequired("gap does not start at the next expected sequence")
-            }
         }
         if let firstSample, let lastSampleExclusive {
             guard firstSample == expected.firstSample else {
                 throw CompanionError.gapRequired("gap does not start at the next provable sample")
             }
             let expectedSequence = expected.sequence
-            let sequenceEnd = lastSequenceExclusive ?? (expectedSequence + 1)
+            guard let lastSequenceExclusive else {
+                throw CompanionError.gapRequired("known sample gap requires a sequence end")
+            }
+            let sequenceEnd = lastSequenceExclusive
             guard sequenceEnd > expectedSequence else {
                 throw CompanionError.gapRequired("gap sequence range does not advance the tracker")
             }
@@ -122,12 +149,21 @@ public struct FrameReducer: Sendable {
             firstSample: firstSample,
             lastSampleExclusive: lastSampleExclusive,
             reason: reason,
-            firstSequence: firstSequence,
+            firstSequence: effectiveFirstSequence,
             lastSequenceExclusive: lastSequenceExclusive,
             firstCapturedAtMs: firstCapturedAtMs,
-            lastCapturedAtMs: lastCapturedAtMs
+            lastCapturedAtMs: lastCapturedAtMs,
+            deviceID: deviceID,
+            firstCapturedAtMonotonicNs: firstCapturedAtMonotonicNs,
+            lastCapturedAtMonotonicNs: lastCapturedAtMonotonicNs,
+            firstCapturedAtWallClockMs: firstCapturedAtWallClockMs,
+            lastCapturedAtWallClockMs: lastCapturedAtWallClockMs,
+            boundary: boundary
         )
         gaps.append(gap)
+        if gap.boundary == .unknownEnd {
+            terminalizedSources.insert(identity.source)
+        }
         return gap
     }
 
@@ -186,9 +222,28 @@ private func canonicalIdentifier(_ name: String, _ value: Any?, maxBytes: Int = 
     return text
 }
 
+/// Canonical event envelope for the frozen audio body. The body remains the
+/// existing cross-language vector; this envelope binds device and clock
+/// context that must accompany it on a transport event.
+public func v2CanonicalEventEnvelopeMetadata(_ frame: AudioFrame) throws -> Data {
+    let deviceID = try canonicalIdentifier("deviceId", frame.eventContext.deviceID)
+    let text = "{\"captureGeneration\":\"\(frame.identity.captureGeneration)\"," +
+        "\"capturedAtMonotonicNs\":\"\(frame.eventContext.capturedAtMonotonicNs)\"," +
+        "\"capturedAtWallClockMs\":\"\(frame.eventContext.capturedAtWallClockMs)\"," +
+        "\"deviceId\":\"\(deviceID)\"," +
+        "\"eventId\":\"\(frame.eventID)\"," +
+        "\"eventType\":\"audio.chunk\"," +
+        "\"protocolVersion\":2," +
+        "\"sessionId\":\"\(frame.identity.sessionID)\"," +
+        "\"streamId\":\"\(frame.identity.streamID)\"}"
+    let metadata = Data(text.utf8)
+    guard metadata.count <= 2_048 else { throw CompanionError.invalid("event envelope exceeds 2048 bytes") }
+    return metadata
+}
+
 public func v2CanonicalAudioMetadata(_ frame: AudioFrame) throws -> Data {
     guard frame.payload.count <= 64_000 else { throw CompanionError.invalid("audio payload exceeds 64000 bytes") }
-    let payloadDigest = v2Digest(frame.payload)
+    let payloadDigest = v2Digest(frame.payload.copyData())
     let text = "{\"captureGeneration\":\"\(frame.identity.captureGeneration)\"," +
         "\"channelCount\":\(frame.identity.channelCount)," +
         "\"durationMs\":\(frame.durationMs)," +
@@ -215,7 +270,7 @@ public func v2EncodeAudioFrame(_ frame: AudioFrame) throws -> Data {
     var encoded = Data()
     appendUInt32(UInt32(metadata.count), to: &encoded)
     encoded.append(metadata)
-    encoded.append(frame.payload)
+    encoded.append(frame.payload.copyData())
     guard encoded.count <= 68_100 else { throw CompanionError.invalid("audio frame exceeds 68100 bytes") }
     return encoded
 }
@@ -266,6 +321,21 @@ public func v2ParseAudioFrame(_ encoded: Data) throws -> ParsedV2AudioFrame {
         throw CompanionError.invalid("metadata is not the canonical typed encoding")
     }
     return ParsedV2AudioFrame(frame: frame, eventID: eventID, metadata: metadata)
+}
+
+/// Parses the frozen body and binds a separately authenticated event context.
+/// The context-free overload remains a fixture-only compatibility helper.
+public func v2ParseAudioFrame(_ encoded: Data, eventContext: CaptureEventContext) throws -> ParsedV2AudioFrame {
+    let parsed = try v2ParseAudioFrame(encoded)
+    let rebound = try AudioFrame(
+        identity: parsed.frame.identity,
+        sequence: parsed.frame.sequence,
+        firstSample: parsed.frame.firstSample,
+        capturedAtMs: parsed.frame.capturedAtMs,
+        eventContext: eventContext,
+        payload: parsed.frame.payload.copyData()
+    )
+    return ParsedV2AudioFrame(frame: rebound, eventID: parsed.eventID, metadata: parsed.metadata)
 }
 
 public func v2RetryCommitment(sessionKey: Data, metadata: Data, payload: Data) throws -> Data {

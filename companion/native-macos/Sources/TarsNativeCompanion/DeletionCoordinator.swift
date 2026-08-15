@@ -12,11 +12,13 @@ public enum DeletionPhase: String, Sendable {
 public struct DeletionFence: Hashable, Sendable {
     public let sessionID: String
     public let generation: UInt64
+    public let deletionEpoch: UUID
 
-    public init(sessionID: String, generation: UInt64) throws {
+    public init(sessionID: String, generation: UInt64, deletionEpoch: UUID = UUID()) throws {
         guard SourceIdentity.isIdentifier(sessionID) else { throw CompanionError.invalid("deletion session is invalid") }
         self.sessionID = sessionID
         self.generation = generation
+        self.deletionEpoch = deletionEpoch
     }
 }
 
@@ -26,6 +28,7 @@ public struct DeletionCoordinator: Sendable {
     public private(set) var activeWorkers = 0
     public private(set) var activeStreams = 0
     public private(set) var activeCallbacks = 0
+    public private(set) var activeEffects = 0
     public private(set) var lateCallbacksRejected = 0
 
     public init() {}
@@ -62,7 +65,7 @@ public struct DeletionCoordinator: Sendable {
 
     public mutating func markLocalZeroized(_ fence: DeletionFence) throws {
         try validateActive(fence)
-        guard phase == .quiescing, activeWorkers == 0, activeStreams == 0, activeCallbacks == 0 else {
+        guard phase == .quiescing, activeWorkers == 0, activeStreams == 0, activeCallbacks == 0, activeEffects == 0 else {
             throw CompanionError.invalidTransition("local zeroization before quiescence")
         }
         phase = .localZeroized
@@ -98,9 +101,24 @@ public struct DeletionCoordinator: Sendable {
         activeCallbacks -= 1
     }
 
+    public mutating func effectStarted(_ fence: DeletionFence) throws {
+        try validateActive(fence)
+        guard phase == .quiescing else { throw CompanionError.deletionInProgress }
+        activeEffects += 1
+    }
+
+    public mutating func effectFinished(_ fence: DeletionFence) throws {
+        try validateActive(fence)
+        guard activeEffects > 0 else { throw CompanionError.invalid("effect underflow") }
+        activeEffects -= 1
+    }
+
     public mutating func replaceFence(_ fence: DeletionFence) throws {
         guard phase == .failed else { throw CompanionError.invalidTransition("replace deletion fence") }
-        guard activeWorkers == 0, activeStreams == 0, activeCallbacks == 0 else { throw CompanionError.invalidTransition("replace fence while active") }
+        guard activeWorkers == 0, activeStreams == 0, activeCallbacks == 0, activeEffects == 0,
+              activeFence?.sessionID == fence.sessionID else {
+            throw CompanionError.invalidTransition("replace fence while active or across sessions")
+        }
         activeFence = fence
         phase = .quiescing
     }

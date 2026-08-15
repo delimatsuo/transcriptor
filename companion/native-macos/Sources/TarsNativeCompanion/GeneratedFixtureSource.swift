@@ -17,26 +17,29 @@ public struct GeneratedFixtureSource: Sendable {
 
     public func makeFrames(count: Int, startAtMs: UInt64 = 0) throws -> [AudioFrame] {
         guard (0...100).contains(count) else { throw CompanionError.invalid("fixture count exceeds offline bound") }
+        return try (0..<count).map { try makeFrame(index: $0, startAtMs: startAtMs) }
+    }
+
+    public func makeFrame(index: Int, startAtMs: UInt64 = 0) throws -> AudioFrame {
+        guard (0..<100).contains(index) else { throw CompanionError.invalid("fixture index exceeds offline bound") }
         let samplesPerFrame = identity.sampleRate * Int(frameDurationMs) / 1_000
         let payloadSize = samplesPerFrame * identity.channelCount * 2
-        return try (0..<count).map { index in
-            var generator = SplitMix64(seed: seed &+ UInt64(index))
-            var payload = Data(capacity: payloadSize)
-            for _ in 0..<(payloadSize / 2) {
-                var value = UInt16(truncatingIfNeeded: generator.next())
-                value = value == 0 ? 1 : value
-                payload.append(UInt8(value & 0xff))
-                payload.append(UInt8(value >> 8))
-            }
-            let firstSample = UInt64(index * samplesPerFrame)
-            return try AudioFrame(
-                identity: identity,
-                sequence: UInt64(index),
-                firstSample: firstSample,
-                capturedAtMs: startAtMs + UInt64(index) * frameDurationMs,
-                payload: payload
-            )
+        var generator = SplitMix64(seed: seed &+ UInt64(index))
+        var payload = Data(capacity: payloadSize)
+        for _ in 0..<(payloadSize / 2) {
+            var value = UInt16(truncatingIfNeeded: generator.next())
+            value = value == 0 ? 1 : value
+            payload.append(UInt8(value & 0xff))
+            payload.append(UInt8(value >> 8))
         }
+        let firstSample = UInt64(index * samplesPerFrame)
+        return try AudioFrame(
+            identity: identity,
+            sequence: UInt64(index),
+            firstSample: firstSample,
+            capturedAtMs: startAtMs + UInt64(index) * frameDurationMs,
+            payload: payload
+        )
     }
 }
 

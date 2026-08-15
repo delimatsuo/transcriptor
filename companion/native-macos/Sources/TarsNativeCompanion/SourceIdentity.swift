@@ -39,10 +39,14 @@ public struct SourceIdentityFactory: Sendable {
 public struct SourceSequenceTracker: Sendable {
     private var nextSequence: [SourceIdentity: UInt64] = [:]
     private var nextSample: [SourceIdentity: UInt64] = [:]
+    private static let maxIdentities = 4
 
     public init() {}
 
     public mutating func validate(_ frame: AudioFrame) throws {
+        guard nextSequence[frame.identity] != nil || nextSequence.count < Self.maxIdentities else {
+            throw CompanionError.custodyLimitExceeded
+        }
         let expectedSequence = nextSequence[frame.identity] ?? 0
         let expectedSample = nextSample[frame.identity] ?? frame.firstSample
         guard frame.sequence == expectedSequence else {
@@ -56,6 +60,8 @@ public struct SourceSequenceTracker: Sendable {
     }
 
     public mutating func reset(identity: SourceIdentity) {
+        nextSequence = nextSequence.filter { $0.key.source != identity.source }
+        nextSample = nextSample.filter { $0.key.source != identity.source }
         nextSequence[identity] = 0
         nextSample[identity] = 0
     }

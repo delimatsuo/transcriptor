@@ -9,7 +9,10 @@ public struct LifecycleCoordinator: Sendable {
     public private(set) var pendingCallbacks = 0
 
     public init(sources: [AudioSource] = AudioSource.allCases) {
-        self.sourceHealth = Dictionary(uniqueKeysWithValues: sources.map { ($0, SourceHealth()) })
+        // A supported capture session always has both independent health axes;
+        // callers cannot silently construct a microphone-only ready state.
+        _ = sources
+        self.sourceHealth = Dictionary(uniqueKeysWithValues: AudioSource.allCases.map { ($0, SourceHealth()) })
     }
 
     public mutating func beginPermissionAndDeviceCheck() throws {
