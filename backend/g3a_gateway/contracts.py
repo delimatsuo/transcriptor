@@ -218,7 +218,10 @@ class TerminalClaim:
         ]
         parts.extend(
             f"{s.segment_id}:{s.start_sample}:{s.end_sample_exclusive}:{s.text_digest}"
-            for s in self.segments
+            for s in sorted(
+                self.segments,
+                key=lambda item: (item.start_sample, item.end_sample_exclusive, item.segment_id),
+            )
         )
         return sha256("\0".join(parts).encode("utf-8")).hexdigest()
 

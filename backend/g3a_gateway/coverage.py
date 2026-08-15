@@ -66,7 +66,7 @@ class CoverageLedger:
 
     @property
     def claims(self) -> tuple[TerminalClaim, ...]:
-        return tuple(self._claims.values())
+        return tuple(self._claims[atomic_range] for atomic_range in sorted(self._claims))
 
     def admit_range(self, atomic_range: AtomicRange) -> None:
         if any(
@@ -85,7 +85,18 @@ class CoverageLedger:
         self._validate_segments(claim.segments)
         existing = self._claims.get(claim.atomic_range)
         if existing is None:
-            self._claims[claim.atomic_range] = claim
+            canonical_segments = tuple(
+                sorted(
+                    claim.segments,
+                    key=lambda item: (item.start_sample, item.end_sample_exclusive, item.segment_id),
+                )
+            )
+            self._claims[claim.atomic_range] = TerminalClaim(
+                claim.atomic_range,
+                claim.outcome,
+                canonical_segments,
+                claim.reason,
+            )
             return
         if existing.outcome is not claim.outcome:
             raise GatewayError(FailureCode.CONFLICT)
