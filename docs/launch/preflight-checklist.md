@@ -53,7 +53,7 @@ canais de captura estiverem ativos **e isolados entre si**.
      --send-to-provider \
      --confirm-provider-audio
 
-   # Saída do Mac = Transcriptor Output; não fale nesta fase.
+   # Fase de áudio do sistema (candidato): não fale nesta fase.
    .venv/bin/python3 -m backend.scripts.physical_audio_gate \
      --phase system-audio \
      --expected-sha "$(git rev-parse HEAD)" \
