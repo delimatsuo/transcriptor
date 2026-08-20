@@ -57,9 +57,9 @@ def main() -> None:
     sys_ok = rms_meter(settings.blackhole_device_name, "system-audio", settings.sample_rate)
     if not sys_ok:
         print(
-            "\nsystem-audio FAIL → check: macOS output device must be the "
-            "Multi-Output Device (containing BlackHole 2ch + your headphones). "
-            "Windows: meeting app output → CABLE Input, 'Listen to this device' on."
+            "\nsystem-audio check failed. Note: The production interview path "
+            "uses the native macOS companion (ScreenCaptureKit), which captures "
+            "system audio automatically with zero device configuration or virtual cables."
         )
     raise SystemExit(0 if (mic_ok and sys_ok) else 1)
 

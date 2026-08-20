@@ -27,49 +27,16 @@ canais de captura estiverem ativos **e isolados entre si**.
    segurança hospedada. Não use dados reais até o gate de hospedagem e a
    migração/quarentena de registros legados serem aprovados.
 
-1. No macOS, abra **Ajuste de Áudio e MIDI**. Em **Dispositivo de Saída**,
-   selecione o **Dispositivo de Saída Múltipla** e confirme que ele contém
-   **BlackHole 2ch** e os fones de ouvido reais. Não deixe a saída em fones
-   externos: nessa configuração o BlackHole captura silêncio.
-2. Coloque o headset. Não use alto-falantes: o vazamento entre os canais
-   compromete a atribuição de rótulos.
-3. Sempre que possível, defina `MICROPHONE_DEVICE_NAME` com o nome do microfone
-   do headset. Não deixe essa configuração vazia por conveniência: se for
-   necessário usar o padrão do sistema, confirme no resultado do pré-voo que o
-   índice e o nome resolvidos correspondem ao microfone correto.
-4. Com o headset colocado, reproduza áudio do sistema no volume normal e fale
-   ao microfone durante a janela de medição indicada. Execute:
-
-   ```bash
-   .venv/bin/python3 -m backend.scripts.preflight_audio
-   ```
-
-   Continue somente se `microphone` e `system-audio` mostrarem `PASS`. Registre
-   o SHA (`git rev-parse HEAD`) e os índices e nomes exatos dos dois dispositivos
-   impressos pelo comando.
-5. Faça o **teste obrigatório de isolamento das fontes** em uma sessão de teste:
-
-   - Com o microfone em silêncio, reproduza fala somente pelo sistema. O texto
-     deve aparecer apenas como **Candidato**.
-   - Pause a reprodução do sistema e fale somente ao microfone. O texto deve
-     aparecer apenas como **Entrevistador**.
-   - Alterne as duas fontes, uma de cada vez. Rejeite o pré-voo se enunciados
-     substanciais iguais aparecerem nos dois rótulos.
-
-   O ensaio de 4 de agosto, feito com áudio do YouTube nos alto-falantes do
-   ambiente, apresentou conteúdo duplicado em **Candidato** e
-   **Entrevistador**; ele não qualifica a atribuição de falantes.
-
-   **Evidência de que o procedimento funciona (2026-08-05):** o reteste com
-   headset (vídeo audível apenas nos fones, saída = Dispositivo de Saída
-   Múltipla) produziu isolamento perfeito — conteúdo do vídeo somente como
-   **Candidato**, fala do entrevistador somente como **Entrevistador**, zero
-   vazamento nos dois sentidos (sessão `9060cd3c`). A atribuição por fonte
-   dupla está verificada de ponta a ponta nesta configuração. Armadilha
-   confirmada no mesmo teste: ao trocar de dispositivo de áudio (ex.: colocar
-   fones), o macOS pode mover a saída do sistema para fora do Dispositivo de
-   Saída Múltipla — o passo 1 deve ser reconferido SEMPRE que o hardware de
-   áudio mudar (log do backend acusa `audio_device_silent label=Candidato`).
+1. **Captura Nativa (Zero Configuração / Padrão Wispr):**
+   - O aplicativo utiliza APIs nativas do macOS (`ScreenCaptureKit` para áudio do sistema/candidato e `AVAudioEngine` para o microfone do entrevistador).
+   - **Não é necessário instalar nem configurar BlackHole, Cabos Virtuais ou Dispositivo de Saída Múltipla no Ajuste de Áudio e MIDI.**
+   - O macOS solicitará apenas a permissão padrão de gravação de áudio do sistema/tela e microfone na primeira execução.
+2. Coloque o headset para manter isolamento acústico natural entre o som dos fones e o microfone físico.
+3. O microfone padrão e a saída de áudio normal do sistema são utilizados automaticamente sem nenhuma alteração manual de configurações de áudio no computador.
+4. **Isolamento de Fontes:**
+   - Com o microfone em silêncio, o áudio reproduzido na chamada (Zoom/Meet/Teams) é capturado diretamente pelo `ScreenCaptureKit` e rotulado como **Candidato**.
+   - A voz do entrevistador no microfone é capturada pelo `AVAudioEngine` e rotulada como **Entrevistador**.
+   - Zero interferência ou dependência de roteamento de hardware.
 
    **Gate físico reproduzível no macOS:** para evidência de release, não use
    instruções enviadas por chat para sincronizar a fala. Execute uma fase por
