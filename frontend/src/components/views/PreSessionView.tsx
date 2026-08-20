@@ -1,12 +1,17 @@
 "use client";
 
 import BriefingDisplay from "@/components/BriefingDisplay";
+import RecentInterviews from "@/components/RecentInterviews";
 
 interface Props {
   preInterviewBriefing: string;
+  onOpenReview: (sessionId: string) => void;
 }
 
-export default function PreSessionView({ preInterviewBriefing }: Props) {
+export default function PreSessionView({
+  preInterviewBriefing,
+  onOpenReview,
+}: Props) {
   return (
     <div
       style={{
@@ -49,6 +54,7 @@ export default function PreSessionView({ preInterviewBriefing }: Props) {
             Configure a sessão acima e comece a gravar. O T.A.R.S. transcreve
             e ajuda em tempo real.
           </p>
+          <RecentInterviews onOpen={onOpenReview} />
         </>
       )}
     </div>

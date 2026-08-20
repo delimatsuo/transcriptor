@@ -18,6 +18,53 @@ from backend.stt.google_stt import GoogleSTTStream
 logger = structlog.get_logger()
 
 
+def _duration_seconds(value: object) -> float | None:
+    """Return a protobuf/timedelta duration in seconds when it is usable."""
+    if value is None:
+        return None
+    total_seconds = getattr(value, "total_seconds", None)
+    if callable(total_seconds):
+        seconds = float(total_seconds())
+        return seconds if seconds >= 0 else None
+    seconds = getattr(value, "seconds", None)
+    nanos = getattr(value, "nanos", None)
+    if seconds is None and nanos is None:
+        return None
+    result = float(seconds or 0) + float(nanos or 0) / 1_000_000_000
+    return result if result >= 0 else None
+
+
+def _absolute_result_times(
+    *,
+    stream_audio_origin: float | None,
+    result: object,
+    alternative: object,
+    fallback_offset: float,
+    text: str,
+) -> tuple[float, float]:
+    """Map provider audio offsets onto the session audio timeline."""
+    provider_end = _duration_seconds(getattr(result, "result_end_offset", None))
+    if stream_audio_origin is not None and provider_end is not None:
+        end_time = stream_audio_origin + provider_end
+    else:
+        end_time = fallback_offset
+
+    words = list(getattr(alternative, "words", ()) or ())
+    if stream_audio_origin is not None and words:
+        first_start = _duration_seconds(getattr(words[0], "start_offset", None))
+        last_end = _duration_seconds(getattr(words[-1], "end_offset", None))
+        if first_start is not None:
+            start_time = stream_audio_origin + first_start
+        else:
+            start_time = max(0.0, end_time - len(text) * 0.05)
+        if last_end is not None and last_end > 0:
+            end_time = stream_audio_origin + last_end
+    else:
+        start_time = max(0.0, end_time - len(text) * 0.05)
+
+    return max(0.0, min(start_time, end_time)), max(0.0, end_time)
+
+
 class StreamManager:
     """Manages Google STT stream rotation to work around the 5-minute limit.
 
@@ -53,7 +100,17 @@ class StreamManager:
         self._drain_failure_reason: str | None = None
 
         # Track last emitted end_time to avoid duplicate segments during overlap
-        self._last_emitted_end_time: float = 0.0
+        # None means no final has been emitted yet. A real first final may map
+        # to 0.0 (for example, a provider response without usable offsets that
+        # arrives before the fallback clock advances), so 0.0 cannot also be
+        # the "already emitted" sentinel.
+        self._last_emitted_end_time: float | None = None
+        # Session audio time advances from accepted LINEAR16 chunks, not STT
+        # callback wall time. Each provider stream is anchored to the first
+        # audio chunk it receives, including buffered rotation audio.
+        self._audio_timeline_seconds: float = 0.0
+        self._stream_audio_origins: dict[str, float] = {}
+        self._stream_audio_ends: dict[str, float] = {}
 
         # Audio arriving while no stream is active (rotation/recovery window)
         # is buffered here and flushed, in order, on the next active send.
@@ -77,7 +134,10 @@ class StreamManager:
         self._ever_stream_opened = False
         self._audio_dropped = False
         self._sequence_number = 0
-        self._last_emitted_end_time = 0.0
+        self._last_emitted_end_time = None
+        self._audio_timeline_seconds = 0.0
+        self._stream_audio_origins.clear()
+        self._stream_audio_ends.clear()
         self._drain_completed = None
         self._drain_failure_reason = None
 
@@ -194,16 +254,51 @@ class StreamManager:
     def drain_failure_reason(self) -> str | None:
         return self._drain_failure_reason
 
+    @property
+    def audio_delivery_intervals(self) -> list[tuple[str, float, float]]:
+        """Return provider-stream audio intervals on the session timeline."""
+        return sorted(
+            [
+                (
+                    stream_id,
+                    origin,
+                    self._stream_audio_ends.get(stream_id, origin),
+                )
+                for stream_id, origin in self._stream_audio_origins.items()
+            ],
+            key=lambda interval: interval[1],
+        )
+
     async def send_audio(self, audio_bytes: bytes) -> None:
         """Send audio to the current stream, buffering across rotation gaps."""
+        bytes_per_second = (
+            self.settings.sample_rate * self.settings.channels * 2
+        )
+        chunk_duration = len(audio_bytes) / bytes_per_second
+        chunk_start = self._audio_timeline_seconds
+        if self._running or (
+            self._current_stream and self._current_stream.is_active
+        ):
+            self._audio_timeline_seconds += chunk_duration
+
         if self._current_stream and self._current_stream.is_active:
             self._ever_stream_opened = (
                 self._ever_stream_opened
                 or getattr(self._current_stream, "request_opened", False)
             )
+            stream_id = getattr(self._current_stream, "stream_id", "")
+            if stream_id and stream_id not in self._stream_audio_origins:
+                pending_duration = sum(
+                    len(chunk) / bytes_per_second for chunk in self._pending_audio
+                )
+                self._stream_audio_origins[stream_id] = max(
+                    0.0, chunk_start - pending_duration
+                )
             while self._pending_audio:
                 await self._current_stream.send_audio(self._pending_audio.popleft())
             await self._current_stream.send_audio(audio_bytes)
+            if stream_id:
+                self._stream_audio_ends[stream_id] = self._audio_timeline_seconds
         elif self._running:
             if len(self._pending_audio) == self._pending_audio.maxlen:
                 self._audio_dropped = True
@@ -219,6 +314,12 @@ class StreamManager:
                     source=self.source_label,
                     buffered=len(self._pending_audio),
                 )
+        elif self._drain_failure_reason is not None:
+            # Surface a terminal callback/provider failure to the capture
+            # loop instead of silently buffering raw audio after STT stopped.
+            raise RuntimeError(
+                f"STT stream unavailable: {self._drain_failure_reason}"
+            )
 
     async def _rotation_loop(self) -> None:
         """Monitor stream age and trigger rotation before the 5-min limit."""
@@ -270,7 +371,10 @@ class StreamManager:
                         if not text:
                             continue
 
-                        # Calculate absolute time from session start
+                        # Callback wall time is only a fallback. Provider word
+                        # offsets are mapped to the session's accepted-audio
+                        # timeline so long finalization cadence is not mistaken
+                        # for a rotation gap.
                         offset = time.monotonic() - self._session_start_time
 
                         # Determine speaker: use source_label if set (dual capture mode),
@@ -288,9 +392,21 @@ class StreamManager:
 
                         # For final results, check overlap dedup
                         is_final = result.is_final
-                        end_time = offset
+                        start_time, end_time = _absolute_result_times(
+                            stream_audio_origin=self._stream_audio_origins.get(
+                                stream.stream_id
+                            ),
+                            result=result,
+                            alternative=alt,
+                            fallback_offset=offset,
+                            text=text,
+                        )
 
-                        if is_final and end_time <= self._last_emitted_end_time:
+                        if (
+                            is_final
+                            and self._last_emitted_end_time is not None
+                            and end_time <= self._last_emitted_end_time
+                        ):
                             logger.debug(
                                 "overlap_segment_skipped",
                                 text=text[:50],
@@ -304,7 +420,7 @@ class StreamManager:
                         segment = TranscriptSegment(
                             text=text,
                             speaker=speaker,
-                            start_time=max(0, offset - len(text) * 0.05),
+                            start_time=start_time,
                             end_time=end_time,
                             confidence=alt.confidence if hasattr(alt, "confidence") else 0.0,
                             sequence_number=self._sequence_number,
@@ -315,9 +431,29 @@ class StreamManager:
                             self._last_emitted_end_time = end_time
 
                         if self.on_transcript:
-                            callback_result = self.on_transcript(segment)
-                            if inspect.isawaitable(callback_result):
-                                await callback_result
+                            try:
+                                callback_result = self.on_transcript(segment)
+                                if inspect.isawaitable(callback_result):
+                                    await callback_result
+                            except Exception:
+                                # Callback failures include durable transcript
+                                # writes. Reopening STT every 0.5s would turn a
+                                # Firestore outage into an unbounded provider
+                                # retry/cost loop while buffering more audio.
+                                self.mark_failed("transcript_callback_error")
+                                logger.exception(
+                                    "stt_transcript_callback_failed",
+                                    stream_id=stream.stream_id,
+                                )
+                                self._running = False
+                                try:
+                                    await stream.stop()
+                                except Exception:
+                                    logger.exception(
+                                        "stt_stream_stop_after_callback_failure",
+                                        stream_id=stream.stream_id,
+                                    )
+                                return
 
                 self._ever_stream_opened = (
                     self._ever_stream_opened
@@ -326,18 +462,24 @@ class StreamManager:
 
             except asyncio.CancelledError:
                 return
-            except Exception:
+            except Exception as exc:
                 self._ever_stream_opened = (
                     self._ever_stream_opened
                     or getattr(stream, "request_opened", False)
                 )
                 self.mark_failed("response_error")
-                logger.warning(
-                    "stt_stream_error_recovering",
+                logger.exception(
+                    "stt_stream_error",
                     stream_id=stream.stream_id,
+                    error_type=type(exc).__name__,
+                    error=str(exc),
                 )
-                await stream.stop()
-                if self._running:
-                    await asyncio.sleep(0.5)
-                    continue
+                self._running = False
+                try:
+                    await stream.stop()
+                except Exception:
+                    logger.exception(
+                        "stt_stream_stop_after_response_error",
+                        stream_id=stream.stream_id,
+                    )
                 return

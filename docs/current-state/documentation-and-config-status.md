@@ -1,6 +1,6 @@
 # Documentation and Configuration Status
 
-**Reviewed:** 2026-07-15
+**Reviewed:** 2026-08-06
 
 **Purpose:** Prevent historical records, prototype configuration, generated memory, and target architecture from being mistaken for one another.
 
@@ -9,6 +9,15 @@
 The 2026-07-15 reconciliation reviewed every project-owned Markdown document at the repository root and under `docs/`, plus active deployment, environment, container, Firestore-rule, dependency-manifest, and extension-manifest surfaces that could contradict those documents. Vendored documentation under `.venv/` and `frontend/node_modules/` is third-party dependency material and is outside the product-documentation hierarchy.
 
 `AGENTS.md` was reviewed but not edited because it is generated memory context rather than a maintained product document. Its entries are observations, not approvals or current status. The canonical status in this file and `README.md` governs.
+
+## Week 4 source/test status
+
+The authenticated internal-tenancy implementation is source- and test-qualified
+on draft PR #8. The exact artifact, local/remote evidence, model-efficiency
+controls, and remaining hosted/device gates are recorded in
+[Week 4 authenticated-tenancy evidence](week-4-auth-evidence.md). This does not
+replace the separate authorization required for hosted access, deployment,
+physical capture, or real interview data.
 
 ## Classification rules
 
@@ -40,6 +49,9 @@ The 2026-07-15 reconciliation reviewed every project-owned Markdown document at 
 | `docs/current-state/phase-1a-baseline-preflight-evidence.md` | Current-state evidence | Immutable Phase 1A baseline plus repository, fixture, and live-containment preflight | Refresh before implementation if relevant state drifts |
 | `docs/current-state/phase-1a-guard-evidence.md` | Historical implementation evidence | Guard-first implementation, negative tests, artifact scan, and completed review gate | Superseded for current status by full conformance evidence |
 | `docs/current-state/phase-1a-conformance-evidence.md` | Current-state evidence | Incremental protocol-model, simulator, cross-language, and final 1A verification | Update after every completed conformance slice |
+| `docs/current-state/week-4-auth-evidence.md` | Current-state evidence | Exact Week 4 authenticated-tenancy source/test qualification and remaining release gates | Refresh after every Week 4 head or gate change |
+| `docs/launch/week-4-hosted-gate-checklist.md` | Non-authorizing gate runbook | Owner-bound hosted index/readback procedure; never a deployment or migration approval | Keep separate from source/test and live evidence; require fresh authorization |
+| `docs/current-state/2026-08-03-legacy-data-purge-evidence.md` | Historical current-state evidence | Owner-authorized purge report; not a current cloud readback | Preserve; refresh only with a newly authorized inventory |
 | `docs/current-state/repository-preservation-inventory.md` | Current-state record | Dirty/untracked/ignored file boundary | Refresh before any branch/worktree operation |
 | `DEPLOY-SETUP.md` | Historical | March 2026 prototype deployment setup log | Retain with superseded/incomplete warning |
 | `.claude/deploy-config.yaml` | Contained prototype configuration | Release targets are safety sentinels and authentication is disabled | Do not replace sentinels before isolated-environment review |

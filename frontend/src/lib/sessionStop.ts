@@ -13,7 +13,7 @@ interface StopResponse {
 
 export type StopFetch = (
   input: string,
-  init: { method: "POST" },
+  init: { method: "POST"; headers?: HeadersInit },
 ) => Promise<StopResponse>;
 
 const INCOMPLETE_WARNING =
@@ -22,8 +22,14 @@ const INCOMPLETE_WARNING =
 export async function requestSessionStop(
   fetcher: StopFetch,
   url: string,
+  stopCapability?: string | null,
 ): Promise<StopOutcome> {
-  const response = await fetcher(url, { method: "POST" });
+  const response = await fetcher(url, {
+    method: "POST",
+    ...(stopCapability
+      ? { headers: { "X-TARS-Stop-Capability": stopCapability } }
+      : {}),
+  });
   if (!response.ok) {
     throw new Error(`stop failed (${response.status})`);
   }

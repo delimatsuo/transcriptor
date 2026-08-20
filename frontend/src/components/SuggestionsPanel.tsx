@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { memo, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import type { SuggestionEntry } from "@/types/ws";
 import BriefingDisplay from "@/components/BriefingDisplay";
@@ -25,7 +25,7 @@ function formatRelativeTime(timestamp: number): string {
   return `${Math.floor(diff / 3600)}h ago`;
 }
 
-export default function SuggestionsPanel({
+function SuggestionsPanel({
   suggestionHistory,
   briefing = "",
   isInterview = false,
@@ -222,3 +222,8 @@ export default function SuggestionsPanel({
     </div>
   );
 }
+
+// Transcript deltas update the parent view frequently while suggestions arrive
+// much less often. Keep markdown parsing and the history list out of those
+// unrelated renders when the history reference has not changed.
+export default memo(SuggestionsPanel);

@@ -76,13 +76,29 @@ class FakeGCS:
 
 def test_cascade_deletes_everything_and_tombstones():
     seg = FakeDoc("seg1", {"text": "hi"})
+    note = FakeDoc("note1", {"kind": "strength", "source": "recruiter"})
+    report = FakeDoc("current", {"status": "approved", "version": 2})
+    report_source = FakeDoc("resume", {"type": "resume", "text": "CV"})
     cv = FakeDoc("d1", {"gcsPath": "sessions/s1/cv.pdf", "type": "resume"})
-    session = FakeDoc("s1", {"title": "t"}, {"transcript": [seg], "documents": [cv]})
+    session = FakeDoc(
+        "s1",
+        {"title": "t"},
+        {
+            "transcript": [seg],
+            "notes": [note],
+            "reports": [report],
+            "report_sources": [report_source],
+            "documents": [cv],
+        },
+    )
     db, gcs = FakeDB(session), FakeGCS()
 
     result = asyncio.run(delete_session_everywhere("s1", db, gcs))
 
-    assert seg.deleted and cv.deleted and session.deleted
+    assert all(
+        document.deleted
+        for document in (seg, note, report, report_source, cv, session)
+    )
     assert gcs.deleted == ["sessions/s1/cv.pdf"]
     assert db.tombstones and db.tombstones[0]["sessionId"] == "s1"
     assert result["gcs_blobs_deleted"] == 1

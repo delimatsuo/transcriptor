@@ -18,6 +18,15 @@ canais de captura estiverem ativos **e isolados entre si**.
    antes de ficar pronto; se a operação falhar ou exceder ~10 s, ele encerra
    com `ADC expirado — rode: gcloud auth application-default login`.
 
+   **Acesso Week 4:** configure no `.env` o `AUTH_ALLOWED_EMAILS` com a conta
+   Google autorizada (lista exata, sem curingas) e confira a configuração web
+   Firebase em `.env.local` (`NEXT_PUBLIC_FIREBASE_*`). Entre com essa conta e
+   confirme que o nome/e-mail aparecem no cabeçalho antes de criar qualquer
+   sessão. A autenticação Firebase atribui o entrevistador e o `org_id`
+   interno; ela não transforma este computador/Admin SDK em uma fronteira de
+   segurança hospedada. Não use dados reais até o gate de hospedagem e a
+   migração/quarentena de registros legados serem aprovados.
+
 1. No macOS, abra **Ajuste de Áudio e MIDI**. Em **Dispositivo de Saída**,
    selecione o **Dispositivo de Saída Múltipla** e confirme que ele contém
    **BlackHole 2ch** e os fones de ouvido reais. Não deixe a saída em fones
@@ -61,6 +70,39 @@ canais de captura estiverem ativos **e isolados entre si**.
    fones), o macOS pode mover a saída do sistema para fora do Dispositivo de
    Saída Múltipla — o passo 1 deve ser reconferido SEMPRE que o hardware de
    áudio mudar (log do backend acusa `audio_device_silent label=Candidato`).
+
+   **Gate físico reproduzível no macOS:** para evidência de release, não use
+   instruções enviadas por chat para sincronizar a fala. Execute uma fase por
+   processo com o harness abaixo, sempre a partir de um worktree limpo no SHA
+   exato. O próprio processo anuncia quando falar, rejeita picos isolados,
+   fecha e drena totalmente cada stream do STT e imprime somente métricas sem
+   texto transcrito ou áudio bruto:
+
+   ```bash
+   # Saída normal do Mac = AirPods; fale após o aviso audível.
+   .venv/bin/python3 -m backend.scripts.physical_audio_gate \
+     --phase microphone \
+     --expected-sha "$(git rev-parse HEAD)" \
+     --send-to-provider \
+     --confirm-provider-audio
+
+   # Saída do Mac = Transcriptor Output; não fale nesta fase.
+   .venv/bin/python3 -m backend.scripts.physical_audio_gate \
+     --phase system-audio \
+     --expected-sha "$(git rev-parse HEAD)" \
+     --send-to-provider \
+     --confirm-provider-audio
+   ```
+
+   A flag de confirmação significa que o áudio desta janela será enviado ao
+   Google Cloud Speech-to-Text no projeto configurado; nada é salvo em disco e
+   o conteúdo reconhecido não é impresso. A fase ativa exige sinal sustentado,
+   callbacks sem erro, pelo menos 20 caracteres finais e drenagem completa; a
+   fonte isolada exige zero caracteres finais. Rode cada fase duas vezes.
+   Qualquer troca de fonte,
+   índice, taxa de amostragem, código ou Git index invalida a evidência e exige
+   novo vínculo ao SHA.
+
 6. No início da entrevista, apresente o aviso de transcrição, obtenha a
    confirmação verbal e registre a caixa de ciência antes de iniciar a sessão.
    Se a pessoa não concordar, siga sem transcrição.

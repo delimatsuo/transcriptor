@@ -8,6 +8,9 @@ export default defineConfig({
   },
   webServer: {
     command: "npm run dev -- -p 3100",
+    env: {
+      NEXT_PUBLIC_AUTH_BYPASS: "1",
+    },
     url: "http://localhost:3100",
     reuseExistingServer: true,
     timeout: 120_000,
