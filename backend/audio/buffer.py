@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import AsyncIterator
 
@@ -31,7 +31,7 @@ class AudioBuffer:
         """Open a local FLAC file for crash-insurance recording."""
         backup_dir = Path(self.settings.audio_backup_dir)
         backup_dir.mkdir(parents=True, exist_ok=True)
-        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         self._backup_path = backup_dir / f"session_{timestamp}.flac"
         self._backup_file = sf.SoundFile(
             str(self._backup_path),

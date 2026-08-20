@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 from uuid import uuid4
@@ -77,9 +77,9 @@ class Session(BaseModel):
     id: str = Field(default_factory=lambda: uuid4().hex)
     mode: SessionMode = SessionMode.MEETING
     title: str = ""
-    started_at: datetime = Field(default_factory=datetime.utcnow)
+    started_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     ended_at: datetime | None = None
-    last_active: datetime = Field(default_factory=datetime.utcnow)
+    last_active: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     status: SessionStatus = SessionStatus.ACTIVE
     notice_given: bool = False  # candidate informed of transcription (LGPD notice)
     speaker_map: dict[str, str] = Field(default_factory=dict)
@@ -188,7 +188,7 @@ class WSMessage(BaseModel):
     type: WSMessageType
     session_id: str
     sequence_number: int = 0
-    timestamp: str = Field(default_factory=lambda: datetime.utcnow().isoformat() + "Z")
+    timestamp: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     payload: dict[str, Any] = Field(default_factory=dict)
 
     @classmethod

@@ -199,7 +199,7 @@ class FirestoreStorage:
         summary_ref = session_ref.collection("summaries").document()
         await summary_ref.set({
             "text": text,
-            "generatedAt": datetime.utcnow(),
+            "generatedAt": datetime.now(timezone.utc),
             "coveringFrom": covering_from,
             "coveringTo": covering_to,
             "isFinal": is_final,
@@ -242,7 +242,7 @@ class FirestoreStorage:
             "fileName": file_name,
             "extractedText": extracted_text,
             "gcsPath": gcs_path,
-            "uploadedAt": datetime.utcnow(),
+            "uploadedAt": datetime.now(timezone.utc),
             "ownerId": owner_id,
             "orgId": org_id,
         })

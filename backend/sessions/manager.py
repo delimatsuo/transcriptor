@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import structlog
 
@@ -44,7 +44,7 @@ class SessionManager:
         """Create a new session."""
         session = Session(
             mode=mode,
-            title=title or f"Session {datetime.utcnow().strftime('%Y-%m-%d %H:%M')}",
+            title=title or f"Session {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')}",
             owner_id=owner_id,
             org_id=org_id,
         )
@@ -206,7 +206,7 @@ class SessionManager:
                 await asyncio.sleep(30)
                 session = self._sessions.get(session_id)
                 if session and session.status == SessionStatus.ACTIVE:
-                    session.last_active = datetime.utcnow()
+                    session.last_active = datetime.now(timezone.utc)
                     logger.debug("session_heartbeat", session_id=session_id)
                 else:
                     break
@@ -232,7 +232,7 @@ class SessionManager:
             if transcription_complete
             else SessionStatus.INCOMPLETE
         )
-        session.ended_at = datetime.utcnow()
+        session.ended_at = datetime.now(timezone.utc)
 
         # Cancel heartbeat
         task = self._heartbeat_tasks.pop(session_id, None)
@@ -258,7 +258,7 @@ class SessionManager:
         Called on startup to recover from crashes.
         """
         orphaned = []
-        cutoff = datetime.utcnow() - timedelta(minutes=timeout_minutes)
+        cutoff = datetime.now(timezone.utc) - timedelta(minutes=timeout_minutes)
 
         for session in self._sessions.values():
             if session.status == SessionStatus.ACTIVE and session.last_active < cutoff:
