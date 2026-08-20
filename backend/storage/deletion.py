@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 import structlog
 
@@ -18,11 +18,15 @@ async def delete_session_everywhere(
     owner_id: str | None = None,
     org_id: str | None = None,
 ) -> dict:
-    """Delete a session's Firestore data, linked GCS blobs, and write a tombstone.
+    """Delete all artifacts for a session from Firestore and GCS.
 
-    Subcollections are discovered at deletion time, including nested
-    subcollections, so new persisted session data cannot bypass this path.
+    Writes a tombstone audit record to `deletions/{auto_id}`.
+    Does NOT remove data from Vertex AI / Gemini context caches (these expire via TTL).
     """
+    subs_deleted = 0
+    docs_deleted = 0
+    blobs_deleted = 0
+
     session_ref = db.collection("sessions").document(session_id)
     subs_deleted, docs_deleted, blobs_deleted = 0, 0, 0
 
@@ -49,7 +53,7 @@ async def delete_session_everywhere(
 
     await db.collection("deletions").document().set({
         "sessionId": session_id,
-        "deletedAt": datetime.utcnow(),
+        "deletedAt": datetime.now(timezone.utc),
         "reason": reason,
         "subcollectionsDeleted": subs_deleted,
         "docsDeleted": docs_deleted,
