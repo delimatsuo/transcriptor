@@ -6,11 +6,13 @@ __pycache__/
 venv/
 dist/
 build/
+.build/
 
 # Node
 node_modules/
 .next/
 out/
+*.tsbuildinfo
 
 # Environment
 .env
@@ -27,6 +29,11 @@ recordings/
 !package-lock.json
 !tsconfig.json
 !firestore.rules
+!firestore.indexes.json
+!companion/protocol/schema/protocol-v1.schema.json
+!companion/protocol/fixtures/phase1a-v1.manifest.json
+!companion/protocol/vectors/protocol-v1-vectors.json
+!extension/manifest.json
 
 # IDE
 .vscode/
@@ -36,3 +43,6 @@ recordings/
 # OS
 .DS_Store
 Thumbs.db
+
+# Superpowers brainstorming scratch (mockups, session state)
+.superpowers/

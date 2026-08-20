@@ -70,3 +70,15 @@ class GCSStorage:
         gcs_path = f"gs://{self._bucket_name}/{destination_path}"
         logger.info("gcs_bytes_uploaded", gcs_path=gcs_path, size=len(data))
         return gcs_path
+
+    def delete_blob(self, gcs_path: str) -> bool:
+        """Delete a blob by stored path; tolerates a ``gs://bucket/`` prefix."""
+        try:
+            name = gcs_path
+            if name.startswith("gs://"):
+                name = name.split("/", 3)[3]
+            self._get_bucket().blob(name).delete()
+            return True
+        except Exception:
+            logger.warning("gcs_delete_failed", path=gcs_path)
+            return False

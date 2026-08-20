@@ -1,14 +1,18 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { mergeTranscriptSegment } from "@/lib/transcript";
+import { apiFetch, authBypassEnabled } from "@/lib/auth";
 import type {
   ConnectionHealth,
   Suggestion,
+  SuggestionEntry,
   TranscriptSegment,
   WSMessage,
 } from "@/types/ws";
 
 const WS_BASE_URL = process.env.NEXT_PUBLIC_WS_URL || "ws://localhost:8000/ws";
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
 // Exponential backoff: 1s, 2s, 4s, 8s, max 30s
 const INITIAL_RETRY_DELAY = 1000;
@@ -19,17 +23,25 @@ interface UseWebSocketReturn {
   summary: string;
   isSummaryFinal: boolean;
   suggestions: string[];
+  suggestionHistory: SuggestionEntry[];
+  latestSuggestions: string[];
   connectionHealth: ConnectionHealth;
   lastError: string | null;
   connect: (sessionId: string) => void;
   disconnect: () => void;
+  hydrateReview: (
+    transcript: TranscriptSegment[],
+    summary: string | null,
+  ) => void;
 }
 
 export function useWebSocket(): UseWebSocketReturn {
   const [transcript, setTranscript] = useState<TranscriptSegment[]>([]);
   const [summary, setSummary] = useState("");
   const [isSummaryFinal, setIsSummaryFinal] = useState(false);
-  const [suggestions, setSuggestions] = useState<string[]>([]);
+  const [suggestionHistory, setSuggestionHistory] = useState<SuggestionEntry[]>(
+    [],
+  );
   const [connectionHealth, setConnectionHealth] =
     useState<ConnectionHealth>("disconnected");
   const [lastError, setLastError] = useState<string | null>(null);
@@ -48,22 +60,7 @@ export function useWebSocket(): UseWebSocketReturn {
     switch (msg.type) {
       case "transcript_delta": {
         const segment = msg.payload.segment as unknown as TranscriptSegment;
-        setTranscript((prev) => {
-          // Replace interim results for the same speaker, append finals
-          if (segment.is_final) {
-            // Remove any non-final segments and add this final one
-            const filtered = prev.filter((s) => s.is_final);
-            return [...filtered, segment];
-          }
-          // Replace last interim segment
-          const lastIdx = prev.findLastIndex((s) => !s.is_final);
-          if (lastIdx >= 0) {
-            const updated = [...prev];
-            updated[lastIdx] = segment;
-            return updated;
-          }
-          return [...prev, segment];
-        });
+        setTranscript((prev) => mergeTranscriptSegment(prev, segment));
         break;
       }
       case "summary_update": {
@@ -77,7 +74,13 @@ export function useWebSocket(): UseWebSocketReturn {
       }
       case "suggestion": {
         const payload = msg.payload as unknown as Suggestion;
-        setSuggestions(payload.questions);
+        const entry: SuggestionEntry = {
+          questions: payload.questions,
+          markdown: payload.markdown,
+          timestamp: Date.now(),
+          sequenceNumber: msg.sequence_number,
+        };
+        setSuggestionHistory((prev) => [...prev, entry]);
         break;
       }
       case "session_state": {
@@ -88,8 +91,16 @@ export function useWebSocket(): UseWebSocketReturn {
         };
         setTranscript(state.transcript);
         if (state.latest_summary) setSummary(state.latest_summary);
-        if (state.pending_suggestions)
-          setSuggestions(state.pending_suggestions);
+        if (state.pending_suggestions) {
+          setSuggestionHistory((prev) => [
+            ...prev,
+            {
+              questions: state.pending_suggestions,
+              timestamp: Date.now(),
+              sequenceNumber: msg.sequence_number,
+            },
+          ]);
+        }
         break;
       }
       case "connection_status": {
@@ -121,6 +132,22 @@ export function useWebSocket(): UseWebSocketReturn {
         setLastError(payload.message);
         break;
       }
+      case "speaker_relabel_batch": {
+        const { updates } = msg.payload as unknown as {
+          updates: Array<{ segment_id: string; new_speaker: string }>;
+        };
+        setTranscript((prev) => {
+          const updateMap = new Map(
+            updates.map((u) => [u.segment_id, u.new_speaker]),
+          );
+          return prev.map((seg) =>
+            updateMap.has(seg.id)
+              ? { ...seg, speaker_override: updateMap.get(seg.id)! }
+              : seg,
+          );
+        });
+        break;
+      }
     }
   }, []);
 
@@ -133,47 +160,71 @@ export function useWebSocket(): UseWebSocketReturn {
       setTranscript([]);
       setSummary("");
       setIsSummaryFinal(false);
-      setSuggestions([]);
+      setSuggestionHistory([]);
       setLastError(null);
       lastSeqRef.current = 0;
       retryDelayRef.current = INITIAL_RETRY_DELAY;
 
-      const doConnect = () => {
-        const url = `${WS_BASE_URL}/${sessionId}?last_seq=${lastSeqRef.current}`;
-        const ws = new WebSocket(url);
-
-        ws.onopen = () => {
-          setConnectionHealth("healthy");
-          retryDelayRef.current = INITIAL_RETRY_DELAY;
-        };
-
-        ws.onmessage = handleMessage;
-
-        ws.onclose = () => {
-          setConnectionHealth("disconnected");
-          wsRef.current = null;
-
-          if (!intentionalCloseRef.current) {
-            // Auto-reconnect with exponential backoff
-            retryTimeoutRef.current = setTimeout(() => {
-              doConnect();
-            }, retryDelayRef.current);
-
-            retryDelayRef.current = Math.min(
-              retryDelayRef.current * 2,
-              MAX_RETRY_DELAY,
-            );
+      const doConnect = async () => {
+        try {
+          const ticketPayload = authBypassEnabled
+            ? { ticket: "playwright-ticket" }
+            : await (async () => {
+                const ticketResponse = await apiFetch(
+                  `${API_BASE_URL}/api/sessions/${encodeURIComponent(sessionId)}/ws-ticket`,
+                  { method: "POST" },
+                );
+                if (!ticketResponse.ok) {
+                  throw new Error("A sessão autenticada do áudio expirou.");
+                }
+                return (await ticketResponse.json()) as { ticket?: string };
+              })();
+          if (!ticketPayload.ticket || intentionalCloseRef.current || sessionIdRef.current !== sessionId) {
+            return;
           }
-        };
+          const url = `${WS_BASE_URL}/${sessionId}?last_seq=${lastSeqRef.current}`;
+          const ws = new WebSocket(url, ["tars-ticket", ticketPayload.ticket]);
 
-        ws.onerror = () => {
+          ws.onopen = () => {
+            setConnectionHealth("healthy");
+            retryDelayRef.current = INITIAL_RETRY_DELAY;
+          };
+
+          ws.onmessage = handleMessage;
+
+          ws.onclose = () => {
+            setConnectionHealth("disconnected");
+            wsRef.current = null;
+
+            if (!intentionalCloseRef.current) {
+              retryTimeoutRef.current = setTimeout(() => {
+                void doConnect();
+              }, retryDelayRef.current);
+
+              retryDelayRef.current = Math.min(
+                retryDelayRef.current * 2,
+                MAX_RETRY_DELAY,
+              );
+            }
+          };
+
+          ws.onerror = () => {
+            setConnectionHealth("degraded");
+          };
+
+          wsRef.current = ws;
+        } catch (error) {
+          if (intentionalCloseRef.current) return;
           setConnectionHealth("degraded");
-        };
-
-        wsRef.current = ws;
+          setLastError(error instanceof Error ? error.message : "Falha na conexão autenticada.");
+          retryTimeoutRef.current = setTimeout(() => {
+            void doConnect();
+          }, retryDelayRef.current);
+          retryDelayRef.current = Math.min(retryDelayRef.current * 2, MAX_RETRY_DELAY);
+        }
       };
 
-      doConnect();
+      void doConnect();
     },
     [handleMessage],
   );
@@ -191,6 +242,21 @@ export function useWebSocket(): UseWebSocketReturn {
     setConnectionHealth("disconnected");
   }, []);
 
+  const hydrateReview = useCallback(
+    (
+      persistedTranscript: TranscriptSegment[],
+      persistedSummary: string | null,
+    ) => {
+      setTranscript(persistedTranscript);
+      setSummary(persistedSummary ?? "");
+      setIsSummaryFinal(Boolean(persistedSummary));
+      setSuggestionHistory([]);
+      setLastError(null);
+      setConnectionHealth("disconnected");
+    },
+    [],
+  );
+
   // Cleanup on unmount
   useEffect(() => {
     return () => {
@@ -200,14 +266,23 @@ export function useWebSocket(): UseWebSocketReturn {
     };
   }, []);
 
+  // Derive backward-compatible values
+  const latestSuggestions =
+    suggestionHistory.length > 0
+      ? suggestionHistory[suggestionHistory.length - 1].questions
+      : [];
+
   return {
     transcript,
     summary,
     isSummaryFinal,
-    suggestions,
+    suggestions: latestSuggestions,
+    suggestionHistory,
+    latestSuggestions,
     connectionHealth,
     lastError,
     connect: connectWs,
     disconnect,
+    hydrateReview,
   };
 }

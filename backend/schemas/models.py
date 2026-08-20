@@ -30,6 +30,7 @@ class WSMessageType(str, Enum):
     SESSION_STATE = "session_state"
     CONNECTION_STATUS = "connection_status"
     ERROR = "error"
+    SPEAKER_RELABEL_BATCH = "speaker_relabel_batch"
 
 
 class ConnectionHealth(str, Enum):
@@ -51,10 +52,16 @@ class TranscriptSegment(BaseModel):
     id: str = Field(default_factory=lambda: uuid4().hex[:12])
     text: str
     speaker: str = "Speaker 1"
+    speaker_override: str | None = None
     start_time: float = 0.0  # seconds from session start
     end_time: float = 0.0
     confidence: float = 0.0
     sequence_number: int = 0
+    # STT sequence counters are source-local.  SessionManager normalizes
+    # sequence_number for durable ordering while retaining this provenance
+    # field for legacy/source-scoped reconstruction.  It is intentionally not
+    # exposed in API/WebSocket model dumps.
+    source_sequence_number: int | None = Field(default=None, exclude=True)
     is_final: bool = False
 
 
@@ -74,9 +81,19 @@ class Session(BaseModel):
     ended_at: datetime | None = None
     last_active: datetime = Field(default_factory=datetime.utcnow)
     status: SessionStatus = SessionStatus.ACTIVE
+    notice_given: bool = False  # candidate informed of transcription (LGPD notice)
     speaker_map: dict[str, str] = Field(default_factory=dict)
     summary: str | None = None
     action_items: list[ActionItem] = Field(default_factory=list)
+    # A child-write failure is durable session metadata, not a silent absence
+    # from the transcript.  "pending" remains until replay accepts every
+    # final segment and the terminal parent write records completion.
+    transcript_durability: str = "complete"
+    transcript_failure_count: int = 0
+    # Optional for backwards-compatible deserialization; HTTP-created records
+    # always receive server-derived values from the authenticated principal.
+    owner_id: str | None = None
+    org_id: str | None = None
 
 
 # --- WebSocket Messages ---
@@ -93,7 +110,8 @@ class SummaryUpdate(BaseModel):
 
 
 class Suggestion(BaseModel):
-    questions: list[str]
+    questions: list[str] = Field(default_factory=list)  # backward compat
+    markdown: str = ""  # full structured response (preferred)
     context: str = ""  # brief explanation of why these questions
 
 
@@ -115,6 +133,54 @@ class ErrorPayload(BaseModel):
     severity: ErrorSeverity
     message: str
     code: str = ""
+
+
+class SetContextRequest(BaseModel):
+    doc_type: str
+    text: str
+
+
+# --- Active Speaker (Chrome Extension) ---
+
+class ActiveSpeakerEvent(BaseModel):
+    participant_name: str
+    timestamp: float  # seconds from session start (clock-sync adjusted)
+
+
+class ActiveSpeakerBatch(BaseModel):
+    events: list[ActiveSpeakerEvent]
+
+
+class SpeakerRelabelUpdate(BaseModel):
+    segment_id: str
+    new_speaker: str
+
+
+class SpeakerRelabelBatch(BaseModel):
+    updates: list[SpeakerRelabelUpdate]
+
+
+class ClockSyncRequest(BaseModel):
+    client_send_time: float  # epoch seconds from Date.now()/1000
+
+
+class ClockSyncResponse(BaseModel):
+    client_send_time: float  # echoed back
+    server_time: float  # time.time() at receipt
+    session_start_wall: float  # wall-clock time when session started
+
+
+class ParticipantInfo(BaseModel):
+    name: str
+    isSelf: bool = False
+
+
+class ParticipantsList(BaseModel):
+    participants: list[ParticipantInfo]
+
+
+class HeartbeatRequest(BaseModel):
+    can_detect_speaker: bool
 
 
 class WSMessage(BaseModel):
@@ -177,4 +243,15 @@ class WSMessage(BaseModel):
             session_id=session_id,
             sequence_number=seq,
             payload=error.model_dump(),
+        )
+
+    @classmethod
+    def speaker_relabel_batch_msg(
+        cls, session_id: str, seq: int, batch: "SpeakerRelabelBatch"
+    ) -> "WSMessage":
+        return cls(
+            type=WSMessageType.SPEAKER_RELABEL_BATCH,
+            session_id=session_id,
+            sequence_number=seq,
+            payload=batch.model_dump(),
         )

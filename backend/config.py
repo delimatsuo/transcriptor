@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings
 
 
@@ -14,6 +14,100 @@ class Settings(BaseSettings):
     # GCP
     google_cloud_project: str = Field(..., description="GCP project ID")
 
+    # Authentication / internal tenancy
+    firebase_project_id: str | None = Field(
+        default=None,
+        description="Firebase project ID; defaults to google_cloud_project",
+    )
+    auth_org_id: str = Field(
+        default="ella-internal",
+        description="Server-derived internal organization identifier",
+    )
+    auth_allowed_emails: str = Field(
+        default="",
+        description="Comma-separated exact email allowlist for internal access",
+    )
+    auth_ws_ticket_ttl_seconds: int = Field(default=60, gt=0, le=300)
+    auth_stop_capability_ttl_seconds: int = Field(default=14_400, gt=0, le=86_400)
+    auth_extension_capability_ttl_seconds: int = Field(default=900, gt=0, le=3600)
+    extension_enabled: bool = Field(
+        default=False,
+        description="Explicit opt-in for the Chrome extension bridge",
+    )
+
+    # Model/provider guardrails.  Keep one bounded queue across all Gemini
+    # features so concurrent sessions cannot fan out unbounded provider work.
+    llm_max_concurrent_requests: int = Field(
+        default=2,
+        gt=0,
+        le=8,
+        description="Maximum concurrent Gemini requests in this backend process",
+    )
+    llm_location: str = Field(
+        default="us-central1",
+        min_length=1,
+        max_length=64,
+        description="Explicit Vertex AI region for Gemini requests",
+    )
+    llm_request_timeout_seconds: float = Field(
+        default=60.0,
+        gt=0,
+        le=300,
+        description="Deadline for every Gemini request, including streaming",
+    )
+    llm_max_input_chars: int = Field(
+        default=120_000,
+        gt=0,
+        le=500_000,
+        description=(
+            "Hard ceiling for any Gemini user message before provider invocation"
+        ),
+    )
+    llm_max_output_tokens: int = Field(
+        default=8_192,
+        gt=0,
+        le=32_768,
+        description=(
+            "Hard ceiling for any Gemini output budget before provider invocation"
+        ),
+    )
+    llm_rolling_context_max_chars: int = Field(
+        default=16_000,
+        gt=0,
+        le=50_000,
+        description="Maximum transcript characters sent in each rolling summary update",
+    )
+    llm_rolling_failure_backoff_seconds: float = Field(
+        default=30.0,
+        gt=0,
+        le=300,
+        description="Initial cooldown after a rolling summary provider failure",
+    )
+    llm_rolling_failure_backoff_max_seconds: float = Field(
+        default=300.0,
+        gt=0,
+        le=900,
+        description="Maximum exponential cooldown after rolling summary failures",
+    )
+    llm_final_report_max_input_chars: int = Field(
+        default=120_000,
+        gt=0,
+        le=120_000,
+        description=(
+            "Maximum durable context/transcript characters sent to final report generation"
+        ),
+    )
+
+    @field_validator("llm_location")
+    @classmethod
+    def validate_llm_location(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("LLM_LOCATION must not be blank")
+        if normalized.lower() == "global":
+            raise ValueError("LLM_LOCATION=global is prohibited by the privacy policy")
+        return normalized
+
     # Audio
     blackhole_device_name: str = Field(
         default="BlackHole 2ch",
@@ -23,6 +117,14 @@ class Settings(BaseSettings):
         default="",
         description="Name substring for the microphone device. Empty = system default mic.",
     )
+    microphone_input_channel: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Zero-based input channel to capture from the microphone device; "
+            "Vocaster One Host Microphone is channel 4."
+        ),
+    )
     sample_rate: int = Field(default=16000, description="Audio sample rate in Hz")
     channels: int = Field(default=1, description="Audio channels (mono)")
     audio_chunk_duration_ms: int = Field(
@@ -30,17 +132,6 @@ class Settings(BaseSettings):
     )
     audio_buffer_max_seconds: int = Field(
         default=30, description="Max seconds of audio to buffer before dropping"
-    )
-
-    # VAD
-    vad_threshold: float = Field(
-        default=0.5, description="Silero VAD speech probability threshold"
-    )
-    vad_min_speech_duration_ms: int = Field(
-        default=250, description="Minimum speech duration to trigger forwarding"
-    )
-    vad_silence_timeout_ms: int = Field(
-        default=1000, description="Silence duration before closing a speech segment"
     )
 
     # STT
@@ -54,10 +145,10 @@ class Settings(BaseSettings):
         default="us", description="Google STT v2 region (chirp_3 requires 'us' or 'eu', chirp_2 uses 'global')"
     )
     stt_speaker_label_self: str = Field(
-        default="Você", description="Label for the user's own voice"
+        default="Entrevistador", description="Label for the user's own voice"
     )
     stt_speaker_label_other: str = Field(
-        default="Outro", description="Label for the other participant's voice"
+        default="Candidato", description="Label for the other participant's voice"
     )
     stt_stream_max_duration_seconds: int = Field(
         default=270,  # 4:30
@@ -72,6 +163,13 @@ class Settings(BaseSettings):
     stt_max_speaker_count: int = Field(
         default=6, description="Max expected speakers for diarization"
     )
+    stt_graceful_drain_timeout_seconds: float = Field(
+        default=10.0,
+        gt=0,
+        description=(
+            "Maximum time to await final STT responses after closing audio input"
+        ),
+    )
 
     # Server
     fastapi_host: str = Field(default="127.0.0.1")
@@ -84,6 +182,13 @@ class Settings(BaseSettings):
     # Audio backup
     audio_backup_dir: str = Field(
         default="recordings", description="Directory for local audio backup files"
+    )
+    audio_backup_enabled: bool = Field(
+        default=False,
+        description=(
+            "Opt-in local FLAC crash-insurance recording. MUST stay False by "
+            "default: spec 2026-08-03 §6 — no persistent raw audio."
+        ),
     )
 
     @property

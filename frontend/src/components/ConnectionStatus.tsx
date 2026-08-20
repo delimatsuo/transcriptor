@@ -6,9 +6,9 @@ const STATUS_CONFIG: Record<
   ConnectionHealth,
   { color: string; bg: string; label: string }
 > = {
-  healthy: { color: "#22c55e", bg: "#f0fdf4", label: "Connected" },
-  degraded: { color: "#eab308", bg: "#fefce8", label: "Degraded" },
-  disconnected: { color: "#ef4444", bg: "#fef2f2", label: "Disconnected" },
+  healthy: { color: "#34c759", bg: "rgba(52, 199, 89, 0.1)", label: "Conectado" },
+  degraded: { color: "#ff9500", bg: "rgba(255, 149, 0, 0.1)", label: "Instável" },
+  disconnected: { color: "#ff3b30", bg: "rgba(255, 59, 48, 0.1)", label: "Desconectado" },
 };
 
 interface Props {
@@ -25,16 +25,17 @@ export default function ConnectionStatus({ health }: Props) {
         alignItems: "center",
         gap: 6,
         padding: "4px 10px",
-        borderRadius: 9999,
+        borderRadius: 100,
         backgroundColor: config.bg,
-        fontSize: 13,
+        fontSize: 12,
         fontWeight: 500,
+        color: config.color,
       }}
     >
       <span
         style={{
-          width: 8,
-          height: 8,
+          width: 6,
+          height: 6,
           borderRadius: "50%",
           backgroundColor: config.color,
           display: "inline-block",

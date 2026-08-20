@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>T.A.R.S. Speaker Detection</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h1>T.A.R.S.</h1>
+      <p class="subtitle">Speaker Detection</p>
+    </div>
+
+    <div id="status-section" class="section">
+      <div class="status-row">
+        <span class="status-label">Status</span>
+        <span id="status-badge" class="badge badge-disconnected">Disconnected</span>
+      </div>
+      <div id="sync-info" class="status-row" style="display: none;">
+        <span class="status-label">Clock sync</span>
+        <span id="sync-quality" class="status-value"></span>
+      </div>
+      <div id="events-info" class="status-row" style="display: none;">
+        <span class="status-label">Pending events</span>
+        <span id="event-count" class="status-value">0</span>
+      </div>
+    </div>
+
+    <div id="link-section" class="section">
+      <div class="field">
+        <label for="backend-url">Backend URL</label>
+        <input type="text" id="backend-url" value="http://localhost:8000" placeholder="http://localhost:8000">
+      </div>
+
+      <div id="sessions-list" class="sessions-list">
+        <p class="hint">Click "Refresh" to load active sessions</p>
+      </div>
+
+      <div class="button-row">
+        <button id="refresh-btn" class="btn btn-secondary">Refresh</button>
+        <button id="unlink-btn" class="btn btn-danger" style="display: none;">Unlink</button>
+      </div>
+    </div>
+
+    <div id="error-section" class="section" style="display: none;">
+      <p id="error-message" class="error-text"></p>
+    </div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

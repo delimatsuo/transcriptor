@@ -8,17 +8,39 @@ export type WSMessageType =
   | "suggestion"
   | "session_state"
   | "connection_status"
-  | "error";
+  | "error"
+  | "speaker_relabel_batch";
 
 export type ConnectionHealth = "healthy" | "degraded" | "disconnected";
 export type ErrorSeverity = "warning" | "error" | "fatal";
 export type SessionMode = "meeting" | "interview";
 export type SessionStatus = "active" | "completed" | "incomplete";
+export type ReviewStatus =
+  | "available"
+  | "ready"
+  | "summary_unavailable"
+  | "transcript_unavailable"
+  | "incomplete"
+  | "active"
+  | "corrupt";
+export type RegenerationStatus =
+  | "not_needed"
+  | "blocked_source_context"
+  | "blocked_session_state";
+export type NoteKind =
+  | "note"
+  | "bookmark"
+  | "concern"
+  | "strength"
+  | "follow_up";
+export type ReportStatus = "draft" | "approved";
+export type EvidenceSource = "transcript" | "recruiter_note" | "context";
 
 export interface TranscriptSegment {
   id: string;
   text: string;
   speaker: string;
+  speaker_override?: string;
   start_time: number;
   end_time: number;
   confidence: number;
@@ -32,6 +54,13 @@ export interface ActionItem {
   completed: boolean;
 }
 
+export interface SuggestionEntry {
+  questions: string[];
+  markdown?: string;
+  timestamp: number;
+  sequenceNumber: number;
+}
+
 export interface Session {
   id: string;
   mode: SessionMode;
@@ -40,9 +69,81 @@ export interface Session {
   ended_at: string | null;
   last_active: string;
   status: SessionStatus;
+  notice_given: boolean;
   speaker_map: Record<string, string>;
   summary: string | null;
   action_items: ActionItem[];
+  transcript_durability?: "complete" | "pending";
+  transcript_failure_count?: number;
+}
+
+export interface RecentInterview {
+  id: string;
+  title: string;
+  started_at: string | null;
+  ended_at: string | null;
+  session_status: SessionStatus | null;
+  review_status: ReviewStatus;
+}
+
+export interface SessionReview {
+  session: Session;
+  transcript: TranscriptSegment[];
+  summary: string | null;
+  review_status: ReviewStatus;
+  regeneration_status: RegenerationStatus;
+}
+
+export interface RecruiterNote {
+  id: string;
+  session_id: string;
+  kind: NoteKind;
+  text: string;
+  transcript_segment_id: string;
+  transcript_offset_ms: number;
+  source: "recruiter";
+  created_at: string;
+}
+
+export interface EvidenceReference {
+  source: EvidenceSource;
+  evidence_id: string;
+}
+
+export interface InternalReportSection {
+  id: string;
+  title: string;
+  body: string;
+  rating: number | null;
+  evidence: EvidenceReference[];
+}
+
+export interface ClientNarrative {
+  trajectory: string;
+  assessment: string;
+  trajectory_evidence: EvidenceReference[];
+  assessment_evidence: EvidenceReference[];
+}
+
+export interface InterviewReport {
+  session_id: string;
+  version: number;
+  status: ReportStatus;
+  ai_draft_label: "Rascunho gerado por IA";
+  internal_sections: InternalReportSection[];
+  client_narrative: ClientNarrative;
+  created_at: string;
+  updated_at: string;
+  approved_version: number | null;
+  approved_at: string | null;
+}
+
+export interface ApprovedClientReport {
+  session_id: string;
+  version: number;
+  trajectory: string;
+  assessment: string;
+  approved_at: string;
 }
 
 export interface TranscriptDelta {
@@ -58,6 +159,7 @@ export interface SummaryUpdate {
 
 export interface Suggestion {
   questions: string[];
+  markdown?: string;
   context: string;
 }
 

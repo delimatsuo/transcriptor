@@ -1,0 +1,156 @@
+import { expect, test } from "@playwright/test";
+
+import { mockSession } from "./fixtures";
+
+test("a suggestion from the socket becomes the hero question", async ({ page }) => {
+  const server = await mockSession(page, "interview");
+
+  await page.goto("/");
+  await page.getByRole("combobox").selectOption("interview");
+  await page.getByRole("checkbox", { name: /candidato foi avisado/i }).check();
+  await page.getByRole("button", { name: /iniciar sessão/i }).click();
+
+  await expect(page.getByText(/ouvindo a conversa/i)).toBeVisible();
+
+  await server.suggestion(["Como você estruturou essa equipe?"]);
+
+  await expect(page.getByText("Como você estruturou essa equipe?")).toBeVisible();
+  await expect(page.getByText(/próxima pergunta/i)).toBeVisible();
+});
+
+test("a newer batch marks the hero stale and fills the queue", async ({ page }) => {
+  const server = await mockSession(page, "interview");
+
+  await page.goto("/");
+  await page.getByRole("combobox").selectOption("interview");
+  await page.getByRole("checkbox", { name: /candidato foi avisado/i }).check();
+  await page.getByRole("button", { name: /iniciar sessão/i }).click();
+
+  await server.suggestion(["Primeira pergunta"]);
+  await expect(page.getByText("Primeira pergunta")).toBeVisible();
+
+  await server.suggestion(["Segunda pergunta"]);
+
+  await expect(page.getByText(/conversa avançou/i)).toBeVisible();
+  await expect(page.getByText(/1 na fila/i)).toBeVisible();
+  // The first question must NOT be replaced — it holds until dismissed.
+  await expect(page.getByText("Primeira pergunta")).toBeVisible();
+});
+
+test("dismissing advances to the queued question", async ({ page }) => {
+  const server = await mockSession(page, "interview");
+
+  await page.goto("/");
+  await page.getByRole("combobox").selectOption("interview");
+  await page.getByRole("checkbox", { name: /candidato foi avisado/i }).check();
+  await page.getByRole("button", { name: /iniciar sessão/i }).click();
+
+  await server.suggestion(["Primeira pergunta"]);
+  await server.suggestion(["Segunda pergunta"]);
+  await expect(page.getByText("Primeira pergunta")).toBeVisible();
+
+  await page.getByRole("button", { name: /^próxima$/i }).click();
+
+  await expect(page.getByText("Segunda pergunta")).toBeVisible();
+  await expect(page.getByText("Primeira pergunta")).toHaveCount(0);
+});
+
+test("the transcript sheet opens over the hero", async ({ page }) => {
+  const server = await mockSession(page, "interview");
+
+  await page.goto("/");
+  await page.getByRole("combobox").selectOption("interview");
+  await page.getByRole("checkbox", { name: /candidato foi avisado/i }).check();
+  await page.getByRole("button", { name: /iniciar sessão/i }).click();
+
+  await server.transcript("eu liderei essa transformação", "Candidato", true);
+
+  // Collapsed by default — transcript text is not on screen.
+  await expect(page.getByText("eu liderei essa transformação")).toHaveCount(0);
+
+  await page.getByRole("button", { name: /transcrição/i }).click();
+
+  await expect(page.getByText("eu liderei essa transformação")).toBeVisible();
+});
+
+test("opening the transcript sheet jumps to the latest speech, not the oldest", async ({
+  page,
+}) => {
+  const server = await mockSession(page, "interview");
+
+  await page.goto("/");
+  await page.getByRole("combobox").selectOption("interview");
+  await page.getByRole("checkbox", { name: /candidato foi avisado/i }).check();
+  await page.getByRole("button", { name: /iniciar sessão/i }).click();
+
+  for (let i = 1; i <= 40; i += 1) {
+    await server.transcript(`linha número ${i}`, "Entrevistador", true);
+  }
+
+  await page.getByRole("button", { name: /transcrição/i }).click();
+
+  await expect(page.getByText("linha número 40")).toBeInViewport();
+});
+
+test("a suggestion with no extracted question falls back to its markdown", async ({
+  page,
+}) => {
+  const server = await mockSession(page, "interview");
+
+  await page.goto("/");
+  await page.getByRole("combobox").selectOption("interview");
+  await page.getByRole("checkbox", { name: /candidato foi avisado/i }).check();
+  await page.getByRole("button", { name: /iniciar sessão/i }).click();
+
+  await server.suggestion([], "### Notas\nPergunte sobre a experiência com fusões.");
+
+  await expect(page.getByText("Pergunte sobre a experiência com fusões.")).toBeVisible();
+});
+
+test("the questions sheet shows queued and dismissed questions", async ({ page }) => {
+  const server = await mockSession(page, "interview");
+
+  await page.goto("/");
+  await page.getByRole("combobox").selectOption("interview");
+  await page.getByRole("checkbox", { name: /candidato foi avisado/i }).check();
+  await page.getByRole("button", { name: /iniciar sessão/i }).click();
+
+  await server.suggestion(["Primeira pergunta"]);
+  await server.suggestion(["Segunda pergunta"]);
+  await server.suggestion(["Terceira pergunta"]);
+  await expect(page.getByText("Primeira pergunta")).toBeVisible();
+
+  // Dismiss the first question, then open the sheet via its bar.
+  await page.getByRole("button", { name: /^próxima$/i }).click();
+  await expect(page.getByText("Segunda pergunta")).toBeVisible();
+
+  await page.getByRole("button", { name: /^perguntas/i }).click();
+
+  // All three questions are on screen at once, grouped by status.
+  await expect(page.getByText(/^atual$/i)).toBeVisible();
+  await expect(page.getByText(/^na fila$/i)).toBeVisible();
+  await expect(page.getByText(/^anteriores$/i)).toBeVisible();
+  await expect(page.getByText("Primeira pergunta")).toBeVisible();
+  await expect(page.getByText("Terceira pergunta")).toBeVisible();
+  // "Segunda pergunta" appears twice (hero + sheet "Atual" row).
+  await expect(page.getByText("Segunda pergunta")).toHaveCount(2);
+});
+
+test("the queue chip opens the questions sheet", async ({ page }) => {
+  const server = await mockSession(page, "interview");
+
+  await page.goto("/");
+  await page.getByRole("combobox").selectOption("interview");
+  await page.getByRole("checkbox", { name: /candidato foi avisado/i }).check();
+  await page.getByRole("button", { name: /iniciar sessão/i }).click();
+
+  await server.suggestion(["Primeira pergunta"]);
+  await server.suggestion(["Segunda pergunta"]);
+
+  await page.getByRole("button", { name: /ver todas as perguntas/i }).click();
+
+  await expect(page.getByText(/^na fila$/i)).toBeVisible();
+  // The queued question is now visible without dismissing the hero.
+  await expect(page.getByText("Segunda pergunta")).toBeVisible();
+  await expect(page.getByText("Primeira pergunta")).toHaveCount(2);
+});
