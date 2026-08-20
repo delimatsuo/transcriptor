@@ -57,6 +57,11 @@ class TranscriptSegment(BaseModel):
     end_time: float = 0.0
     confidence: float = 0.0
     sequence_number: int = 0
+    # STT sequence counters are source-local.  SessionManager normalizes
+    # sequence_number for durable ordering while retaining this provenance
+    # field for legacy/source-scoped reconstruction.  It is intentionally not
+    # exposed in API/WebSocket model dumps.
+    source_sequence_number: int | None = Field(default=None, exclude=True)
     is_final: bool = False
 
 
@@ -76,9 +81,19 @@ class Session(BaseModel):
     ended_at: datetime | None = None
     last_active: datetime = Field(default_factory=datetime.utcnow)
     status: SessionStatus = SessionStatus.ACTIVE
+    notice_given: bool = False  # candidate informed of transcription (LGPD notice)
     speaker_map: dict[str, str] = Field(default_factory=dict)
     summary: str | None = None
     action_items: list[ActionItem] = Field(default_factory=list)
+    # A child-write failure is durable session metadata, not a silent absence
+    # from the transcript.  "pending" remains until replay accepts every
+    # final segment and the terminal parent write records completion.
+    transcript_durability: str = "complete"
+    transcript_failure_count: int = 0
+    # Optional for backwards-compatible deserialization; HTTP-created records
+    # always receive server-derived values from the authenticated principal.
+    owner_id: str | None = None
+    org_id: str | None = None
 
 
 # --- WebSocket Messages ---

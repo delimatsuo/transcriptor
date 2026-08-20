@@ -51,7 +51,10 @@
 - The current FastAPI process owns local `sounddevice`/BlackHole capture, which a Cloud Run container cannot perform for a user's Mac.
 - `firebase.json` and `.firebaserc` are absent, so the frontend deployment step is skipped.
 - Frontend REST calls remain hardcoded to localhost.
-- Application-layer authentication, user/organization ownership, and cross-tenant isolation are not implemented.
+- Week 4 now implements local application-layer Google/Firebase attribution,
+  server-derived user/org ownership, and fail-closed cross-tenant checks. This
+  remains an internal shared-trust boundary: Admin SDK/ADC bypasses Firestore
+  rules, and hosted isolation is still a separate gate.
 - Automated backend/frontend tests are not enabled in CI.
 - Rollback covers Cloud Run traffic only; it does not cover frontend, IAM, rules, configuration, or data changes.
 

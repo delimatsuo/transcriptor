@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { mergeTranscriptSegment } from "@/lib/transcript";
+import { apiFetch, authBypassEnabled } from "@/lib/auth";
 import type {
   ConnectionHealth,
   Suggestion,
@@ -11,6 +12,7 @@ import type {
 } from "@/types/ws";
 
 const WS_BASE_URL = process.env.NEXT_PUBLIC_WS_URL || "ws://localhost:8000/ws";
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
 // Exponential backoff: 1s, 2s, 4s, 8s, max 30s
 const INITIAL_RETRY_DELAY = 1000;
@@ -27,6 +29,10 @@ interface UseWebSocketReturn {
   lastError: string | null;
   connect: (sessionId: string) => void;
   disconnect: () => void;
+  hydrateReview: (
+    transcript: TranscriptSegment[],
+    summary: string | null,
+  ) => void;
 }
 
 export function useWebSocket(): UseWebSocketReturn {
@@ -159,42 +165,66 @@ export function useWebSocket(): UseWebSocketReturn {
       lastSeqRef.current = 0;
       retryDelayRef.current = INITIAL_RETRY_DELAY;
 
-      const doConnect = () => {
-        const url = `${WS_BASE_URL}/${sessionId}?last_seq=${lastSeqRef.current}`;
-        const ws = new WebSocket(url);
-
-        ws.onopen = () => {
-          setConnectionHealth("healthy");
-          retryDelayRef.current = INITIAL_RETRY_DELAY;
-        };
-
-        ws.onmessage = handleMessage;
-
-        ws.onclose = () => {
-          setConnectionHealth("disconnected");
-          wsRef.current = null;
-
-          if (!intentionalCloseRef.current) {
-            // Auto-reconnect with exponential backoff
-            retryTimeoutRef.current = setTimeout(() => {
-              doConnect();
-            }, retryDelayRef.current);
-
-            retryDelayRef.current = Math.min(
-              retryDelayRef.current * 2,
-              MAX_RETRY_DELAY,
-            );
+      const doConnect = async () => {
+        try {
+          const ticketPayload = authBypassEnabled
+            ? { ticket: "playwright-ticket" }
+            : await (async () => {
+                const ticketResponse = await apiFetch(
+                  `${API_BASE_URL}/api/sessions/${encodeURIComponent(sessionId)}/ws-ticket`,
+                  { method: "POST" },
+                );
+                if (!ticketResponse.ok) {
+                  throw new Error("A sessão autenticada do áudio expirou.");
+                }
+                return (await ticketResponse.json()) as { ticket?: string };
+              })();
+          if (!ticketPayload.ticket || intentionalCloseRef.current || sessionIdRef.current !== sessionId) {
+            return;
           }
-        };
+          const url = `${WS_BASE_URL}/${sessionId}?last_seq=${lastSeqRef.current}`;
+          const ws = new WebSocket(url, ["tars-ticket", ticketPayload.ticket]);
 
-        ws.onerror = () => {
+          ws.onopen = () => {
+            setConnectionHealth("healthy");
+            retryDelayRef.current = INITIAL_RETRY_DELAY;
+          };
+
+          ws.onmessage = handleMessage;
+
+          ws.onclose = () => {
+            setConnectionHealth("disconnected");
+            wsRef.current = null;
+
+            if (!intentionalCloseRef.current) {
+              retryTimeoutRef.current = setTimeout(() => {
+                void doConnect();
+              }, retryDelayRef.current);
+
+              retryDelayRef.current = Math.min(
+                retryDelayRef.current * 2,
+                MAX_RETRY_DELAY,
+              );
+            }
+          };
+
+          ws.onerror = () => {
+            setConnectionHealth("degraded");
+          };
+
+          wsRef.current = ws;
+        } catch (error) {
+          if (intentionalCloseRef.current) return;
           setConnectionHealth("degraded");
-        };
-
-        wsRef.current = ws;
+          setLastError(error instanceof Error ? error.message : "Falha na conexão autenticada.");
+          retryTimeoutRef.current = setTimeout(() => {
+            void doConnect();
+          }, retryDelayRef.current);
+          retryDelayRef.current = Math.min(retryDelayRef.current * 2, MAX_RETRY_DELAY);
+        }
       };
 
-      doConnect();
+      void doConnect();
     },
     [handleMessage],
   );
@@ -211,6 +241,21 @@ export function useWebSocket(): UseWebSocketReturn {
     }
     setConnectionHealth("disconnected");
   }, []);
+
+  const hydrateReview = useCallback(
+    (
+      persistedTranscript: TranscriptSegment[],
+      persistedSummary: string | null,
+    ) => {
+      setTranscript(persistedTranscript);
+      setSummary(persistedSummary ?? "");
+      setIsSummaryFinal(Boolean(persistedSummary));
+      setSuggestionHistory([]);
+      setLastError(null);
+      setConnectionHealth("disconnected");
+    },
+    [],
+  );
 
   // Cleanup on unmount
   useEffect(() => {
@@ -238,5 +283,6 @@ export function useWebSocket(): UseWebSocketReturn {
     lastError,
     connect: connectWs,
     disconnect,
+    hydrateReview,
   };
 }

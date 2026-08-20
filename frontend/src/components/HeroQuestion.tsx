@@ -16,6 +16,7 @@ interface Props {
   isStale: boolean;
   queueCount: number;
   onDismiss: () => void;
+  onShowQueue?: () => void;
 }
 
 export default function HeroQuestion({
@@ -23,6 +24,7 @@ export default function HeroQuestion({
   isStale,
   queueCount,
   onDismiss,
+  onShowQueue,
 }: Props) {
   if (!hero) {
     return (
@@ -108,7 +110,22 @@ export default function HeroQuestion({
         >
           Próxima
         </button>
-        {queueCount > 0 && <Chip>{queueCount} na fila</Chip>}
+        {queueCount > 0 &&
+          (onShowQueue ? (
+            <button
+              onClick={onShowQueue}
+              aria-label="Ver todas as perguntas"
+              style={{
+                all: "unset",
+                cursor: "pointer",
+                display: "inline-flex",
+              }}
+            >
+              <Chip>{queueCount} na fila</Chip>
+            </button>
+          ) : (
+            <Chip>{queueCount} na fila</Chip>
+          ))}
       </div>
     </div>
   );

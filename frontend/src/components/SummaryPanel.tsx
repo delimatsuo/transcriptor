@@ -1,5 +1,6 @@
 "use client";
 
+import { memo } from "react";
 import ReactMarkdown from "react-markdown";
 import type { TranscriptSegment } from "@/types/ws";
 
@@ -26,6 +27,14 @@ function downloadText(content: string, filename: string) {
   URL.revokeObjectURL(url);
 }
 
+const SummaryMarkdown = memo(function SummaryMarkdown({ summary }: { summary: string }) {
+  return (
+    <ReactMarkdown allowedElements={SUMMARY_ALLOWED_ELEMENTS}>
+      {summary}
+    </ReactMarkdown>
+  );
+});
+
 export default function SummaryPanel({
   summary,
   isFinal,
@@ -34,8 +43,8 @@ export default function SummaryPanel({
 }: Props) {
   if (!summary) return null;
 
-  const handleDownloadReport = () => {
-    downloadText(summary, "relatorio-entrevista.txt");
+  const handleDownloadSummary = () => {
+    downloadText(summary, "resumo-sessao.txt");
   };
 
   const handleDownloadTranscript = () => {
@@ -107,22 +116,24 @@ export default function SummaryPanel({
 
           {isFinal && (
             <div style={{ display: "flex", gap: 8 }}>
-              <button
-                onClick={handleDownloadReport}
-                style={{
-                  padding: "6px 14px",
-                  backgroundColor: "white",
-                  color: "#007aff",
-                  border: "1px solid #d2d2d7",
-                  borderRadius: 100,
-                  fontWeight: 500,
-                  cursor: "pointer",
-                  fontSize: 12,
-                  transition: "all 0.2s ease",
-                }}
-              >
-                Baixar relatório
-              </button>
+              {!isInterview && (
+                <button
+                  onClick={handleDownloadSummary}
+                  style={{
+                    padding: "6px 14px",
+                    backgroundColor: "white",
+                    color: "#007aff",
+                    border: "1px solid #d2d2d7",
+                    borderRadius: 100,
+                    fontWeight: 500,
+                    cursor: "pointer",
+                    fontSize: 12,
+                    transition: "all 0.2s ease",
+                  }}
+                >
+                  Baixar resumo
+                </button>
+              )}
               {transcript.length > 0 && (
                 <button
                   onClick={handleDownloadTranscript}
@@ -152,9 +163,7 @@ export default function SummaryPanel({
             color: "#424245",
           }}
         >
-          <ReactMarkdown allowedElements={SUMMARY_ALLOWED_ELEMENTS}>
-            {summary}
-          </ReactMarkdown>
+          <SummaryMarkdown summary={summary} />
         </div>
       </div>
     </div>

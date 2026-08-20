@@ -65,11 +65,15 @@ class AudioCapture:
         output_queue: asyncio.Queue,
         device_name: str = "",
         label: str = "audio",
+        input_channel: int = 0,
     ) -> None:
+        if input_channel < 0:
+            raise ValueError("input_channel must be non-negative")
         self.settings = settings
         self.output_queue = output_queue
         self.device_name = device_name
         self.label = label
+        self.input_channel = input_channel
         self._device_index: int | None = None
         self._stream: sd.InputStream | None = None
         self._running = False
@@ -92,7 +96,26 @@ class AudioCapture:
             logger.warning("audio_callback_status", status=str(status), label=self.label)
         if self._running and self._loop is not None:
             # Copy data since the buffer is reused by sounddevice
-            chunk = indata[:, 0].copy() if indata.ndim > 1 else indata.copy().flatten()
+            if indata.ndim > 1:
+                if self.input_channel >= indata.shape[1]:
+                    logger.error(
+                        "audio_input_channel_unavailable",
+                        label=self.label,
+                        input_channel=self.input_channel,
+                        available_channels=indata.shape[1],
+                    )
+                    return
+                chunk = indata[:, self.input_channel].copy()
+            else:
+                if self.input_channel != 0:
+                    logger.error(
+                        "audio_input_channel_unavailable",
+                        label=self.label,
+                        input_channel=self.input_channel,
+                        available_channels=1,
+                    )
+                    return
+                chunk = indata.copy().flatten()
             self._loop.call_soon_threadsafe(self._enqueue, chunk)
 
     def _enqueue(self, chunk: np.ndarray) -> None:
@@ -119,7 +142,7 @@ class AudioCapture:
         self._stream = sd.InputStream(
             device=self._device_index,
             samplerate=self.settings.sample_rate,
-            channels=self.settings.channels,
+            channels=max(self.settings.channels, self.input_channel + 1),
             dtype="float32",
             blocksize=self.settings.chunk_size,
             callback=self._audio_callback,
@@ -131,6 +154,7 @@ class AudioCapture:
             device=self._device_index,
             sample_rate=self.settings.sample_rate,
             chunk_size=self.settings.chunk_size,
+            input_channel=self.input_channel,
         )
 
         # Verify device is producing non-silent audio (first 500ms)

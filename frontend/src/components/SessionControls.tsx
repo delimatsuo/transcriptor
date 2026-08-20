@@ -2,15 +2,17 @@
 
 import { useRef, useState } from "react";
 import type { SessionMode } from "@/types/ws";
+import { apiFetch, authBypassEnabled } from "@/lib/auth";
 
 const API_BASE = "http://localhost:8000";
 
 interface Props {
-  onSessionStart: (sessionId: string, mode: SessionMode) => void;
-  onSessionStop: () => void;
+  onSessionStart: (sessionId: string, mode: SessionMode, stopCapability?: string) => void;
+  onSessionStop: () => Promise<void>;
   onBriefingReady?: (briefing: string) => void;
   isActive: boolean;
   sessionId: string | null;
+  disabled?: boolean;
 }
 
 export default function SessionControls({
@@ -19,12 +21,15 @@ export default function SessionControls({
   onBriefingReady,
   isActive,
   sessionId,
+  disabled = false,
 }: Props) {
-  const [mode, setMode] = useState<SessionMode>("meeting");
+  const [mode, setMode] = useState<SessionMode>(authBypassEnabled ? "meeting" : "interview");
   const [title, setTitle] = useState("");
+  const [noticeGiven, setNoticeGiven] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [showInterviewPrep, setShowInterviewPrep] = useState(false);
+  const [showInterviewPrep, setShowInterviewPrep] = useState(!authBypassEnabled);
   const [candidateName, setCandidateName] = useState("");
+  const [nextSteps, setNextSteps] = useState("");
   const [resumeFile, setResumeFile] = useState<File | null>(null);
   const [jdText, setJdText] = useState("");
   const resumeRef = useRef<HTMLInputElement>(null);
@@ -53,7 +58,7 @@ export default function SessionControls({
   };
 
   const handleAnalyze = async () => {
-    if (!jdText.trim()) return;
+    if (disabled || !jdText.trim()) return;
     setAnalyzing(true);
     setAnalyzeError(null);
 
@@ -64,7 +69,7 @@ export default function SessionControls({
         formData.append("file", resumeFile);
       }
 
-      const res = await fetch(`${API_BASE}/api/analyze`, {
+      const res = await apiFetch(`${API_BASE}/api/analyze`, {
         method: "POST",
         body: formData,
       });
@@ -92,22 +97,30 @@ export default function SessionControls({
     docType: string,
     text: string,
   ) => {
-    await fetch(`${API_BASE}/api/sessions/${sid}/context`, {
+    const response = await apiFetch(`${API_BASE}/api/sessions/${sid}/context`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ doc_type: docType, text }),
     });
+    if (!response.ok) {
+      throw new Error(`Falha ao persistir contexto: ${docType}`);
+    }
   };
 
   const handleStart = async () => {
+    if (disabled) return;
     setLoading(true);
     try {
-      const params = new URLSearchParams({ mode, title });
-      const res = await fetch(`${API_BASE}/api/sessions?${params}`, {
+      const params = new URLSearchParams({ mode, title, notice_given: String(noticeGiven) });
+      const res = await apiFetch(`${API_BASE}/api/sessions?${params}`, {
         method: "POST",
       });
+      if (!res.ok) throw new Error("Falha ao iniciar sessão");
       const data = await res.json();
       const sid = data.session_id;
+      // The backend starts capture with the session. Make that state visible
+      // before any follow-up context request can fail.
+      onSessionStart(sid, mode, data.stop_capability);
 
       // Upload documents if provided (interview mode)
       if (mode === "interview") {
@@ -118,12 +131,16 @@ export default function SessionControls({
           const formData = new FormData();
           formData.append("file", resumeFile);
           formData.append("doc_type", "resume");
-          uploads.push(
-            fetch(`${API_BASE}/api/sessions/${sid}/documents`, {
+          uploads.push((async () => {
+            const response = await apiFetch(
+              `${API_BASE}/api/sessions/${sid}/documents`,
+              {
               method: "POST",
               body: formData,
-            }),
-          );
+              },
+            );
+            if (!response.ok) throw new Error("Falha ao persistir currículo");
+          })());
         } else if (cvText) {
           // Use pre-extracted CV text from analysis
           uploads.push(sendContext(sid, "resume", cvText));
@@ -141,10 +158,13 @@ export default function SessionControls({
           uploads.push(sendContext(sid, "candidate_name", candidateName.trim()));
         }
 
+        if (nextSteps.trim()) {
+          uploads.push(sendContext(sid, "next_steps", nextSteps.trim()));
+        }
+
         if (uploads.length > 0) await Promise.all(uploads);
       }
 
-      onSessionStart(sid, mode);
       setShowInterviewPrep(false);
     } catch (err) {
       console.error("Failed to start session:", err);
@@ -156,7 +176,7 @@ export default function SessionControls({
   const handleStop = async () => {
     setLoading(true);
     try {
-      onSessionStop();
+      await onSessionStop();
     } finally {
       setLoading(false);
     }
@@ -214,7 +234,9 @@ export default function SessionControls({
     );
   }
 
-  const canAnalyze = jdText.trim().length > 0 && !analyzing && !briefing;
+  const canAnalyze =
+    !disabled && jdText.trim().length > 0 && !analyzing && !briefing;
+  const canStart = !disabled && !loading && (mode !== "interview" || noticeGiven);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
@@ -246,26 +268,31 @@ export default function SessionControls({
             e.currentTarget.style.boxShadow = "none";
           }}
         />
-        <select
-          value={mode}
-          onChange={(e) => handleModeChange(e.target.value as SessionMode)}
-          style={{
-            padding: "8px 14px",
-            border: "1px solid #d2d2d7",
-            borderRadius: 10,
-            fontSize: 13,
-            outline: "none",
-            backgroundColor: "#fafafa",
-            color: "#1d1d1f",
-            cursor: "pointer",
-          }}
-        >
-          <option value="meeting">Reunião</option>
-          <option value="interview">Entrevista</option>
-        </select>
+        {authBypassEnabled ? (
+          <select
+            value={mode}
+            onChange={(e) => handleModeChange(e.target.value as SessionMode)}
+            aria-label="Modo da sessão"
+            style={{
+              padding: "8px 14px",
+              border: "1px solid #d2d2d7",
+              borderRadius: 10,
+              fontSize: 13,
+              outline: "none",
+              backgroundColor: "#fafafa",
+              color: "#1d1d1f",
+              cursor: "pointer",
+            }}
+          >
+            <option value="meeting">Reunião</option>
+            <option value="interview">Entrevista</option>
+          </select>
+        ) : (
+          <span style={{ fontSize: 13, color: "#515154" }}>Entrevista</span>
+        )}
         <button
           onClick={handleStart}
-          disabled={loading}
+          disabled={!canStart}
           style={{
             padding: "8px 22px",
             backgroundColor: "#007aff",
@@ -273,11 +300,11 @@ export default function SessionControls({
             border: "none",
             borderRadius: 100,
             fontWeight: 500,
-            cursor: loading ? "default" : "pointer",
+            cursor: canStart ? "pointer" : "default",
             fontSize: 13,
             boxShadow: "0 1px 3px rgba(0, 122, 255, 0.3)",
             transition: "all 0.2s ease",
-            opacity: loading ? 0.6 : 1,
+            opacity: canStart ? 1 : 0.6,
           }}
         >
           {loading ? "Iniciando..." : "Iniciar sessão"}
@@ -316,6 +343,29 @@ export default function SessionControls({
             Envie o currículo, cole a descrição da vaga e analise antes de começar
           </p>
 
+          <label
+            style={{
+              display: "flex",
+              alignItems: "flex-start",
+              gap: 8,
+              fontSize: 13,
+              color: "#1d1d1f",
+              marginBottom: 16,
+              cursor: "pointer",
+            }}
+          >
+            <input
+              type="checkbox"
+              checked={noticeGiven}
+              onChange={(e) => setNoticeGiven(e.target.checked)}
+              style={{ marginTop: 2 }}
+            />
+            <span>
+              Confirmo que o candidato foi avisado sobre a transcrição desta
+              entrevista (roteiro de aviso da Ella).
+            </span>
+          </label>
+
           {/* Candidate name */}
           <div style={{ marginBottom: 12 }}>
             <input
@@ -342,6 +392,27 @@ export default function SessionControls({
               onBlur={(e) => {
                 e.currentTarget.style.borderColor = "#d2d2d7";
                 e.currentTarget.style.boxShadow = "none";
+              }}
+            />
+          </div>
+
+          <div style={{ marginBottom: 12 }}>
+            <textarea
+              placeholder="Próximas etapas e pessoas envolvidas (ex.: entrevista com Ana, depois avaliação técnica com João)"
+              value={nextSteps}
+              onChange={(event) => setNextSteps(event.target.value)}
+              rows={2}
+              style={{
+                padding: "8px 14px",
+                border: "1px solid #d2d2d7",
+                borderRadius: 10,
+                fontSize: 13,
+                width: "100%",
+                resize: "vertical",
+                outline: "none",
+                backgroundColor: "white",
+                color: "#1d1d1f",
+                boxSizing: "border-box",
               }}
             />
           </div>
@@ -448,6 +519,7 @@ export default function SessionControls({
                 </span>
                 <button
                   onClick={handleAnalyze}
+                  disabled={disabled}
                   style={{
                     padding: "4px 12px",
                     backgroundColor: "white",
@@ -455,7 +527,8 @@ export default function SessionControls({
                     border: "1px solid #ff3b30",
                     borderRadius: 100,
                     fontSize: 11,
-                    cursor: "pointer",
+                    cursor: disabled ? "default" : "pointer",
+                    opacity: disabled ? 0.6 : 1,
                   }}
                 >
                   Tentar novamente

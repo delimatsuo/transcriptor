@@ -31,7 +31,9 @@ class GoogleSTTStream:
         self.stream_id = stream_id
         self._client: SpeechAsyncClient | None = None
         self._audio_queue: asyncio.Queue[bytes | None] = asyncio.Queue()
-        self._active = False
+        self._accepting_audio = False
+        self._input_closed = False
+        self._request_opened = False
         self._started_at: float = 0.0
 
     async def _get_client(self) -> SpeechAsyncClient:
@@ -88,7 +90,7 @@ class GoogleSTTStream:
         )
 
         # Subsequent requests: audio data
-        while self._active:
+        while True:
             try:
                 audio_data = await asyncio.wait_for(
                     self._audio_queue.get(), timeout=0.5
@@ -105,7 +107,7 @@ class GoogleSTTStream:
     async def start(self) -> AsyncIterator[cloud_speech.StreamingRecognizeResponse]:
         """Start the streaming recognition and yield responses."""
         client = await self._get_client()
-        self._active = True
+        self._accepting_audio = not self._input_closed
         self._started_at = time.monotonic()
 
         logger.info("stt_stream_started", stream_id=self.stream_id)
@@ -113,30 +115,42 @@ class GoogleSTTStream:
         responses = await client.streaming_recognize(
             requests=self._request_generator(),
         )
+        self._request_opened = True
 
-        async for response in responses:
-            if not self._active:
-                break
-            yield response
+        try:
+            async for response in responses:
+                # Closing request input is a half-close: continue consuming
+                # provider responses so the last utterance can become final.
+                yield response
+        finally:
+            self._accepting_audio = False
 
         logger.info("stt_stream_ended", stream_id=self.stream_id)
 
     async def send_audio(self, audio_bytes: bytes) -> None:
         """Send audio data to the stream."""
-        if self._active:
+        if self._accepting_audio:
             await self._audio_queue.put(audio_bytes)
 
     async def stop(self) -> None:
-        """Signal the stream to stop."""
-        self._active = False
-        await self._audio_queue.put(None)  # Sentinel
+        """Half-close request input while allowing final responses to arrive."""
+        if self._input_closed:
+            return
+        self._input_closed = True
+        self._accepting_audio = False
+        await self._audio_queue.put(None)
         if self._client is not None:
             # Client can be reused, no need to close for each stream
             pass
 
     @property
     def is_active(self) -> bool:
-        return self._active
+        return self._accepting_audio
+
+    @property
+    def request_opened(self) -> bool:
+        """Whether the provider accepted the bidirectional streaming call."""
+        return self._request_opened
 
     @property
     def elapsed_seconds(self) -> float:
