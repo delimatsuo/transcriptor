@@ -3,9 +3,9 @@ name: CI
 on:
   workflow_dispatch:
   pull_request:
-    branches: [staging, codex/week-3-evidence-report]
+    branches: [main, staging, codex/week-3-evidence-report]
   push:
-    branches: [staging, codex/week-4-auth]
+    branches: [main, staging, codex/week-4-auth]
 
 permissions:
   contents: read
