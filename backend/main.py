@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import secrets
 import time
 from contextlib import asynccontextmanager
@@ -2313,6 +2314,78 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
     finally:
         expiry_task.cancel()
         reset_current_auth(token)
+
+
+@app.websocket("/api/stream/native/{session_id}")
+async def native_stream_endpoint(websocket: WebSocket, session_id: str):
+    """Ingest dual-channel audio from the native macOS companion over WebSocket."""
+    await websocket.accept()
+    logger.info("native_companion_connected", session_id=session_id)
+    app_settings = settings or get_settings()
+
+    sms: dict[str, StreamManager] = {}
+
+    async def get_or_create_sm(source_label: str) -> StreamManager:
+        if source_label not in sms:
+            sm = StreamManager(
+                session_id=session_id,
+                source_label=source_label,
+                sample_rate=16000,
+                on_transcript=_on_transcript,
+            )
+            await sm.start()
+            sms[source_label] = sm
+            stream_managers.setdefault(session_id, []).append(sm)
+        return sms[source_label]
+
+    try:
+        while True:
+            message = await websocket.receive()
+            if message.get("type") == "websocket.disconnect":
+                break
+            if "bytes" in message and message["bytes"]:
+                raw_data: bytes = message["bytes"]
+                if len(raw_data) < 4:
+                    continue
+                header_len = int.from_bytes(raw_data[:4], byteorder="big")
+                if len(raw_data) < 4 + header_len:
+                    continue
+                header_json = raw_data[4 : 4 + header_len]
+                pcm_payload = raw_data[4 + header_len :]
+
+                try:
+                    header = json.loads(header_json.decode("utf-8"))
+                except Exception:
+                    continue
+
+                source = header.get("source", "microphone")
+                source_label = (
+                    app_settings.stt_speaker_label_other
+                    if source == "system_audio"
+                    else app_settings.stt_speaker_label_self
+                )
+
+                sm = await get_or_create_sm(source_label)
+                if pcm_payload:
+                    await sm.send_audio(pcm_payload)
+            elif "text" in message and message["text"]:
+                try:
+                    text_data = json.loads(message["text"])
+                    if text_data.get("type") == "ping":
+                        await websocket.send_json({"type": "pong"})
+                except Exception:
+                    pass
+    except WebSocketDisconnect:
+        logger.info("native_companion_disconnected", session_id=session_id)
+    except Exception:
+        logger.exception("native_stream_error", session_id=session_id)
+    finally:
+        for sm in list(sms.values()):
+            try:
+                await sm.stop()
+            except Exception:
+                pass
+        stream_managers.pop(session_id, None)
 
 
 # --- Entry point ---

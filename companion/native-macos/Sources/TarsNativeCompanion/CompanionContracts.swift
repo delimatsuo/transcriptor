@@ -190,9 +190,9 @@ public final class SecureAudioBuffer: @unchecked Sendable, Equatable {
 
     public var isEmpty: Bool { count == 0 }
 
-    /// Internal codec/test access. The returned value is a short-lived copy;
+    /// Codec/streaming access. The returned value is a short-lived copy;
     /// custody and reducers never retain it.
-    internal func copyData() -> Data {
+    public func copyData() -> Data {
         lock.lock()
         defer { lock.unlock() }
         return storage
