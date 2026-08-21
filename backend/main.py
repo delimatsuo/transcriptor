@@ -49,8 +49,11 @@ from backend.schemas.models import (
     ActiveSpeakerBatch,
     ClockSyncRequest,
     ClockSyncResponse,
+    CompanionHealthPayload,
     ConnectionHealth,
     ConnectionStatusPayload,
+    CoverageGapPayload,
+    CoverageGapSegment,
     ErrorPayload,
     ErrorSeverity,
     HeartbeatRequest,
@@ -58,6 +61,7 @@ from backend.schemas.models import (
     SessionMode,
     SessionStatus,
     SetContextRequest,
+    SourceHealthReport,
     SpeakerRelabelBatch,
     SpeakerRelabelUpdate,
     Suggestion,
@@ -124,6 +128,13 @@ stream_keys: dict[str, str] = {}
 # _stop_pipeline tears these down.
 native_stream_managers: dict[str, dict[str, StreamManager]] = {}
 native_sm_lock = asyncio.Lock()
+# Native companion stall watchdog: a source that has produced >=1 audio frame
+# but none for longer than the timeout (while the companion socket is still
+# connected) is flagged device_unavailable in companion_health until its next
+# frame recovers it. Read as module globals (not captured into locals) so
+# tests can monkeypatch them to drive the loop deterministically.
+NATIVE_STALL_CHECK_INTERVAL_SECONDS = 5.0
+NATIVE_STALL_TIMEOUT_SECONDS = 10.0
 pipeline_tasks: dict[str, list[asyncio.Task]] = {}
 session_stop_locks: dict[str, asyncio.Lock] = {}
 final_summary_scheduled: set[str] = set()
@@ -802,7 +813,7 @@ async def _check_single_audio_source(session_id: str) -> None:
         seq = ws_manager.next_sequence(session_id)
         error = ErrorPayload(
             severity=ErrorSeverity.WARNING,
-            message="Audio de apenas uma fonte detectado. Verifique a configuração do BlackHole para capturar o áudio remoto.",
+            message="Apenas um canal de áudio está produzindo transcrição. Verifique se o companion (Áudio do Sistema) está em execução e com permissão concedida.",
             code="single_audio_source",
         )
         msg = WSMessage.error_msg(session_id, seq, error)
@@ -2385,6 +2396,86 @@ async def native_stream_endpoint(websocket: WebSocket, session_id: str):
     logger.info("native_companion_connected", session_id=session_id)
     app_settings = settings or get_settings()
 
+    # --- companion_health / coverage_gap emission -------------------------
+    # Connection-scoped (not session-scoped): each companion socket starts at
+    # physical_capture="active" with both sources "unknown" and always ends
+    # (in `finally`) at "stopped"/"unknown","unknown", so a reconnect never
+    # inherits stale source state from a prior connection.
+    health = CompanionHealthPayload(physical_capture="active", sources=SourceHealthReport())
+    last_emitted_health: dict | None = None
+    last_frame_at: dict[str, float] = {}
+
+    def _set_source_health(source_name: str, state: str) -> bool:
+        """Mutate health.sources[source_name] to state; return True if it
+        actually changed (used to decide whether an emission is warranted)."""
+        if source_name not in ("microphone", "system_audio"):
+            return False
+        if getattr(health.sources, source_name) == state:
+            return False
+        setattr(health.sources, source_name, state)
+        return True
+
+    async def emit_health() -> None:
+        """Broadcast companion_health iff the payload changed since the last
+        emission (avoids spamming identical state every watchdog tick).
+        Broadcast failures must never break audio ingestion, so they are
+        caught here and only logged."""
+        nonlocal last_emitted_health
+        payload_dict = health.model_dump()
+        if payload_dict == last_emitted_health:
+            return
+        last_emitted_health = payload_dict
+        try:
+            seq = ws_manager.next_sequence(session_id)
+            msg = WSMessage.companion_health_msg(session_id, seq, health)
+            await ws_manager.broadcast(session_id, msg)
+        except Exception as e:
+            logger.debug(
+                "native_companion_health_emit_error",
+                session_id=session_id,
+                error=str(e),
+            )
+
+    async def emit_gap(gap: CoverageGapSegment) -> None:
+        try:
+            seq = ws_manager.next_sequence(session_id)
+            msg = WSMessage.coverage_gap_msg(session_id, seq, CoverageGapPayload(gap=gap))
+            await ws_manager.broadcast(session_id, msg)
+        except Exception as e:
+            logger.debug(
+                "native_companion_gap_emit_error",
+                session_id=session_id,
+                error=str(e),
+            )
+
+    async def stall_watchdog() -> None:
+        """Any source that has produced >=1 frame but none for longer than
+        NATIVE_STALL_TIMEOUT_SECONDS while the companion socket is still
+        connected is flagged device_unavailable; its next frame recovers it
+        to healthy (see the per-frame update in the receive loop below)."""
+        while True:
+            await asyncio.sleep(NATIVE_STALL_CHECK_INTERVAL_SECONDS)
+            try:
+                now = time.monotonic()
+                for source_name, last_seen in list(last_frame_at.items()):
+                    if now - last_seen > NATIVE_STALL_TIMEOUT_SECONDS:
+                        if _set_source_health(source_name, "device_unavailable"):
+                            await emit_health()
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                # A single bad tick must not kill the watchdog for the rest
+                # of the connection, nor escape `finally`'s cancellation
+                # await as anything other than CancelledError.
+                logger.debug(
+                    "native_stall_watchdog_tick_error",
+                    session_id=session_id,
+                    error=str(e),
+                )
+
+    await emit_health()
+    stall_task = asyncio.create_task(stall_watchdog())
+
     async def get_or_create_sm(source_label: str) -> StreamManager:
         async with native_sm_lock:
             per_session = native_stream_managers.setdefault(session_id, {})
@@ -2427,6 +2518,10 @@ async def native_stream_endpoint(websocket: WebSocket, session_id: str):
                     continue
 
                 source = header.get("source", "microphone")
+                if source in ("microphone", "system_audio"):
+                    last_frame_at[source] = time.monotonic()
+                    if _set_source_health(source, "healthy"):
+                        await emit_health()
                 source_label = (
                     app_settings.stt_speaker_label_other
                     if source == "system_audio"
@@ -2450,13 +2545,35 @@ async def native_stream_endpoint(websocket: WebSocket, session_id: str):
                     if text_data.get("type") == "ping":
                         await websocket.send_json({"type": "pong"})
                     elif text_data.get("type") == "gap":
+                        gap_source = text_data.get("source", "unknown")
+                        reason = text_data.get("reason", "unknown")
+                        first_sample = text_data.get("first_sample") or 0
                         logger.warning(
                             "native_companion_gap_reported",
                             session_id=session_id,
-                            source=text_data.get("source"),
-                            reason=text_data.get("reason"),
-                            first_sample=text_data.get("first_sample"),
+                            source=gap_source,
+                            reason=reason,
+                            first_sample=first_sample,
                         )
+                        await emit_gap(
+                            CoverageGapSegment(
+                                id=uuid4().hex[:12],
+                                source=gap_source,
+                                start_ms=first_sample / 16.0,
+                                reason=reason,
+                            )
+                        )
+                        # Map the companion's low-level gap reason onto a
+                        # source health state; unmapped reasons leave the
+                        # source's health state unchanged.
+                        health_state = {
+                            "permission_denied": "permission_missing",
+                            "device_lost": "device_unavailable",
+                            "overrun": "overflow",
+                            "buffer_exhaustion": "overflow",
+                        }.get(reason)
+                        if health_state and _set_source_health(gap_source, health_state):
+                            await emit_health()
                 except Exception:
                     pass
     except WebSocketDisconnect:
@@ -2464,6 +2581,15 @@ async def native_stream_endpoint(websocket: WebSocket, session_id: str):
     except Exception:
         logger.exception("native_stream_error", session_id=session_id)
     finally:
+        stall_task.cancel()
+        try:
+            await stall_task
+        except asyncio.CancelledError:
+            pass
+        health.physical_capture = "stopped"
+        health.sources.microphone = "unknown"
+        health.sources.system_audio = "unknown"
+        await emit_health()
         logger.info("native_companion_disconnected", session_id=session_id)
 
 

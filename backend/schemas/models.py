@@ -29,6 +29,8 @@ class WSMessageType(str, Enum):
     SUGGESTION = "suggestion"
     SESSION_STATE = "session_state"
     CONNECTION_STATUS = "connection_status"
+    COMPANION_HEALTH = "companion_health"
+    COVERAGE_GAP = "coverage_gap"
     ERROR = "error"
     SPEAKER_RELABEL_BATCH = "speaker_relabel_batch"
 
@@ -127,6 +129,33 @@ class ConnectionStatusPayload(BaseModel):
     stt_health: ConnectionHealth = ConnectionHealth.HEALTHY
     ws_health: ConnectionHealth = ConnectionHealth.HEALTHY
     message: str = ""
+
+
+class SourceHealthReport(BaseModel):
+    """Mirrors frontend/src/types/ws.ts SourceHealthReport verbatim."""
+    microphone: str = "unknown"
+    system_audio: str = "unknown"
+
+
+class CompanionHealthPayload(BaseModel):
+    """Mirrors frontend/src/types/ws.ts CompanionHealthPayload verbatim."""
+    physical_capture: str = "unknown"
+    sources: SourceHealthReport
+    message: str | None = None
+
+
+class CoverageGapSegment(BaseModel):
+    """Mirrors frontend/src/types/ws.ts CoverageGapSegment verbatim."""
+    id: str
+    source: str
+    start_ms: float
+    end_ms: float | None = None
+    reason: str = "unknown"
+
+
+class CoverageGapPayload(BaseModel):
+    """Mirrors frontend/src/types/ws.ts CoverageGapPayload verbatim."""
+    gap: CoverageGapSegment
 
 
 class ErrorPayload(BaseModel):
@@ -234,6 +263,24 @@ class WSMessage(BaseModel):
             session_id=session_id,
             sequence_number=seq,
             payload=status.model_dump(),
+        )
+
+    @classmethod
+    def companion_health_msg(cls, session_id: str, seq: int, payload: CompanionHealthPayload) -> WSMessage:
+        return cls(
+            type=WSMessageType.COMPANION_HEALTH,
+            session_id=session_id,
+            sequence_number=seq,
+            payload=payload.model_dump(),
+        )
+
+    @classmethod
+    def coverage_gap_msg(cls, session_id: str, seq: int, payload: CoverageGapPayload) -> WSMessage:
+        return cls(
+            type=WSMessageType.COVERAGE_GAP,
+            session_id=session_id,
+            sequence_number=seq,
+            payload=payload.model_dump(),
         )
 
     @classmethod

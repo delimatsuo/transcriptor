@@ -391,3 +391,77 @@ def test_get_or_create_sm_refuses_new_sm_when_stream_key_popped(mock_sm_cls, mon
     assert mock_sm_cls.call_count == 1           # only the microphone SM was ever built
     assert mock_sm.send_audio.await_count == 1   # system_audio frame after the pop was refused
 
+
+def _health_msgs(fake_ws_manager):
+    return [c.args[1] for c in fake_ws_manager.broadcast.await_args_list
+            if c.args[1].type.value == "companion_health"]
+
+
+def test_health_emitted_on_connect_first_frame_and_disconnect(monkeypatch):
+    fake_wsm = type("W", (), {"broadcast": AsyncMock(), "next_sequence": staticmethod(lambda sid: 1)})()
+    monkeypatch.setattr(main, "ws_manager", fake_wsm)
+    key = _install_session(monkeypatch, "s-h")
+    header = {"session_id": "s-h", "source": "system_audio", "sequence": 1, "first_sample": 0,
+              "captured_at_ms": 0, "sample_rate": 16000, "channel_count": 1, "duration_ms": 50}
+    with patch("backend.main.StreamManager") as sm_cls:
+        sm_cls.return_value = AsyncMock()
+        ws = FakeNativeWebSocket([{"bytes": _encode_native_packet(header)}])
+        ws.query_params = {"stream_key": key}
+        asyncio.run(main.native_stream_endpoint(ws, "s-h"))
+    msgs = _health_msgs(fake_wsm)
+    assert msgs[0].payload["physical_capture"] == "active"
+    assert any(m.payload["sources"]["system_audio"] == "healthy" for m in msgs)
+    assert msgs[-1].payload["physical_capture"] == "stopped"
+
+
+def test_gap_rebroadcast_as_coverage_gap(monkeypatch):
+    fake_wsm = type("W", (), {"broadcast": AsyncMock(), "next_sequence": staticmethod(lambda sid: 1)})()
+    monkeypatch.setattr(main, "ws_manager", fake_wsm)
+    key = _install_session(monkeypatch, "s-g")
+    gap = {"type": "gap", "source": "system_audio", "reason": "device_lost", "first_sample": 16000}
+    ws = FakeNativeWebSocket([{"text": json.dumps(gap)}])
+    ws.query_params = {"stream_key": key}
+    asyncio.run(main.native_stream_endpoint(ws, "s-g"))
+    gaps = [c.args[1] for c in fake_wsm.broadcast.await_args_list if c.args[1].type.value == "coverage_gap"]
+    assert len(gaps) == 1
+    assert gaps[0].payload["gap"]["reason"] == "device_lost"
+    assert gaps[0].payload["gap"]["start_ms"] == 1000.0
+
+
+def test_stall_watchdog_flags_and_recovers_source_health(monkeypatch):
+    """Deterministic stall-watchdog coverage (no real 10s waits): the check
+    interval and stall timeout are monkeypatched down to a few milliseconds,
+    and a real (short) pause is injected between two frames from the same
+    source via _MidStreamWebSocket so the concurrently running watchdog task
+    gets scheduler turns to observe the stall and flag device_unavailable;
+    the second frame from the same source then recovers it to healthy."""
+    fake_wsm = type("W", (), {"broadcast": AsyncMock(), "next_sequence": staticmethod(lambda sid: 1)})()
+    monkeypatch.setattr(main, "ws_manager", fake_wsm)
+    monkeypatch.setattr(main, "NATIVE_STALL_CHECK_INTERVAL_SECONDS", 0.01)
+    monkeypatch.setattr(main, "NATIVE_STALL_TIMEOUT_SECONDS", 0.03)
+    key = _install_session(monkeypatch, "s-stall")
+    header = {"session_id": "s-stall", "source": "system_audio", "sequence": 1, "first_sample": 0,
+              "captured_at_ms": 0, "sample_rate": 16000, "channel_count": 1, "duration_ms": 50}
+
+    async def pause_past_stall_threshold():
+        await asyncio.sleep(0.2)
+
+    with patch("backend.main.StreamManager") as sm_cls:
+        sm_cls.return_value = AsyncMock()
+        ws = _MidStreamWebSocket(
+            [
+                {"bytes": _encode_native_packet(header)},
+                {"bytes": _encode_native_packet(header)},
+            ],
+            on_second_receive=pause_past_stall_threshold,
+        )
+        ws.query_params = {"stream_key": key}
+        asyncio.run(main.native_stream_endpoint(ws, "s-stall"))
+
+    msgs = _health_msgs(fake_wsm)
+    states = [m.payload["sources"]["system_audio"] for m in msgs]
+    assert "device_unavailable" in states
+    stalled_at = states.index("device_unavailable")
+    assert "healthy" in states[stalled_at + 1:]  # next frame recovers it
+    assert msgs[-1].payload["physical_capture"] == "stopped"
+
