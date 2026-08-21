@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 
+import CaptureSourceStatus from "@/components/CaptureSourceStatus";
 import HeroQuestion from "@/components/HeroQuestion";
 import NoteChips from "@/components/NoteChips";
 import QuestionsSheet from "@/components/QuestionsSheet";
@@ -15,17 +16,29 @@ import {
   selectHero,
 } from "@/lib/interviewQueue";
 import { tokens } from "@/lib/tokens";
-import type { SuggestionEntry, TranscriptSegment } from "@/types/ws";
+import type {
+  CoverageGapSegment,
+  PhysicalCaptureState,
+  SourceHealthReport,
+  SuggestionEntry,
+  TranscriptSegment,
+} from "@/types/ws";
 
 interface Props {
   sessionId: string;
   transcript: TranscriptSegment[];
+  gaps?: CoverageGapSegment[];
+  sources?: SourceHealthReport;
+  captureState?: PhysicalCaptureState;
   suggestionHistory: SuggestionEntry[];
 }
 
 export default function InterviewLiveView({
   sessionId,
   transcript,
+  gaps = [],
+  sources,
+  captureState,
   suggestionHistory,
 }: Props) {
   const [heroState, setHeroState] = useState(initialHeroState);
@@ -47,6 +60,22 @@ export default function InterviewLiveView({
         backgroundColor: tokens.color.surface.base,
       }}
     >
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          padding: `${tokens.space.xs}px ${tokens.space.md}px`,
+          borderBottom: `1px solid ${tokens.color.border.subtle}`,
+          backgroundColor: tokens.color.surface.raised,
+        }}
+      >
+        <CaptureSourceStatus
+          captureState={captureState}
+          micHealth={sources?.microphone}
+          systemAudioHealth={sources?.system_audio}
+        />
+      </div>
       <HeroQuestion
         hero={hero}
         isStale={stale}
@@ -62,6 +91,7 @@ export default function InterviewLiveView({
       />
       <TranscriptSheet
         segments={transcript}
+        gaps={gaps}
         open={sheetOpen}
         onToggle={() => setSheetOpen((o) => !o)}
       />

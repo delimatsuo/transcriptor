@@ -8,10 +8,29 @@ export type WSMessageType =
   | "suggestion"
   | "session_state"
   | "connection_status"
+  | "companion_health"
+  | "coverage_gap"
   | "error"
   | "speaker_relabel_batch";
 
 export type ConnectionHealth = "healthy" | "degraded" | "disconnected";
+export type PhysicalCaptureState =
+  | "not_started"
+  | "starting"
+  | "active"
+  | "pausing"
+  | "paused"
+  | "stopping"
+  | "stopped"
+  | "unknown";
+export type SourceHealthState =
+  | "healthy"
+  | "permission_missing"
+  | "permission_revoked"
+  | "device_unavailable"
+  | "overflow"
+  | "failed"
+  | "unknown";
 export type ErrorSeverity = "warning" | "error" | "fatal";
 export type SessionMode = "meeting" | "interview";
 export type SessionStatus = "active" | "completed" | "incomplete";
@@ -170,9 +189,34 @@ export interface SessionState {
   pending_suggestions: string[];
 }
 
+export interface SourceHealthReport {
+  microphone: SourceHealthState;
+  system_audio: SourceHealthState;
+}
+
+export interface CoverageGapSegment {
+  id: string;
+  source: "microphone" | "system_audio" | "both";
+  start_ms: number;
+  end_ms: number | null;
+  reason: "overrun" | "device_lost" | "permission_denied" | "buffer_exhaustion" | "unknown";
+}
+
+export interface CompanionHealthPayload {
+  physical_capture: PhysicalCaptureState;
+  sources: SourceHealthReport;
+  message?: string;
+}
+
+export interface CoverageGapPayload {
+  gap: CoverageGapSegment;
+}
+
 export interface ConnectionStatusPayload {
   stt_health: ConnectionHealth;
   ws_health: ConnectionHealth;
+  companion_health?: PhysicalCaptureState;
+  sources?: SourceHealthReport;
   message: string;
 }
 

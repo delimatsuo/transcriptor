@@ -49,10 +49,13 @@ function AuthenticatedHome({ auth }: { auth: AuthenticatedAuthState }) {
 
   const {
     transcript,
+    coverageGaps,
     summary,
     isSummaryFinal,
     suggestionHistory,
     connectionHealth,
+    companionCaptureState,
+    sources,
     lastError,
     connect,
     disconnect,
@@ -291,6 +294,9 @@ function AuthenticatedHome({ auth }: { auth: AuthenticatedAuthState }) {
         <InterviewLiveView
           sessionId={sessionId}
           transcript={transcript}
+          gaps={coverageGaps}
+          sources={sources}
+          captureState={companionCaptureState}
           suggestionHistory={suggestionHistory}
         />
       )}

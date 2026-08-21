@@ -2,15 +2,21 @@
 
 import TranscriptPanel from "@/components/TranscriptPanel";
 import { tokens } from "@/lib/tokens";
-import type { TranscriptSegment } from "@/types/ws";
+import type { CoverageGapSegment, TranscriptSegment } from "@/types/ws";
 
 interface Props {
   segments: TranscriptSegment[];
+  gaps?: CoverageGapSegment[];
   open: boolean;
   onToggle: () => void;
 }
 
-export default function TranscriptSheet({ segments, open, onToggle }: Props) {
+export default function TranscriptSheet({
+  segments,
+  gaps = [],
+  open,
+  onToggle,
+}: Props) {
   return (
     <div
       style={{
@@ -48,7 +54,7 @@ export default function TranscriptSheet({ segments, open, onToggle }: Props) {
             overflow: "hidden",
           }}
         >
-          <TranscriptPanel segments={segments} />
+          <TranscriptPanel segments={segments} gaps={gaps} />
         </div>
       )}
     </div>
