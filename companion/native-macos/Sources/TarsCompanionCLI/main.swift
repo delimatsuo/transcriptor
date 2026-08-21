@@ -6,13 +6,30 @@ final class WebSocketAudioSink: CaptureFrameSink, @unchecked Sendable {
     private let webSocketTask: URLSessionWebSocketTask
     private let sessionID: String
     private let lock = NSLock()
+    private var isClosed = false
 
     init(webSocketTask: URLSessionWebSocketTask, sessionID: String) {
         self.webSocketTask = webSocketTask
         self.sessionID = sessionID
     }
 
+    private func checkClosed() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return isClosed
+    }
+
+    private func markClosed() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        if isClosed { return false }
+        isClosed = true
+        return true
+    }
+
     func receive(_ frame: AudioFrame) async throws {
+        if checkClosed() { return }
+
         // Encode frame header + raw PCM payload
         let headerDict: [String: Any] = [
             "session_id": sessionID,
@@ -34,14 +51,19 @@ final class WebSocketAudioSink: CaptureFrameSink, @unchecked Sendable {
         packet.append(frame.payload.copyData())
 
         let message = URLSessionWebSocketTask.Message.data(packet)
-        webSocketTask.send(message) { error in
+        webSocketTask.send(message) { [weak self] error in
             if let error = error {
-                fputs("[tars-companion] WebSocket send error: \(error.localizedDescription)\n", stderr)
+                guard let self = self else { return }
+                if self.markClosed() {
+                    fputs("[tars-companion] Gateway connection closed: \(error.localizedDescription)\n", stderr)
+                }
             }
         }
     }
 
     func receiveGap(_ gap: CoverageGap) async throws {
+        if checkClosed() { return }
+
         let gapDict: [String: Any] = [
             "type": "gap",
             "source": gap.identity.source.rawValue,
@@ -139,6 +161,7 @@ struct CompanionApp {
             print("✓ System audio capture active (ScreenCaptureKit)")
         } catch {
             print("⚠ System audio capture failed: \(error.localizedDescription)")
+            print("💡 Dica: Habilite a permissão em 'Ajustes do Sistema → Privacidade e Segurança → Gravação de Tela e Áudio do Sistema' para o seu Terminal.")
         }
 
         print("\nStreaming dual-channel audio to T.A.R.S. gateway...")
