@@ -14,7 +14,7 @@ import { apiFetch, useAuth } from "@/lib/auth";
 import AuthControls from "@/components/AuthControls";
 import type { SessionMode, SessionReview } from "@/types/ws";
 
-const API_BASE = "http://localhost:8000";
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
 
 function reviewLoadError(status: number): string {
   if (status === 404) {
