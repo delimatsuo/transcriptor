@@ -137,6 +137,13 @@ class Settings(BaseSettings):
     audio_buffer_max_seconds: int = Field(
         default=30, description="Max seconds of audio to buffer before dropping"
     )
+    host_audio_capture_enabled: bool = Field(
+        default=False,
+        description=(
+            "Enable server-host PyAudio capture on the backend process (legacy mode). "
+            "Disabled by default when using companion or browser Web Audio streaming."
+        ),
+    )
 
     # STT
     stt_language_code: str = Field(

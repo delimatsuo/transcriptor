@@ -1302,11 +1302,13 @@ async def _stop_pipeline(session_id: str) -> bool:
     if single_source_task is not None and not single_source_task.done():
         single_source_task.cancel()
     if not managers:
-        logger.error(
-            "audio_pipeline_missing_stream_manager",
-            session_id=session_id,
-        )
-        return False
+        if tasks:
+            logger.error(
+                "audio_pipeline_missing_stream_manager",
+                session_id=session_id,
+            )
+            return False
+        return True
     return all(manager.drain_completed is True for manager in managers)
 
 
@@ -1357,9 +1359,12 @@ async def create_session(
     # Start heartbeat
     await session_mgr.start_heartbeat(session.id)
 
-    # Start audio pipeline
-    task = asyncio.create_task(_run_audio_pipeline(session.id))
-    pipeline_tasks[session.id] = [task]
+    # Start audio pipeline only if legacy host audio capture is explicitly enabled
+    if settings.host_audio_capture_enabled:
+        task = asyncio.create_task(_run_audio_pipeline(session.id))
+        pipeline_tasks[session.id] = [task]
+    else:
+        pipeline_tasks[session.id] = []
 
     return {
         "session_id": session.id,
