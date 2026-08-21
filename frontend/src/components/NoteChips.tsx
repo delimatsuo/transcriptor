@@ -10,7 +10,7 @@ import { tokens } from "@/lib/tokens";
 import type { NoteKind, RecruiterNote, TranscriptSegment } from "@/types/ws";
 import { apiFetch } from "@/lib/auth";
 
-const API_BASE = "http://localhost:8000";
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
 
 const ACTIONS: Array<{
   kind: NoteKind;
