@@ -2328,10 +2328,9 @@ async def native_stream_endpoint(websocket: WebSocket, session_id: str):
     async def get_or_create_sm(source_label: str) -> StreamManager:
         if source_label not in sms:
             sm = StreamManager(
-                session_id=session_id,
+                settings=app_settings,
+                on_transcript=lambda seg: _on_transcript(session_id, seg),
                 source_label=source_label,
-                sample_rate=16000,
-                on_transcript=_on_transcript,
             )
             await sm.start()
             sms[source_label] = sm
