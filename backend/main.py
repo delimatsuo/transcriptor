@@ -117,6 +117,8 @@ context_windows: dict[str, ContextWindowManager] = {}
 audio_captures: dict[str, list[AudioCapture]] = {}
 audio_buffers: dict[str, list[AudioBuffer]] = {}
 stream_managers: dict[str, list[StreamManager]] = {}
+# Per-session secret required as a WS query param on the native audio gateway.
+stream_keys: dict[str, str] = {}
 pipeline_tasks: dict[str, list[asyncio.Task]] = {}
 session_stop_locks: dict[str, asyncio.Lock] = {}
 final_summary_scheduled: set[str] = set()
@@ -1301,6 +1303,7 @@ async def _stop_pipeline(session_id: str) -> bool:
     single_source_task = single_source_check_tasks.pop(session_id, None)
     if single_source_task is not None and not single_source_task.done():
         single_source_task.cancel()
+    stream_keys.pop(session_id, None)
     if not managers:
         if tasks:
             logger.error(
@@ -1338,6 +1341,12 @@ async def create_session(
     # Save to Firestore
     await firestore_storage.save_session(session)
 
+    # Per-session secret the native companion must present on the audio
+    # gateway WebSocket; without it any client could stream audio into any
+    # session_id it guessed.
+    stream_key = secrets.token_urlsafe(32)
+    stream_keys[session.id] = stream_key
+
     # Rolling summaries carry prior model context and counters; never share
     # that state between authenticated sessions or organizations.
     assert gemini_client
@@ -1372,6 +1381,7 @@ async def create_session(
         "mode": mode,
         "stop_capability": stop_capability,
         "stop_capability_expires_in": settings.auth_stop_capability_ttl_seconds,
+        "stream_key": stream_key,
     }
 
 
@@ -2333,6 +2343,19 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
 @app.websocket("/api/stream/native/{session_id}")
 async def native_stream_endpoint(websocket: WebSocket, session_id: str):
     """Ingest dual-channel audio from the native macOS companion over WebSocket."""
+    presented = websocket.query_params.get("stream_key", "")
+    expected = stream_keys.get(session_id)
+    session = session_mgr.get_session(session_id) if session_mgr else None
+    if (
+        not expected
+        or not presented
+        or not secrets.compare_digest(presented, expected)
+        or session is None
+        or session.status != SessionStatus.ACTIVE
+    ):
+        logger.warning("native_stream_rejected", session_id=session_id)
+        await websocket.close(code=1008)
+        return
     await websocket.accept()
     logger.info("native_companion_connected", session_id=session_id)
     app_settings = settings or get_settings()
