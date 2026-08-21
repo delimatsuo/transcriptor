@@ -2364,9 +2364,17 @@ async def native_stream_endpoint(websocket: WebSocket, session_id: str):
                     else app_settings.stt_speaker_label_self
                 )
 
-                sm = await get_or_create_sm(source_label)
-                if pcm_payload:
-                    await sm.send_audio(pcm_payload)
+                try:
+                    sm = await get_or_create_sm(source_label)
+                    if pcm_payload:
+                        await sm.send_audio(pcm_payload)
+                except Exception as e:
+                    logger.warning(
+                        "native_stream_audio_send_error",
+                        session_id=session_id,
+                        source=source_label,
+                        error=str(e),
+                    )
             elif "text" in message and message["text"]:
                 try:
                     text_data = json.loads(message["text"])
