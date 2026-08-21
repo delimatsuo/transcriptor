@@ -89,3 +89,77 @@ def test_native_stream_endpoint_handles_short_packets_gracefully():
     asyncio.run(main.native_stream_endpoint(ws, "test-sess-malformed"))
     assert ws.accepted is True
     assert ws.sent_json == [{"type": "pong"}]
+
+
+def test_native_stream_endpoint_handles_gap_messages():
+    ws = FakeNativeWebSocket([
+        {"text": json.dumps({"type": "gap", "source": "system_audio", "reason": "overrun", "first_sample": 16000})},
+        {"text": json.dumps({"type": "ping"})},
+    ])
+
+    asyncio.run(main.native_stream_endpoint(ws, "test-sess-gap"))
+    assert ws.accepted is True
+    assert ws.sent_json == [{"type": "pong"}]
+
+
+def test_native_stream_endpoint_handles_corrupt_json_header():
+    # Length is 4 bytes indicating 10 bytes header, but header is invalid JSON
+    bad_header = b"\x00\x00\x00\x0a{invalid:}" + (b"\x00\x00" * 800)
+    ws = FakeNativeWebSocket([
+        {"bytes": bad_header},
+        {"text": json.dumps({"type": "ping"})},
+    ])
+
+    asyncio.run(main.native_stream_endpoint(ws, "test-sess-bad-json"))
+    assert ws.accepted is True
+    assert ws.sent_json == [{"type": "pong"}]
+
+
+@patch("backend.main.StreamManager")
+def test_native_stream_endpoint_testclient_e2e(mock_sm_cls):
+    from starlette.testclient import TestClient
+    mock_sm_instance = AsyncMock()
+    mock_sm_cls.return_value = mock_sm_instance
+
+    client = TestClient(main.app)
+    with client.websocket_connect("/api/stream/native/test-sess-client-e2e") as ws:
+        # Ping
+        ws.send_text(json.dumps({"type": "ping"}))
+        response = ws.receive_json()
+        assert response == {"type": "pong"}
+
+        # Gap
+        ws.send_text(json.dumps({"type": "gap", "source": "microphone", "reason": "device_lost", "first_sample": 8000}))
+
+        # Mic audio packet
+        mic_packet = _encode_native_packet({
+            "session_id": "test-sess-client-e2e",
+            "source": "microphone",
+            "sequence": 1,
+            "first_sample": 0,
+            "captured_at_ms": 1000,
+            "sample_rate": 16000,
+            "channel_count": 1,
+            "duration_ms": 50,
+        }, payload=b"\x01\x00" * 800)
+        ws.send_bytes(mic_packet)
+
+        # Sys audio packet
+        sys_packet = _encode_native_packet({
+            "session_id": "test-sess-client-e2e",
+            "source": "system_audio",
+            "sequence": 1,
+            "first_sample": 0,
+            "captured_at_ms": 1000,
+            "sample_rate": 16000,
+            "channel_count": 1,
+            "duration_ms": 50,
+        }, payload=b"\x02\x00" * 800)
+        ws.send_bytes(sys_packet)
+
+    # After websocket context exits (disconnect), verify StreamManagers were started and stopped
+    assert mock_sm_cls.call_count == 2
+    assert mock_sm_instance.start.call_count == 2
+    assert mock_sm_instance.send_audio.call_count == 2
+    assert mock_sm_instance.stop.call_count == 2
+

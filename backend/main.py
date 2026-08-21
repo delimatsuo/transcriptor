@@ -2373,6 +2373,14 @@ async def native_stream_endpoint(websocket: WebSocket, session_id: str):
                     text_data = json.loads(message["text"])
                     if text_data.get("type") == "ping":
                         await websocket.send_json({"type": "pong"})
+                    elif text_data.get("type") == "gap":
+                        logger.warning(
+                            "native_companion_gap_reported",
+                            session_id=session_id,
+                            source=text_data.get("source"),
+                            reason=text_data.get("reason"),
+                            first_sample=text_data.get("first_sample"),
+                        )
                 except Exception:
                     pass
     except WebSocketDisconnect:
