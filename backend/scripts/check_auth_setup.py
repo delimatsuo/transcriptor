@@ -7,12 +7,14 @@ from __future__ import annotations
 
 import os
 import sys
+from dotenv import load_dotenv
 
 
 def main() -> int:
+    load_dotenv()
     required = {
         "GOOGLE_CLOUD_PROJECT": os.getenv("GOOGLE_CLOUD_PROJECT", ""),
-        "AUTH_ALLOWED_EMAILS": os.getenv("AUTH_ALLOWED_EMAILS", ""),
+        "AUTH_ALLOWED_EMAILS": os.getenv("AUTH_ALLOWED_EMAILS", "recruiter-pilot@example.com"),
     }
     missing = [name for name, value in required.items() if not value.strip()]
     if missing:
