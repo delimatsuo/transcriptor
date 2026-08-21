@@ -16,8 +16,8 @@ import type {
   WSMessage,
 } from "@/types/ws";
 
-const WS_BASE_URL = process.env.NEXT_PUBLIC_WS_URL || "ws://localhost:8000/ws";
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+const WS_BASE_URL = process.env.NEXT_PUBLIC_WS_URL || "ws://127.0.0.1:8000/ws";
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
 
 // Exponential backoff: 1s, 2s, 4s, 8s, max 30s
 const INITIAL_RETRY_DELAY = 1000;
@@ -202,18 +202,14 @@ export function useWebSocket(): UseWebSocketReturn {
 
       const doConnect = async () => {
         try {
-          const ticketPayload = authBypassEnabled
-            ? { ticket: "playwright-ticket" }
-            : await (async () => {
-                const ticketResponse = await apiFetch(
-                  `${API_BASE_URL}/api/sessions/${encodeURIComponent(sessionId)}/ws-ticket`,
-                  { method: "POST" },
-                );
-                if (!ticketResponse.ok) {
-                  throw new Error("A sessão autenticada do áudio expirou.");
-                }
-                return (await ticketResponse.json()) as { ticket?: string };
-              })();
+          const ticketResponse = await apiFetch(
+            `${API_BASE_URL}/api/sessions/${encodeURIComponent(sessionId)}/ws-ticket`,
+            { method: "POST" },
+          );
+          if (!ticketResponse.ok) {
+            throw new Error("A sessão autenticada do áudio expirou.");
+          }
+          const ticketPayload = (await ticketResponse.json()) as { ticket?: string };
           if (!ticketPayload.ticket || intentionalCloseRef.current || sessionIdRef.current !== sessionId) {
             return;
           }

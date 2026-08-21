@@ -3,6 +3,8 @@
 import { useRef, useState } from "react";
 import type { SessionMode } from "@/types/ws";
 import { apiFetch, authBypassEnabled } from "@/lib/auth";
+import AudioDeviceSelector from "@/components/AudioDeviceSelector";
+import type { UseBrowserAudioCaptureReturn } from "@/hooks/useBrowserAudioCapture";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
 
@@ -13,6 +15,7 @@ interface Props {
   isActive: boolean;
   sessionId: string | null;
   disabled?: boolean;
+  audioCapture?: UseBrowserAudioCaptureReturn;
 }
 
 export default function SessionControls({
@@ -22,6 +25,7 @@ export default function SessionControls({
   isActive,
   sessionId,
   disabled = false,
+  audioCapture,
 }: Props) {
   const [mode, setMode] = useState<SessionMode>(authBypassEnabled ? "meeting" : "interview");
   const [title, setTitle] = useState("");
@@ -310,6 +314,19 @@ export default function SessionControls({
           {loading ? "Iniciando..." : "Iniciar sessão"}
         </button>
       </div>
+
+      {/* Microphone Selection & Live Audio VU Meter */}
+      {audioCapture && (
+        <AudioDeviceSelector
+          devices={audioCapture.devices}
+          selectedDeviceId={audioCapture.selectedDeviceId}
+          onSelectDevice={(id) => void audioCapture.selectDevice(id)}
+          audioLevel={audioCapture.audioLevel}
+          isStreaming={audioCapture.isStreaming}
+          permissionState={audioCapture.permissionState}
+          onRequestPermission={audioCapture.requestPermission}
+        />
+      )}
 
       {/* Interview prep panel */}
       {showInterviewPrep && (
