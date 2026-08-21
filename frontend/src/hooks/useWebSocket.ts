@@ -4,7 +4,12 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { mergeTranscriptSegment } from "@/lib/transcript";
 import { apiFetch, authBypassEnabled } from "@/lib/auth";
 import type {
+  CompanionHealthPayload,
   ConnectionHealth,
+  CoverageGapPayload,
+  CoverageGapSegment,
+  PhysicalCaptureState,
+  SourceHealthReport,
   Suggestion,
   SuggestionEntry,
   TranscriptSegment,
@@ -20,12 +25,15 @@ const MAX_RETRY_DELAY = 30000;
 
 interface UseWebSocketReturn {
   transcript: TranscriptSegment[];
+  coverageGaps: CoverageGapSegment[];
   summary: string;
   isSummaryFinal: boolean;
   suggestions: string[];
   suggestionHistory: SuggestionEntry[];
   latestSuggestions: string[];
   connectionHealth: ConnectionHealth;
+  companionCaptureState: PhysicalCaptureState;
+  sources: SourceHealthReport;
   lastError: string | null;
   connect: (sessionId: string) => void;
   disconnect: () => void;
@@ -37,6 +45,7 @@ interface UseWebSocketReturn {
 
 export function useWebSocket(): UseWebSocketReturn {
   const [transcript, setTranscript] = useState<TranscriptSegment[]>([]);
+  const [coverageGaps, setCoverageGaps] = useState<CoverageGapSegment[]>([]);
   const [summary, setSummary] = useState("");
   const [isSummaryFinal, setIsSummaryFinal] = useState(false);
   const [suggestionHistory, setSuggestionHistory] = useState<SuggestionEntry[]>(
@@ -44,6 +53,12 @@ export function useWebSocket(): UseWebSocketReturn {
   );
   const [connectionHealth, setConnectionHealth] =
     useState<ConnectionHealth>("disconnected");
+  const [companionCaptureState, setCompanionCaptureState] =
+    useState<PhysicalCaptureState>("not_started");
+  const [sources, setSources] = useState<SourceHealthReport>({
+    microphone: "unknown",
+    system_audio: "unknown",
+  });
   const [lastError, setLastError] = useState<string | null>(null);
 
   const wsRef = useRef<WebSocket | null>(null);
@@ -132,6 +147,23 @@ export function useWebSocket(): UseWebSocketReturn {
         setLastError(payload.message);
         break;
       }
+      case "coverage_gap": {
+        const payload = msg.payload as unknown as CoverageGapPayload;
+        if (payload?.gap) {
+          setCoverageGaps((prev) => [...prev, payload.gap]);
+        }
+        break;
+      }
+      case "companion_health": {
+        const payload = msg.payload as unknown as CompanionHealthPayload;
+        if (payload?.sources) {
+          setSources(payload.sources);
+        }
+        if (payload?.physical_capture) {
+          setCompanionCaptureState(payload.physical_capture);
+        }
+        break;
+      }
       case "speaker_relabel_batch": {
         const { updates } = msg.payload as unknown as {
           updates: Array<{ segment_id: string; new_speaker: string }>;
@@ -158,9 +190,12 @@ export function useWebSocket(): UseWebSocketReturn {
 
       // Clear previous state
       setTranscript([]);
+      setCoverageGaps([]);
       setSummary("");
       setIsSummaryFinal(false);
       setSuggestionHistory([]);
+      setSources({ microphone: "unknown", system_audio: "unknown" });
+      setCompanionCaptureState("not_started");
       setLastError(null);
       lastSeqRef.current = 0;
       retryDelayRef.current = INITIAL_RETRY_DELAY;
@@ -248,9 +283,12 @@ export function useWebSocket(): UseWebSocketReturn {
       persistedSummary: string | null,
     ) => {
       setTranscript(persistedTranscript);
+      setCoverageGaps([]);
       setSummary(persistedSummary ?? "");
       setIsSummaryFinal(Boolean(persistedSummary));
       setSuggestionHistory([]);
+      setSources({ microphone: "unknown", system_audio: "unknown" });
+      setCompanionCaptureState("not_started");
       setLastError(null);
       setConnectionHealth("disconnected");
     },
@@ -274,12 +312,15 @@ export function useWebSocket(): UseWebSocketReturn {
 
   return {
     transcript,
+    coverageGaps,
     summary,
     isSummaryFinal,
     suggestions: latestSuggestions,
     suggestionHistory,
     latestSuggestions,
     connectionHealth,
+    companionCaptureState,
+    sources,
     lastError,
     connect: connectWs,
     disconnect,

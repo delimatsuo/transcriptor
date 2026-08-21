@@ -1,10 +1,17 @@
 "use client";
 
 import { memo, useEffect, useRef } from "react";
-import type { TranscriptSegment } from "@/types/ws";
+import {
+  buildTimelineEntries,
+  formatGapReason,
+  formatGapSource,
+  formatTimeRange,
+} from "@/lib/transcriptCoverage";
+import type { CoverageGapSegment, TranscriptSegment } from "@/types/ws";
 
 interface Props {
   segments: TranscriptSegment[];
+  gaps?: CoverageGapSegment[];
   speakerMap?: Record<string, string>;
   readOnly?: boolean;
   emptyMessage?: string;
@@ -104,8 +111,67 @@ const TranscriptRow = memo(function TranscriptRow({
   );
 });
 
+const CoverageGapRow = memo(function CoverageGapRow({
+  gap,
+}: {
+  gap: CoverageGapSegment;
+}) {
+  const timeStr = formatTimeRange(gap.start_ms, gap.end_ms);
+  const sourceStr = formatGapSource(gap.source);
+  const reasonStr = formatGapReason(gap.reason);
+
+  return (
+    <div
+      id={`coverage-gap-${gap.id}`}
+      role="status"
+      aria-label={`Lacuna de áudio: ${sourceStr}, ${reasonStr}, período ${timeStr}`}
+      style={{
+        padding: "8px 14px",
+        borderRadius: 10,
+        backgroundColor: "rgba(255, 149, 0, 0.06)",
+        border: "1px dashed rgba(255, 149, 0, 0.35)",
+        margin: "6px 0",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        gap: 12,
+        fontSize: 13,
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <span
+          style={{
+            fontSize: 11,
+            fontWeight: 600,
+            color: "#ff9500",
+            backgroundColor: "rgba(255, 149, 0, 0.12)",
+            padding: "2px 8px",
+            borderRadius: 6,
+          }}
+        >
+          ⚠ Lacuna de Áudio
+        </span>
+        <span style={{ color: "#1d1d1f", fontWeight: 500 }}>
+          {sourceStr}: {reasonStr}
+        </span>
+      </div>
+      <span
+        style={{
+          fontSize: 12,
+          color: "#86868b",
+          fontVariantNumeric: "tabular-nums",
+          whiteSpace: "nowrap",
+        }}
+      >
+        {timeStr}
+      </span>
+    </div>
+  );
+});
+
 export default function TranscriptPanel({
   segments,
+  gaps = [],
   speakerMap = EMPTY_SPEAKER_MAP,
   readOnly = false,
   emptyMessage = "Aguardando fala...",
@@ -113,6 +179,8 @@ export default function TranscriptPanel({
   const bottomRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const hasMountedRef = useRef(false);
+
+  const timelineEntries = buildTimelineEntries(segments, gaps);
 
   useEffect(() => {
     if (readOnly) return;
@@ -133,7 +201,7 @@ export default function TranscriptPanel({
     if (isNearBottom) {
       bottomRef.current?.scrollIntoView({ behavior: "smooth" });
     }
-  }, [segments.length, readOnly]);
+  }, [timelineEntries.length, readOnly]);
 
   const getSpeakerLabel = (seg: TranscriptSegment) => {
     const speaker = seg.speaker_override || seg.speaker;
@@ -167,7 +235,7 @@ export default function TranscriptPanel({
         </h2>
       )}
 
-      {segments.length === 0 && (
+      {timelineEntries.length === 0 && (
         <div
           style={{
             display: "flex",
@@ -180,13 +248,18 @@ export default function TranscriptPanel({
         </div>
       )}
 
-      {segments.map((segment) => (
-        <TranscriptRow
-          key={segment.id}
-          segment={segment}
-          speakerLabel={getSpeakerLabel(segment)}
-        />
-      ))}
+      {timelineEntries.map((entry) => {
+        if (entry.kind === "gap") {
+          return <CoverageGapRow key={`gap-${entry.gap.id}`} gap={entry.gap} />;
+        }
+        return (
+          <TranscriptRow
+            key={entry.segment.id}
+            segment={entry.segment}
+            speakerLabel={getSpeakerLabel(entry.segment)}
+          />
+        );
+      })}
 
       <div ref={bottomRef} />
     </div>
