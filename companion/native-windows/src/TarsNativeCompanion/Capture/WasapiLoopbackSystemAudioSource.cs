@@ -22,14 +22,20 @@ public sealed class WasapiLoopbackSystemAudioSource : IWasapiCaptureSource
     public SourceHealth Health { get; private set; }
     public bool IsCapturing => _capturing;
 
+    private readonly bool _simulated;
+    private CancellationTokenSource? _simCts;
+    private Task? _simTask;
+
     public WasapiLoopbackSystemAudioSource(
         CaptureSourceConfiguration configuration,
         bool liveCaptureEnabled = true,
-        ICaptureFrameSink? sink = null)
+        ICaptureFrameSink? sink = null,
+        bool simulated = false)
     {
         _configuration = configuration;
         _liveCaptureEnabled = liveCaptureEnabled;
         _sink = sink;
+        _simulated = simulated;
         Health = new SourceHealth(
             Permission: PermissionState.Granted,
             Route: RouteState.Healthy,
@@ -49,18 +55,60 @@ public sealed class WasapiLoopbackSystemAudioSource : IWasapiCaptureSource
             _sequenceNumber = 1;
             _currentSampleOffset = 0;
             _buffer.Clear();
+            if (_simulated)
+            {
+                _simCts = new CancellationTokenSource();
+                _simTask = Task.Run(() => RunSimulationAsync(_simCts.Token));
+            }
         }
         return ValueTask.CompletedTask;
     }
 
-    public ValueTask StopAsync()
+    public async ValueTask StopAsync()
     {
+        CancellationTokenSource? cts;
+        Task? task;
         lock (_lock)
         {
             _capturing = false;
             _buffer.Clear();
+            cts = _simCts;
+            task = _simTask;
+            _simCts = null;
+            _simTask = null;
         }
-        return ValueTask.CompletedTask;
+        if (cts != null)
+        {
+            cts.Cancel();
+            if (task != null)
+            {
+                try { await task; } catch { }
+            }
+            cts.Dispose();
+        }
+    }
+
+    private async Task RunSimulationAsync(CancellationToken ct)
+    {
+        float[] samples = new float[800]; // 50ms at 16kHz
+        for (int i = 0; i < samples.Length; i++)
+        {
+            samples[i] = 0.15f * (float)Math.Sin(2.0 * Math.PI * 880.0 * i / 16000.0);
+        }
+
+        while (!ct.IsCancellationRequested && _capturing)
+        {
+            ulong nowMs = (ulong)DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            await PushSamplesAsync(samples, 16000, 1, nowMs);
+            try
+            {
+                await Task.Delay(50, ct);
+            }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
+        }
     }
 
     /// <summary>
