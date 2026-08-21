@@ -12,6 +12,8 @@ import { reviewWarning as getReviewWarning } from "@/lib/sessionReview";
 import { requestSessionStop } from "@/lib/sessionStop";
 import { apiFetch, useAuth } from "@/lib/auth";
 import AuthControls from "@/components/AuthControls";
+import AudioDeviceSelector from "@/components/AudioDeviceSelector";
+import { useBrowserAudioCapture } from "@/hooks/useBrowserAudioCapture";
 import type { SessionMode, SessionReview } from "@/types/ws";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
@@ -46,6 +48,8 @@ function AuthenticatedHome({ auth }: { auth: AuthenticatedAuthState }) {
   const disconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reviewRequestRef = useRef<AbortController | null>(null);
   const reviewRequestTokenRef = useRef(0);
+
+  const audioCapture = useBrowserAudioCapture();
 
   const {
     transcript,
@@ -83,8 +87,9 @@ function AuthenticatedHome({ auth }: { auth: AuthenticatedAuthState }) {
       setStopCapability(initialStopCapability ?? null);
       window.history.replaceState({}, "", window.location.pathname);
       connect(id);
+      void audioCapture.startStreaming(id);
     },
-    [connect, disconnect],
+    [connect, disconnect, audioCapture],
   );
 
   const handleOpenReview = useCallback(
@@ -172,6 +177,8 @@ function AuthenticatedHome({ auth }: { auth: AuthenticatedAuthState }) {
       return;
     }
 
+    audioCapture.stopStreaming();
+
     try {
       const outcome = await requestSessionStop(
         apiFetch,
@@ -192,7 +199,7 @@ function AuthenticatedHome({ auth }: { auth: AuthenticatedAuthState }) {
       disconnect();
       disconnectTimerRef.current = null;
     }, 10000);
-  }, [sessionId, disconnect, stopCapability]);
+  }, [sessionId, disconnect, stopCapability, audioCapture]);
 
   const handleSignOut = useCallback(async () => {
     if (isActive) {
@@ -230,6 +237,7 @@ function AuthenticatedHome({ auth }: { auth: AuthenticatedAuthState }) {
           backgroundColor: "rgba(255, 255, 255, 0.8)",
           backdropFilter: "blur(20px)",
           WebkitBackdropFilter: "blur(20px)",
+          gap: 16,
         }}
       >
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
@@ -246,6 +254,21 @@ function AuthenticatedHome({ auth }: { auth: AuthenticatedAuthState }) {
           </h1>
           {hasContent && <ConnectionStatus health={connectionHealth} />}
         </div>
+
+        {/* Mid-interview live microphone selector & level meter */}
+        {isActive && (
+          <AudioDeviceSelector
+            devices={audioCapture.devices}
+            selectedDeviceId={audioCapture.selectedDeviceId}
+            onSelectDevice={(id) => void audioCapture.selectDevice(id)}
+            audioLevel={audioCapture.audioLevel}
+            isStreaming={audioCapture.isStreaming}
+            permissionState={audioCapture.permissionState}
+            onRequestPermission={audioCapture.requestPermission}
+            compact={true}
+          />
+        )}
+
         <SessionControls
           onSessionStart={handleSessionStart}
           onSessionStop={handleSessionStop}
@@ -253,6 +276,7 @@ function AuthenticatedHome({ auth }: { auth: AuthenticatedAuthState }) {
           isActive={isActive}
           sessionId={sessionId}
           disabled={reviewLoading}
+          audioCapture={audioCapture}
         />
         <AuthControls
           status={auth.status}
