@@ -1284,6 +1284,14 @@ def _schedule_final_summary_once(session_id: str) -> None:
 
 async def _stop_pipeline(session_id: str) -> bool:
     """Stop the audio pipeline and report whether every STT stream drained."""
+    # Captured before any cancellation/pop below. This is a list of object
+    # references, not a snapshot of their state: drain_completed is read from
+    # these same StreamManager instances at the very end of this function,
+    # after they've been stopped, so capturing the list early is safe. It must
+    # happen first because a legacy _run_audio_pipeline task (host capture
+    # path), when cancelled just below, pops stream_managers[session_id] out
+    # from under a later read as part of its own finally block.
+    managers = list(stream_managers.get(session_id, []))
     tasks = pipeline_tasks.pop(session_id, None)
     if tasks:
         for task in tasks:
@@ -1294,16 +1302,19 @@ async def _stop_pipeline(session_id: str) -> bool:
             except asyncio.CancelledError:
                 pass
 
-    native_sms = native_stream_managers.pop(session_id, {})
+    # Close the native gateway to this session atomically under native_sm_lock:
+    # pop the stream key first so both a fresh connection's accept-time guard
+    # and get_or_create_sm's in-flight check see the session as gone, then
+    # detach the SM registry. Stopping the SMs themselves happens outside the
+    # lock so a slow drain doesn't block unrelated sessions' connections.
+    async with native_sm_lock:
+        stream_keys.pop(session_id, None)
+        native_sms = native_stream_managers.pop(session_id, {})
     for sm in native_sms.values():
         try:
             await sm.stop()
         except Exception:
             logger.exception("native_sm_stop_error", session_id=session_id)
-
-    # Read after the native stop loop above so drain_completed reflects each
-    # StreamManager's post-stop state (drain runs inside stop()).
-    managers = list(stream_managers.get(session_id, []))
 
     # Clean up interview runtime state (documents cleaned after final summary)
     interview_final_segment_counts.pop(session_id, None)
@@ -1318,7 +1329,6 @@ async def _stop_pipeline(session_id: str) -> bool:
     single_source_task = single_source_check_tasks.pop(session_id, None)
     if single_source_task is not None and not single_source_task.done():
         single_source_task.cancel()
-    stream_keys.pop(session_id, None)
     if not managers:
         if tasks:
             logger.error(
@@ -2379,6 +2389,13 @@ async def native_stream_endpoint(websocket: WebSocket, session_id: str):
         async with native_sm_lock:
             per_session = native_stream_managers.setdefault(session_id, {})
             if source_label not in per_session:
+                # _stop_pipeline pops stream_keys[session_id] under this same
+                # lock before tearing down the SM registry. If it's already
+                # gone, the session is stopping/stopped: refuse to spin up a
+                # StreamManager nothing will ever stop. Returning an existing,
+                # already-created SM below needs no such check.
+                if session_id not in stream_keys:
+                    raise RuntimeError("session stopping — native stream refused")
                 sm = StreamManager(
                     settings=app_settings,
                     on_transcript=lambda seg: _on_transcript(session_id, seg),

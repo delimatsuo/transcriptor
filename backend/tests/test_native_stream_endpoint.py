@@ -59,6 +59,24 @@ class FakeNativeWebSocket:
         self.sent_json.append(data)
 
 
+class _MidStreamWebSocket(FakeNativeWebSocket):
+    """A companion connection that stays "open" across two frames; runs
+    `on_second_receive` (an async callable) once, right before delivering the
+    second message. Used to simulate a still-connected companion socket racing
+    a concurrent session stop between two of its own frames."""
+
+    def __init__(self, incoming_messages, on_second_receive):
+        super().__init__(incoming_messages)
+        self._on_second_receive = on_second_receive
+        self._receive_count = 0
+
+    async def receive(self):
+        self._receive_count += 1
+        if self._receive_count == 2 and self._on_second_receive is not None:
+            await self._on_second_receive()
+        return await super().receive()
+
+
 class _FakeSession:
     def __init__(self, status="active"):
         from backend.schemas.models import SessionStatus
@@ -267,4 +285,109 @@ def test_stop_pipeline_stops_native_sms(monkeypatch):
     sm.stop.assert_awaited_once()
     assert "s-stop" not in main.native_stream_managers
     assert "s-stop" not in main.stream_keys
+
+
+def test_stop_pipeline_survives_legacy_pipeline_pop(monkeypatch):
+    """Regression test for a review finding: a legacy _run_audio_pipeline task
+    (host_audio_capture_enabled=True) shares stream_managers[session_id] with
+    the native gateway. Cancelling that task drives its own finally, which
+    does stream_managers.pop(session_id, None) (backend/main.py:563) — before
+    _stop_pipeline previously got a chance to read the list. The drain verdict
+    must still reflect the SM's real (already-drained) state instead of a
+    false "no managers found" failure.
+    """
+    sm = AsyncMock()
+    sm.drain_completed = True
+    main.native_stream_managers["s-legacy"] = {"Candidato": sm}
+    main.stream_managers["s-legacy"] = [sm]
+    main.stream_keys["s-legacy"] = "k"
+
+    async def fake_legacy_task():
+        try:
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            # Mimics _run_audio_pipeline's own finally block.
+            main.stream_managers.pop("s-legacy", None)
+            raise
+
+    async def scenario():
+        task = asyncio.create_task(fake_legacy_task())
+        await asyncio.sleep(0)  # let it reach the try/sleep before cancellation
+        main.pipeline_tasks["s-legacy"] = [task]
+        return await main._stop_pipeline("s-legacy")
+
+    result = asyncio.run(scenario())
+    assert result is True
+    sm.stop.assert_awaited_once()
+
+
+@patch("backend.main.StreamManager")
+def test_get_or_create_sm_refuses_new_sm_after_stop_pipeline(mock_sm_cls, monkeypatch):
+    """Regression test for a review finding: a companion socket that is still
+    open (already past the accept-time auth guard) must not be able to spin up
+    a fresh, never-stopped StreamManager for a source label it hasn't used yet
+    once _stop_pipeline has already torn the session down out from under it.
+    """
+    mock_sm = AsyncMock()
+    mock_sm.drain_completed = True
+    mock_sm_cls.return_value = mock_sm
+    key = _install_session(monkeypatch, "s-mid-stop")
+
+    mic_header = {"session_id": "s-mid-stop", "source": "microphone", "sequence": 1,
+                  "first_sample": 0, "captured_at_ms": 0, "sample_rate": 16000,
+                  "channel_count": 1, "duration_ms": 50}
+    sys_header = {**mic_header, "source": "system_audio", "sequence": 2}
+
+    async def stop_session_mid_flight():
+        await main._stop_pipeline("s-mid-stop")
+
+    ws = _MidStreamWebSocket(
+        [
+            {"bytes": _encode_native_packet(mic_header)},
+            {"bytes": _encode_native_packet(sys_header)},
+        ],
+        on_second_receive=stop_session_mid_flight,
+    )
+    ws.query_params = {"stream_key": key}
+
+    asyncio.run(main.native_stream_endpoint(ws, "s-mid-stop"))
+
+    # Only the microphone SM (created before the mid-flight stop) was ever
+    # built. The system_audio frame, arriving after _stop_pipeline already
+    # popped this session's registries, must be refused rather than spin up
+    # an orphaned StreamManager nothing will ever stop.
+    assert mock_sm_cls.call_count == 1
+    assert mock_sm.send_audio.await_count == 1
+
+
+@patch("backend.main.StreamManager")
+def test_get_or_create_sm_refuses_new_sm_when_stream_key_popped(mock_sm_cls, monkeypatch):
+    """Narrower regression test isolating the stream_keys gate itself: even if
+    only stream_keys[session_id] is gone (without native_stream_managers also
+    being cleared), get_or_create_sm must still refuse to build a new SM."""
+    mock_sm = AsyncMock()
+    mock_sm_cls.return_value = mock_sm
+    key = _install_session(monkeypatch, "s-key-popped")
+
+    mic_header = {"session_id": "s-key-popped", "source": "microphone", "sequence": 1,
+                  "first_sample": 0, "captured_at_ms": 0, "sample_rate": 16000,
+                  "channel_count": 1, "duration_ms": 50}
+    sys_header = {**mic_header, "source": "system_audio", "sequence": 2}
+
+    async def pop_stream_key_only():
+        main.stream_keys.pop("s-key-popped", None)
+
+    ws = _MidStreamWebSocket(
+        [
+            {"bytes": _encode_native_packet(mic_header)},
+            {"bytes": _encode_native_packet(sys_header)},
+        ],
+        on_second_receive=pop_stream_key_only,
+    )
+    ws.query_params = {"stream_key": key}
+
+    asyncio.run(main.native_stream_endpoint(ws, "s-key-popped"))
+
+    assert mock_sm_cls.call_count == 1           # only the microphone SM was ever built
+    assert mock_sm.send_audio.await_count == 1   # system_audio frame after the pop was refused
 
