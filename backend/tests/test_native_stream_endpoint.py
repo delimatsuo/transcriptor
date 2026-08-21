@@ -18,6 +18,13 @@ def configure_test_settings(monkeypatch):
         auth_allowed_emails="test@example.com",
     )
     monkeypatch.setattr(main, "settings", test_settings)
+    main.native_stream_managers.clear()
+    main.stream_managers.clear()
+    main.stream_keys.clear()
+    yield
+    main.native_stream_managers.clear()
+    main.stream_managers.clear()
+    main.stream_keys.clear()
 
 
 def _encode_native_packet(header: dict, payload: bytes = b"\x00\x00" * 800) -> bytes:
@@ -133,7 +140,9 @@ def test_native_stream_endpoint_routes_microphone_and_system_audio(mock_sm_cls, 
     assert mock_sm_cls.call_count == 2
     assert mock_sm_instance.start.call_count == 2
     assert mock_sm_instance.send_audio.call_count == 2
-    assert mock_sm_instance.stop.call_count == 2
+    # Session-scoped StreamManagers: a companion disconnect must not stop/drain
+    # them. Only _stop_pipeline (session end) does that.
+    assert mock_sm_instance.stop.call_count == 0
 
 
 def test_native_stream_endpoint_handles_short_packets_gracefully(monkeypatch):
@@ -221,9 +230,41 @@ def test_native_stream_endpoint_testclient_e2e(mock_sm_cls, monkeypatch):
         }, payload=b"\x02\x00" * 800)
         ws.send_bytes(sys_packet)
 
-    # After websocket context exits (disconnect), verify StreamManagers were started and stopped
+    # After websocket context exits (disconnect), verify StreamManagers were started
+    # and fed, but NOT stopped: session-scoped SMs survive a companion disconnect.
     assert mock_sm_cls.call_count == 2
     assert mock_sm_instance.start.call_count == 2
     assert mock_sm_instance.send_audio.call_count == 2
-    assert mock_sm_instance.stop.call_count == 2
+    assert mock_sm_instance.stop.call_count == 0
+
+
+@patch("backend.main.StreamManager")
+def test_stream_managers_survive_reconnect(mock_sm_cls, monkeypatch):
+    mock_sm = AsyncMock()
+    mock_sm_cls.return_value = mock_sm
+    key = _install_session(monkeypatch, "s-reconnect")
+    header = {"session_id": "s-reconnect", "source": "system_audio", "sequence": 1,
+              "first_sample": 0, "captured_at_ms": 0, "sample_rate": 16000,
+              "channel_count": 1, "duration_ms": 50}
+    for _ in range(2):  # two sequential connections = drop + reconnect
+        ws = FakeNativeWebSocket([{"bytes": _encode_native_packet(header)}])
+        ws.query_params = {"stream_key": key}
+        asyncio.run(main.native_stream_endpoint(ws, "s-reconnect"))
+    assert mock_sm_cls.call_count == 1          # one SM per source per SESSION, not per connection
+    assert mock_sm.send_audio.await_count == 2  # both connections fed it
+    mock_sm.stop.assert_not_awaited()           # disconnect must not drain/stop
+    assert "s-reconnect" in main.stream_managers  # registry intact for drain accounting
+
+
+def test_stop_pipeline_stops_native_sms(monkeypatch):
+    sm = AsyncMock()
+    sm.drain_completed = True
+    main.native_stream_managers["s-stop"] = {"Candidato": sm}
+    main.stream_managers["s-stop"] = [sm]
+    main.stream_keys["s-stop"] = "k"
+    result = asyncio.run(main._stop_pipeline("s-stop"))
+    assert result is True
+    sm.stop.assert_awaited_once()
+    assert "s-stop" not in main.native_stream_managers
+    assert "s-stop" not in main.stream_keys
 

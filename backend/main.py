@@ -119,6 +119,11 @@ audio_buffers: dict[str, list[AudioBuffer]] = {}
 stream_managers: dict[str, list[StreamManager]] = {}
 # Per-session secret required as a WS query param on the native audio gateway.
 stream_keys: dict[str, str] = {}
+# Session-scoped StreamManagers for the native companion gateway (session_id ->
+# source_label -> StreamManager). Survives individual WebSocket reconnects; only
+# _stop_pipeline tears these down.
+native_stream_managers: dict[str, dict[str, StreamManager]] = {}
+native_sm_lock = asyncio.Lock()
 pipeline_tasks: dict[str, list[asyncio.Task]] = {}
 session_stop_locks: dict[str, asyncio.Lock] = {}
 final_summary_scheduled: set[str] = set()
@@ -1279,7 +1284,6 @@ def _schedule_final_summary_once(session_id: str) -> None:
 
 async def _stop_pipeline(session_id: str) -> bool:
     """Stop the audio pipeline and report whether every STT stream drained."""
-    managers = list(stream_managers.get(session_id, []))
     tasks = pipeline_tasks.pop(session_id, None)
     if tasks:
         for task in tasks:
@@ -1289,6 +1293,17 @@ async def _stop_pipeline(session_id: str) -> bool:
                 await task
             except asyncio.CancelledError:
                 pass
+
+    native_sms = native_stream_managers.pop(session_id, {})
+    for sm in native_sms.values():
+        try:
+            await sm.stop()
+        except Exception:
+            logger.exception("native_sm_stop_error", session_id=session_id)
+
+    # Read after the native stop loop above so drain_completed reflects each
+    # StreamManager's post-stop state (drain runs inside stop()).
+    managers = list(stream_managers.get(session_id, []))
 
     # Clean up interview runtime state (documents cleaned after final summary)
     interview_final_segment_counts.pop(session_id, None)
@@ -2360,19 +2375,19 @@ async def native_stream_endpoint(websocket: WebSocket, session_id: str):
     logger.info("native_companion_connected", session_id=session_id)
     app_settings = settings or get_settings()
 
-    sms: dict[str, StreamManager] = {}
-
     async def get_or_create_sm(source_label: str) -> StreamManager:
-        if source_label not in sms:
-            sm = StreamManager(
-                settings=app_settings,
-                on_transcript=lambda seg: _on_transcript(session_id, seg),
-                source_label=source_label,
-            )
-            await sm.start()
-            sms[source_label] = sm
-            stream_managers.setdefault(session_id, []).append(sm)
-        return sms[source_label]
+        async with native_sm_lock:
+            per_session = native_stream_managers.setdefault(session_id, {})
+            if source_label not in per_session:
+                sm = StreamManager(
+                    settings=app_settings,
+                    on_transcript=lambda seg: _on_transcript(session_id, seg),
+                    source_label=source_label,
+                )
+                await sm.start()
+                per_session[source_label] = sm
+                stream_managers.setdefault(session_id, []).append(sm)
+            return per_session[source_label]
 
     try:
         while True:
@@ -2428,16 +2443,11 @@ async def native_stream_endpoint(websocket: WebSocket, session_id: str):
                 except Exception:
                     pass
     except WebSocketDisconnect:
-        logger.info("native_companion_disconnected", session_id=session_id)
+        pass
     except Exception:
         logger.exception("native_stream_error", session_id=session_id)
     finally:
-        for sm in list(sms.values()):
-            try:
-                await sm.stop()
-            except Exception:
-                pass
-        stream_managers.pop(session_id, None)
+        logger.info("native_companion_disconnected", session_id=session_id)
 
 
 # --- Entry point ---
