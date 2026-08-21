@@ -9,7 +9,12 @@ import type { UseBrowserAudioCaptureReturn } from "@/hooks/useBrowserAudioCaptur
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
 
 interface Props {
-  onSessionStart: (sessionId: string, mode: SessionMode, stopCapability?: string) => void;
+  onSessionStart: (
+    sessionId: string,
+    mode: SessionMode,
+    stopCapability?: string,
+    streamKey?: string,
+  ) => void;
   onSessionStop: () => Promise<void>;
   onBriefingReady?: (briefing: string) => void;
   isActive: boolean;
@@ -124,7 +129,7 @@ export default function SessionControls({
       const sid = data.session_id;
       // The backend starts capture with the session. Make that state visible
       // before any follow-up context request can fail.
-      onSessionStart(sid, mode, data.stop_capability);
+      onSessionStart(sid, mode, data.stop_capability, data.stream_key);
 
       // Upload documents if provided (interview mode)
       if (mode === "interview") {
