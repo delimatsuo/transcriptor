@@ -15,6 +15,7 @@ public static class Program
         string sessionId = "default";
         string gatewayBase = "ws://127.0.0.1:8000/api/stream/native";
         string token = "";
+        bool simulate = false;
 
         for (int i = 0; i < args.Length; i++)
         {
@@ -29,6 +30,10 @@ public static class Program
             else if (args[i] == "--token" && i + 1 < args.Length)
             {
                 token = args[++i];
+            }
+            else if (args[i] == "--simulate")
+            {
+                simulate = true;
             }
         }
 
@@ -49,7 +54,7 @@ public static class Program
         Console.WriteLine("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
         Console.WriteLine($"Session ID:   {sessionId}");
         Console.WriteLine($"Gateway URL:  {urlString}");
-        Console.WriteLine("Capture Mode: Native WASAPI Loopback (System) + WASAPI (Mic)");
+        Console.WriteLine($"Capture Mode: {(simulate ? "Simulated WASAPI Audio Engine" : "Native WASAPI Loopback (System) + WASAPI (Mic)")}");
         Console.WriteLine("Driver Setup: ZERO virtual devices or VB-CABLE required");
         Console.WriteLine("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
@@ -95,8 +100,8 @@ public static class Program
         var micConfig = new CaptureSourceConfiguration(micIdentity, "Wasapi.DefaultCommunicationsMic");
         var sysConfig = new CaptureSourceConfiguration(sysIdentity, "Wasapi.DefaultRenderLoopback");
 
-        await using var micSource = new WasapiMicrophoneAudioSource(micConfig, liveCaptureEnabled: true, sink: sink);
-        await using var sysSource = new WasapiLoopbackSystemAudioSource(sysConfig, liveCaptureEnabled: true, sink: sink);
+        await using var micSource = new WasapiMicrophoneAudioSource(micConfig, liveCaptureEnabled: true, sink: sink, simulated: simulate);
+        await using var sysSource = new WasapiLoopbackSystemAudioSource(sysConfig, liveCaptureEnabled: true, sink: sink, simulated: simulate);
 
         try
         {
