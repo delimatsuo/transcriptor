@@ -202,32 +202,39 @@ async def authenticate_api_requests(request: Request, call_next):
     """Authenticate every API request before route code can touch data."""
     if request.method == "OPTIONS" or not request.url.path.startswith("/api/"):
         return await call_next(request)
-    try:
-        request_settings = settings or get_settings()
-        user = verify_bearer_token(request.headers.get("authorization"), request_settings)
-    except (AuthenticationError, ValueError):
-        # A short-lived stop capability is the only non-bearer exception. It is
-        # scoped to one session and cannot authorize reads or other mutations.
-        capability = request.headers.get("x-tars-stop-capability")
-        path_parts = request.url.path.rstrip("/").split("/")
-        session_id = path_parts[-1] if path_parts[-1] == "stop" and len(path_parts) >= 2 else None
-        if session_id == "stop":
-            session_id = path_parts[-2]
-        if request.url.path.endswith("/stop") and capability and session_id:
-            entry = stop_capabilities.get(capability)
-            now = datetime.now(timezone.utc)
-            if entry and entry[1] == session_id and entry[2] > now:
-                user = entry[0]
+    request_settings = settings or get_settings()
+    if request_settings.auth_bypass:
+        user = AuthContext(
+            uid="local-recruiter-dev",
+            email="recruiter-pilot@example.com",
+            org_id=request_settings.auth_org_id,
+        )
+    else:
+        try:
+            user = verify_bearer_token(request.headers.get("authorization"), request_settings)
+        except (AuthenticationError, ValueError):
+            # A short-lived stop capability is the only non-bearer exception. It is
+            # scoped to one session and cannot authorize reads or other mutations.
+            capability = request.headers.get("x-tars-stop-capability")
+            path_parts = request.url.path.rstrip("/").split("/")
+            session_id = path_parts[-1] if path_parts[-1] == "stop" and len(path_parts) >= 2 else None
+            if session_id == "stop":
+                session_id = path_parts[-2]
+            if request.url.path.endswith("/stop") and capability and session_id:
+                entry = stop_capabilities.get(capability)
+                now = datetime.now(timezone.utc)
+                if entry and entry[1] == session_id and entry[2] > now:
+                    user = entry[0]
+                else:
+                    user = None
             else:
                 user = None
-        else:
-            user = None
-        if user is None:
-            return JSONResponse(
-                status_code=401,
-                content={"detail": "Authentication required"},
-                headers={"WWW-Authenticate": "Bearer"},
-            )
+            if user is None:
+                return JSONResponse(
+                    status_code=401,
+                    content={"detail": "Authentication required"},
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
 
     token = set_current_auth(user)
     enforced_token = set_auth_enforced()

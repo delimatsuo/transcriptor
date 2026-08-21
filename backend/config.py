@@ -34,6 +34,10 @@ class Settings(BaseSettings):
         default=False,
         description="Explicit opt-in for the Chrome extension bridge",
     )
+    auth_bypass: bool = Field(
+        default=False,
+        description="Local development opt-in to admit local recruiter without Firebase",
+    )
 
     # Model/provider guardrails.  Keep one bounded queue across all Gemini
     # features so concurrent sessions cannot fan out unbounded provider work.

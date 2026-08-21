@@ -30,6 +30,7 @@ def auth_settings(**overrides) -> Settings:
         "google_cloud_project": "tars-test",
         "auth_allowed_emails": "recruiter@example.com",
         "auth_org_id": "ella-internal",
+        "auth_bypass": False,
     }
     values.update(overrides)
     return Settings(**values)

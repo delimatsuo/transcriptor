@@ -77,6 +77,12 @@ def _allowed_emails(settings: Settings) -> set[str]:
 
 def verify_bearer_token(authorization: str | None, settings: Settings) -> AuthContext:
     """Verify and admit a Firebase ID token without trusting request ownership."""
+    if settings.auth_bypass:
+        return AuthContext(
+            uid="local-recruiter-dev",
+            email="recruiter-pilot@example.com",
+            org_id=settings.auth_org_id,
+        )
     if not authorization or not authorization.startswith("Bearer "):
         raise AuthenticationError("missing bearer token")
     token = authorization[7:].strip()
