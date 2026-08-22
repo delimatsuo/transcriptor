@@ -2,96 +2,90 @@ import CoreGraphics
 import Foundation
 import TarsNativeCompanion
 
+/// One gateway connection, built fresh by `ReconnectingAudioSink` on every
+/// (re)connect. `resume()` alone is optimistic — URLSession happily "starts" a
+/// WebSocket task against a dead host and only reports the failure on the first
+/// read/write — so `connect()` is not considered successful until a ping has
+/// made the round trip.
 @available(macOS 13.0, *)
-final class WebSocketAudioSink: CaptureFrameSink, @unchecked Sendable {
-    private let webSocketTask: URLSessionWebSocketTask
-    private let sessionID: String
+final class URLSessionWebSocketTransport: AudioStreamTransport, @unchecked Sendable {
+    private let url: URL
+    private let session: URLSession
     private let lock = NSLock()
-    private var isClosed = false
-    private var frameCounts: [AudioSource: Int] = [:]
+    private var webSocketTask: URLSessionWebSocketTask?
 
-    init(webSocketTask: URLSessionWebSocketTask, sessionID: String) {
-        self.webSocketTask = webSocketTask
-        self.sessionID = sessionID
+    init(url: URL, session: URLSession) {
+        self.url = url
+        self.session = session
     }
 
-    private func checkClosed() -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return isClosed
-    }
-
-    private func markClosed() -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        if isClosed { return false }
-        isClosed = true
-        return true
-    }
-
-    private func recordFrameSent(for source: AudioSource) {
-        lock.lock()
-        defer { lock.unlock() }
-        frameCounts[source, default: 0] += 1
-    }
-
-    /// Thread-safe count of frames handed to this sink for `source`. Backs
-    /// the zero-frame advisory, which needs to tell "capture started but no
-    /// audio is actually flowing" (TCC granted, nothing playing/muted input)
-    /// apart from "capture never started" (already fail-loud elsewhere).
-    func framesSent(for source: AudioSource) -> Int {
-        lock.lock()
-        defer { lock.unlock() }
-        return frameCounts[source, default: 0]
-    }
-
-    func receive(_ frame: AudioFrame) async throws {
-        if checkClosed() { return }
-        recordFrameSent(for: frame.identity.source)
-
-        // Encode frame header + raw PCM payload
-        let headerDict: [String: Any] = [
-            "session_id": sessionID,
-            "source": frame.identity.source.rawValue,
-            "sequence": frame.sequence,
-            "first_sample": frame.firstSample,
-            "captured_at_ms": frame.capturedAtMs,
-            "sample_rate": frame.identity.sampleRate,
-            "channel_count": frame.identity.channelCount,
-            "duration_ms": frame.durationMs
-        ]
-
-        guard let headerJson = try? JSONSerialization.data(withJSONObject: headerDict) else { return }
-        var headerLength = UInt32(headerJson.count).bigEndian
-
-        var packet = Data()
-        withUnsafeBytes(of: &headerLength) { packet.append(contentsOf: $0) }
-        packet.append(headerJson)
-        packet.append(frame.payload.copyData())
-
-        let message = URLSessionWebSocketTask.Message.data(packet)
-        webSocketTask.send(message) { [weak self] error in
-            if let error = error {
-                guard let self = self else { return }
-                if self.markClosed() {
-                    fputs("[tars-companion] Gateway connection closed: \(error.localizedDescription)\n", stderr)
+    func connect() async throws {
+        let task = session.webSocketTask(with: url)
+        lock.withLock { webSocketTask = task }
+        task.resume()
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            task.sendPing { error in
+                if let error = error {
+                    continuation.resume(throwing: error)
+                } else {
+                    continuation.resume()
                 }
             }
         }
     }
 
-    func receiveGap(_ gap: CoverageGap) async throws {
-        if checkClosed() { return }
+    func send(_ data: Data) async throws {
+        try await send(.data(data))
+    }
 
-        let gapDict: [String: Any] = [
-            "type": "gap",
-            "source": gap.identity.source.rawValue,
-            "reason": gap.reason.rawValue,
-            "first_sample": gap.firstSample ?? 0
-        ]
-        if let json = try? JSONSerialization.data(withJSONObject: gapDict),
-           let str = String(data: json, encoding: .utf8) {
-            webSocketTask.send(.string(str)) { _ in }
+    func sendText(_ text: String) async throws {
+        try await send(.string(text))
+    }
+
+    private func send(_ message: URLSessionWebSocketTask.Message) async throws {
+        guard let task = lock.withLock({ webSocketTask }) else {
+            throw CompanionError.invalid("gateway transport is not connected")
+        }
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            task.send(message) { error in
+                if let error = error {
+                    continuation.resume(throwing: error)
+                } else {
+                    continuation.resume()
+                }
+            }
+        }
+    }
+
+    func cancel() {
+        let task = lock.withLock { () -> URLSessionWebSocketTask? in
+            let current = webSocketTask
+            webSocketTask = nil
+            return current
+        }
+        task?.cancel(with: .goingAway, reason: nil)
+    }
+}
+
+/// Prints one line per connection state *change*. The sink already collapses
+/// repeats, so a long outage produces a single warning rather than one per
+/// failed send.
+final class ConnectionAnnouncer: @unchecked Sendable {
+    private let lock = NSLock()
+    private var connectCount = 0
+
+    func announce(connected: Bool) {
+        if connected {
+            let isFirst: Bool = lock.withLock {
+                connectCount += 1
+                return connectCount == 1
+            }
+            print(isFirst ? "✓ Conectado ao gateway T.A.R.S." : "✓ Reconectado ao gateway T.A.R.S.")
+        } else {
+            let everConnected: Bool = lock.withLock { connectCount > 0 }
+            fputs(everConnected
+                ? "⚠ Conexão perdida com o gateway — o áudio fica em buffer e será reenviado ao reconectar.\n"
+                : "⚠ Sem conexão com o gateway — tentando novamente...\n", stderr)
         }
     }
 }
@@ -167,11 +161,17 @@ struct CompanionApp {
         print("Driver Setup: ZERO virtual devices or MIDI configuration needed")
         print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
 
+        // The sink owns connection lifetime from here: it buffers ~30 s of
+        // audio across a gateway outage, replays it in capture order, and only
+        // reports a gap when the outage actually outlasted the buffer.
         let session = URLSession(configuration: .default)
-        let wsTask = session.webSocketTask(with: url)
-        wsTask.resume()
-
-        let sink = WebSocketAudioSink(webSocketTask: wsTask, sessionID: options.sessionID)
+        let announcer = ConnectionAnnouncer()
+        let sink = ReconnectingAudioSink(
+            sessionID: options.sessionID,
+            transportFactory: { URLSessionWebSocketTransport(url: url, session: session) }
+        )
+        sink.onStateChange = { connected in announcer.announce(connected: connected) }
+        sink.start()
 
         // Sources are constructed only when selected: system-audio-only runs
         // never touch AVAudioEngine/mic infrastructure at all, matching the
@@ -226,9 +226,13 @@ struct CompanionApp {
                 // actually playing (or routed to the wrong output), which
                 // looks identical to a healthy idle session. Advisory only —
                 // the hard-fail path above already covers start() throwing.
+                // Gated on a live connection because `framesSent` counts
+                // delivered frames: while the gateway is unreachable the
+                // connection warnings already explain the silence, and blaming
+                // the microphone permission for it would be a lie.
                 Task {
                     try? await Task.sleep(nanoseconds: 15_000_000_000)
-                    if sink.framesSent(for: .systemAudio) == 0 {
+                    if sink.isConnected, sink.framesSent(for: .systemAudio) == 0 {
                         FileHandle.standardError.write(Data(zeroFrameAdvisory.utf8))
                     }
                 }
