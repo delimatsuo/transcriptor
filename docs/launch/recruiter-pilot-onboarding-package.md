@@ -30,7 +30,15 @@ O **T.A.R.S.** é o seu copiloto de inteligência em tempo real para entrevistas
 
 ## 3. Passo a Passo: Preparação Rápida (3 Minutos)
 
-### Passo 1: Fazer o Download do Executável do Companion
+### Passo 1: Conceder Permissão de Gravação de Tela e Áudio do Sistema
+Antes de baixar ou executar o companion, conceda a permissão do macOS:
+1. Abra **Ajustes do Sistema → Privacidade e Segurança → Gravação de Tela e Áudio do Sistema**.
+2. Habilite a permissão para o **seu aplicativo de Terminal** (ex.: Terminal.app ou iTerm2) — é o Terminal quem recebe a permissão do sistema, não o binário `tars-companion` em si.
+3. Se `tars-companion` ainda não aparecer na lista, execute-o uma vez (ele será recusado com uma mensagem de erro), volte a este painel e habilite a entrada que aparecer.
+
+---
+
+### Passo 2: Fazer o Download do Executável do Companion
 Baixe o arquivo único correspondente ao seu sistema operacional:
 - **macOS:** `dist/macos/tars-companion`
 - **Windows:** `dist/windows-x64/tars-companion.exe` (ou `windows-arm64` para computadores Snapdragon/ARM)
@@ -39,29 +47,27 @@ Baixe o arquivo único correspondente ao seu sistema operacional:
 
 ---
 
-### Passo 2: Acessar o Cockpit Web
+### Passo 3: Acessar o Cockpit Web
 1. Abra o navegador e acesse a interface web do T.A.R.S. (`http://localhost:3000`).
 2. Faça login com sua conta Google autorizada.
 3. Clique em **"Nova Entrevista"** para obter o seu `Session ID` (exemplo: `sess_exec_20260821`).
 
 ---
 
-### Passo 3: Iniciar a Captura de Áudio
-Abra o terminal / prompt de comando e execute:
+### Passo 4: Iniciar a Captura de Áudio
+No Cockpit Web, o card **"Canal do Candidato"** já exibe o comando de inicialização pronto para copiar, com o seu `Session ID` e a chave de stream preenchidos. Clique em **Copiar** e cole no terminal. O comando tem este formato:
 
 **No macOS:**
 ```bash
-./tars-companion --session-id SEU_SESSION_ID --gateway ws://127.0.0.1:8000/api/stream/native
+./tars-companion --session-id SEU_SESSION_ID --stream-key SUA_CHAVE --sources system_audio
 ```
 
-**No Windows:**
-```powershell
-.\tars-companion.exe --session-id SEU_SESSION_ID --gateway ws://127.0.0.1:8000/api/stream/native
-```
+**Windows: indisponível nesta fase.** O companion Windows é um esqueleto sem captura real; o piloto atual é macOS-somente.
 
-No Cockpit Web, você verá imediatamente os dois indicadores de status ficarem verdes:
-- 🟢 **Microfone (AVAudioEngine / WASAPI):** Ativo e capturando a sua voz.
-- 🟢 **Áudio do Sistema (ScreenCaptureKit / WASAPI Loopback):** Ativo e capturando o áudio da chamada.
+Ao rodar o comando, o indicador de status do candidato fica verde no Cockpit Web:
+- 🟢 **Áudio do Sistema (ScreenCaptureKit):** Ativo e capturando o áudio da chamada — canal do candidato, controlado pelo companion.
+
+O indicador de **Microfone** (canal do entrevistador) é ativado separadamente, direto no navegador: quando solicitado, clique em **Permitir** o acesso ao microfone e selecione seu headset no seletor de dispositivo do Cockpit. Ele não depende do companion.
 
 ---
 
