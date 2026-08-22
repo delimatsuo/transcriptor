@@ -8,6 +8,14 @@ using TarsNativeCompanion.Protocol;
 
 namespace TarsCompanionCLI;
 
+public static class CaptureModeGate
+{
+    public static int Validate(bool simulate)
+    {
+        return simulate ? 0 : 2;
+    }
+}
+
 public static class Program
 {
     public static async Task<int> Main(string[] args)
@@ -37,6 +45,14 @@ public static class Program
             }
         }
 
+        // Check if non-simulate mode is requested (not allowed)
+        int gateResult = CaptureModeGate.Validate(simulate);
+        if (gateResult == 2)
+        {
+            Console.Error.WriteLine("ERRO: A captura WASAPI real ainda NÃO está implementada neste companion. Este binário só funciona com --simulate (tom de teste). Não use em entrevistas reais.");
+            return 2;
+        }
+
         string urlString = $"{gatewayBase}/{sessionId}";
         if (!string.IsNullOrEmpty(token))
         {
@@ -54,7 +70,7 @@ public static class Program
         Console.WriteLine("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
         Console.WriteLine($"Session ID:   {sessionId}");
         Console.WriteLine($"Gateway URL:  {urlString}");
-        Console.WriteLine($"Capture Mode: {(simulate ? "Simulated WASAPI Audio Engine" : "Native WASAPI Loopback (System) + WASAPI (Mic)")}");
+        Console.WriteLine($"Capture Mode: {(simulate ? "Simulated WASAPI Audio Engine" : "NÃO IMPLEMENTADO — apenas --simulate disponível")}");
         Console.WriteLine("Driver Setup: ZERO virtual devices or VB-CABLE required");
         Console.WriteLine("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
