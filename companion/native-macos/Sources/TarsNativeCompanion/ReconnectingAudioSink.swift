@@ -10,6 +10,19 @@ public protocol AudioStreamTransport: Sendable {
     func cancel()
 }
 
+/// Raised when a transport operation outlives its deadline. The sink handles it
+/// exactly like any other transport failure — re-queue at the head, reconnect —
+/// which is the whole point: a half-open socket (laptop sleep, Wi-Fi hand-off)
+/// stops looking like a healthy connection that simply never finishes.
+public struct AudioStreamTimeout: Error, Equatable, Sendable, CustomStringConvertible {
+    public let operation: String
+    public let seconds: Double
+
+    public var description: String {
+        "gateway \(operation) exceeded \(seconds)s"
+    }
+}
+
 /// A `CaptureFrameSink` that survives gateway outages instead of silently
 /// dying on the first send error.
 ///
@@ -55,6 +68,8 @@ public final class ReconnectingAudioSink: CaptureFrameSink, @unchecked Sendable 
     private let transportFactory: @Sendable () -> AudioStreamTransport
     private let bufferCapacityFrames: Int
     private let reconnectDelaysSeconds: [Double]
+    private let connectTimeoutSeconds: Double
+    private let sendTimeoutSeconds: Double
     private let sleepHandler: @Sendable (Double) async -> Void
 
     private let lock = NSLock()
@@ -81,11 +96,18 @@ public final class ReconnectingAudioSink: CaptureFrameSink, @unchecked Sendable 
     /// write still goes through the lock so `stop()` can tear it down.
     private var transport: AudioStreamTransport?
 
+    /// - Parameters:
+    ///   - connectTimeoutSeconds: deadline for one `connect()` attempt.
+    ///   - sendTimeoutSeconds: deadline for one `send`/`sendText`. Both are
+    ///     measured with the injected `sleep`, so tests drive them without a
+    ///     wall clock. Pass `0` to disable a deadline.
     public init(
         sessionID: String,
         transportFactory: @escaping @Sendable () -> AudioStreamTransport,
         bufferCapacityFrames: Int = 600,
         reconnectDelaysSeconds: [Double] = [1, 2, 4, 8, 16, 30],
+        connectTimeoutSeconds: Double = 5,
+        sendTimeoutSeconds: Double = 5,
         sleep: @escaping @Sendable (Double) async -> Void = {
             try? await Task.sleep(nanoseconds: UInt64($0 * 1_000_000_000))
         }
@@ -94,6 +116,8 @@ public final class ReconnectingAudioSink: CaptureFrameSink, @unchecked Sendable 
         self.transportFactory = transportFactory
         self.bufferCapacityFrames = max(1, bufferCapacityFrames)
         self.reconnectDelaysSeconds = reconnectDelaysSeconds
+        self.connectTimeoutSeconds = connectTimeoutSeconds
+        self.sendTimeoutSeconds = sendTimeoutSeconds
         self.sleepHandler = sleep
     }
 
@@ -351,12 +375,63 @@ public final class ReconnectingAudioSink: CaptureFrameSink, @unchecked Sendable 
     }
 
     private func deliver(_ item: Outbound, over transport: AudioStreamTransport) async throws {
-        switch item {
-        case .frame(_, _, let packet):
-            try await transport.send(packet)
-        case .text(let text):
-            try await transport.sendText(text)
+        try await withDeadline(sendTimeoutSeconds, operation: "send", transport: transport) {
+            switch item {
+            case .frame(_, _, let packet):
+                try await transport.send(packet)
+            case .text(let text):
+                try await transport.sendText(text)
+            }
         }
+    }
+
+    /// Runs `body` against a deadline measured with the injected `sleep`.
+    ///
+    /// On expiry the transport is cancelled — which is what unblocks a wedged
+    /// socket, since URLSession completes a cancelled task's pending handlers
+    /// with an error — and an `AudioStreamTimeout` is thrown so the caller's
+    /// normal failure path (re-queue at the head, reconnect) runs.
+    ///
+    /// Deliberately *not* a `withThrowingTaskGroup`: a group awaits all of its
+    /// children at scope exit, and the child here is parked in a continuation
+    /// that cancellation alone cannot interrupt. A wedged socket would
+    /// therefore hang the group — precisely the failure this deadline exists to
+    /// prevent. The losing arm is cancelled and abandoned instead; it unblocks
+    /// on the transport cancellation moments later. A late success cannot
+    /// resurrect the operation: the outcome box resolves exactly once, so the
+    /// frame stays re-queued and is never counted as delivered twice.
+    private func withDeadline(
+        _ seconds: Double,
+        operation: String,
+        transport: AudioStreamTransport,
+        body: @escaping @Sendable () async throws -> Void
+    ) async throws {
+        guard seconds > 0 else {
+            try await body()
+            return
+        }
+        let outcome = FirstOutcomeBox()
+        let work = Task {
+            do {
+                try await body()
+                outcome.finish(.success(()))
+            } catch {
+                outcome.finish(.failure(error))
+            }
+        }
+        let deadline = Task { [sleepHandler] in
+            await sleepHandler(seconds)
+            guard !Task.isCancelled else { return }
+            // Only the arm that actually won may tear the socket down: an
+            // operation that succeeded microseconds before the deadline elapsed
+            // must not have its healthy connection cancelled out from under it.
+            guard outcome.finish(.failure(AudioStreamTimeout(operation: operation, seconds: seconds))) else { return }
+            transport.cancel()
+        }
+        let result = await outcome.value()
+        deadline.cancel()
+        work.cancel()
+        try result.get()
     }
 
     private func noteDelivered(_ item: Outbound) {
@@ -385,7 +460,7 @@ public final class ReconnectingAudioSink: CaptureFrameSink, @unchecked Sendable 
                 continue
             }
             do {
-                try await transport.sendText(text)
+                try await deliver(.text(text), over: transport)
             } catch {
                 restoreDropRuns(remaining)
                 dropConnection(transport)
@@ -406,7 +481,9 @@ public final class ReconnectingAudioSink: CaptureFrameSink, @unchecked Sendable 
 
         let candidate = transportFactory()
         do {
-            try await candidate.connect()
+            try await withDeadline(connectTimeoutSeconds, operation: "connect", transport: candidate) {
+                try await candidate.connect()
+            }
         } catch {
             candidate.cancel()
             notifyStateChange(false)
@@ -536,5 +613,44 @@ public final class ReconnectingAudioSink: CaptureFrameSink, @unchecked Sendable 
         exitWaiters.removeAll()
         lock.unlock()
         waiters.forEach { $0.resume() }
+    }
+}
+
+/// Resolves exactly once — whichever racing arm finishes first wins, and every
+/// later arm is a no-op. This is what makes a late send-completion harmless:
+/// it cannot overturn a timeout that has already been reported, so the frame is
+/// neither counted twice nor un-re-queued.
+private final class FirstOutcomeBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var outcome: Result<Void, Error>?
+    private var waiter: CheckedContinuation<Result<Void, Error>, Never>?
+
+    /// - Returns: `true` if this call is the one that resolved the box.
+    @discardableResult
+    func finish(_ result: Result<Void, Error>) -> Bool {
+        lock.lock()
+        guard outcome == nil else {
+            lock.unlock()
+            return false
+        }
+        outcome = result
+        let pending = waiter
+        waiter = nil
+        lock.unlock()
+        pending?.resume(returning: result)
+        return true
+    }
+
+    func value() async -> Result<Void, Error> {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Result<Void, Error>, Never>) in
+            lock.lock()
+            if let outcome {
+                lock.unlock()
+                continuation.resume(returning: outcome)
+                return
+            }
+            waiter = continuation
+            lock.unlock()
+        }
     }
 }

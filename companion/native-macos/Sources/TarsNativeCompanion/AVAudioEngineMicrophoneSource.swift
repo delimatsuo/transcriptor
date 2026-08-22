@@ -8,6 +8,8 @@ public final class AVAudioEngineMicrophoneSource: CaptureSource, @unchecked Send
     public let configuration: CaptureSourceConfiguration
     public private(set) var status: CaptureSourceStatus = .idle
 
+    /// Must be set before `start()`: the ordered relay that preserves frame
+    /// order is bound to this sink when capture starts.
     public var sink: CaptureFrameSink?
 
     private let liveCaptureEnabled: Bool
@@ -16,6 +18,10 @@ public final class AVAudioEngineMicrophoneSource: CaptureSource, @unchecked Send
     private var sampleOffset: UInt64 = 0
     private var pcmAccumulator = Data()
     private let lock = NSLock()
+    /// Frames reach the sink through this relay rather than through one
+    /// unstructured `Task` each, which would let consecutive 50 ms frames
+    /// arrive out of order.
+    private var relay: OrderedFrameRelay?
 
     public init(configuration: CaptureSourceConfiguration, liveCaptureEnabled: Bool = true, sink: CaptureFrameSink? = nil) {
         self.configuration = configuration
@@ -31,6 +37,11 @@ public final class AVAudioEngineMicrophoneSource: CaptureSource, @unchecked Send
         guard configuration.identity.source == .microphone else {
             status = .failed("microphone device identity is unavailable")
             throw CompanionError.invalid("microphone device identity is unavailable")
+        }
+
+        if let sink {
+            let newRelay = OrderedFrameRelay(sink: sink)
+            lock.withLock { relay = newRelay }
         }
 
         do {
@@ -70,7 +81,7 @@ public final class AVAudioEngineMicrophoneSource: CaptureSource, @unchecked Send
                 let bytesPer50ms = samplesPer50ms * targetChannels * 2
 
                 var readyFrames: [AudioFrame] = []
-                self.lock.withLock {
+                let activeRelay = self.lock.withLock { () -> OrderedFrameRelay? in
                     self.pcmAccumulator.append(int16Data)
                     while self.pcmAccumulator.count >= bytesPer50ms {
                         let framePayload = self.pcmAccumulator.prefix(bytesPer50ms)
@@ -90,13 +101,14 @@ public final class AVAudioEngineMicrophoneSource: CaptureSource, @unchecked Send
                             readyFrames.append(frame)
                         }
                     }
+                    return self.relay
                 }
 
+                // The input tap fires serially, so yielding outside the lock
+                // (the rule: never call out to foreign code while holding one)
+                // still hands frames over in capture order.
                 for frame in readyFrames {
-                    Task { [weak self, frame] in
-                        guard let self else { return }
-                        try? await self.sink?.receive(frame)
-                    }
+                    activeRelay?.yield(frame)
                 }
             }
 
@@ -111,6 +123,13 @@ public final class AVAudioEngineMicrophoneSource: CaptureSource, @unchecked Send
                 deviceIdentity: configuration.deviceIdentity ?? "AVAudioEngine.DefaultMic"
             ))
         } catch {
+            // A failed start must not leave the relay's forwarder task alive.
+            let orphan = lock.withLock { () -> OrderedFrameRelay? in
+                let current = relay
+                relay = nil
+                return current
+            }
+            await orphan?.finish()
             status = .failed("AVAudioEngine start failed: \(error.localizedDescription)")
             throw error
         }
@@ -122,9 +141,14 @@ public final class AVAudioEngineMicrophoneSource: CaptureSource, @unchecked Send
             engine.stop()
         }
         engine = nil
-        lock.withLock {
+        let pendingRelay = lock.withLock { () -> OrderedFrameRelay? in
             pcmAccumulator.removeAll(keepingCapacity: false)
+            let current = relay
+            relay = nil
+            return current
         }
+        // Drains what capture already produced before reporting stopped.
+        await pendingRelay?.finish()
         status = .stopped(SourceHealth(permission: .granted, route: .unknown))
     }
 }
