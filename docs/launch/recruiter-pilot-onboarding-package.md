@@ -1,7 +1,7 @@
 # T.A.R.S. Recruiter Pilot Onboarding Package
 
 **Version:** 1.0.0 (Launch Pilot Edition)  
-**Target Audience:** Executive Search Recruiters & Interviewers (macOS & Windows 11)  
+**Target Audience:** Executive Search Recruiters & Interviewers (macOS — piloto atual; Windows indisponível nesta fase)  
 **Governing Architecture:** ADR 0003 (`docs/architecture/0003-native-capture-launch-boundary.md`)  
 **Cockpit Web Interface:** `http://localhost:3000` (or company staging URL)
 
@@ -22,7 +22,7 @@ O **T.A.R.S.** é o seu copiloto de inteligência em tempo real para entrevistas
 
 1. **Computador:**
    - **macOS:** macOS 13.0 (Ventura) ou superior (Apple Silicon M1/M2/M3/M4 ou Intel).
-   - **Windows:** Windows 11 (Versão 22H2 ou superior).
+   - **Windows:** indisponível nesta fase do piloto (o companion Windows é um esqueleto sem captura real).
 2. **Headset ou Fones de Ouvido:** **Obrigatório.** O uso de fones evita que a voz do candidato ecoe no seu microfone físico, garantindo que os rótulos de quem está falando fiquem 100% corretos.
 3. **Navegador:** Google Chrome, Microsoft Edge ou Safari atualizados.
 
@@ -41,7 +41,7 @@ Antes de baixar ou executar o companion, conceda a permissão do macOS:
 ### Passo 2: Fazer o Download do Executável do Companion
 Baixe o arquivo único correspondente ao seu sistema operacional:
 - **macOS:** `dist/macos/tars-companion`
-- **Windows:** `dist/windows-x64/tars-companion.exe` (ou `windows-arm64` para computadores Snapdragon/ARM)
+- **Windows:** indisponível nesta fase do piloto (o companion Windows é um esqueleto sem captura real).
 
 > **Nota para macOS:** Na primeira execução, o macOS exibirá uma caixa solicitando permissão para "Gravação de Tela e Áudio do Sistema" e "Microfone". Basta clicar em **Permitir**.
 
