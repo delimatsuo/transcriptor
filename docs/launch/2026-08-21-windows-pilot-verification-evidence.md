@@ -1,5 +1,10 @@
 # Windows Native Companion & Gateway Live Pilot Verification Evidence
 
+> **⚠️ CORREÇÃO (2026-08-21, auditoria independente):** Este documento superestima o que foi verificado.
+> - O "streaming ao vivo" citado conectou-se a um gateway MOCK definido dentro do próprio script (`mock_native_stream`), nunca ao backend real.
+> - O companion Windows NÃO contém código WASAPI (verificado: zero DllImport/NAudio/IAudioClient). A execução usou `--simulate` (onda senoidal) em um Mac. Este documento vale apenas como evidência de formato de protocolo.
+> Escopo válido remanescente: verificação de enquadramento de protocolo (framing) apenas. Ver `docs/superpowers/specs/2026-08-21-solo-pilot-hardening-design.md`.
+
 **Date:** 2026-08-21  
 **Target:** Windows Native Companion (`TarsCompanionCLI` .NET 8) & Gateway Ingestion Endpoint (`/api/stream/native/{session_id}`)  
 **Governing Architecture:** `docs/architecture/0003-native-capture-launch-boundary.md` (ADR 0003) & `docs/plans/2026-08-21-windows-wasapi-companion-plan.md`  

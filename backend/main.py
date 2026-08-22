@@ -49,8 +49,11 @@ from backend.schemas.models import (
     ActiveSpeakerBatch,
     ClockSyncRequest,
     ClockSyncResponse,
+    CompanionHealthPayload,
     ConnectionHealth,
     ConnectionStatusPayload,
+    CoverageGapPayload,
+    CoverageGapSegment,
     ErrorPayload,
     ErrorSeverity,
     HeartbeatRequest,
@@ -58,6 +61,7 @@ from backend.schemas.models import (
     SessionMode,
     SessionStatus,
     SetContextRequest,
+    SourceHealthReport,
     SpeakerRelabelBatch,
     SpeakerRelabelUpdate,
     Suggestion,
@@ -117,6 +121,38 @@ context_windows: dict[str, ContextWindowManager] = {}
 audio_captures: dict[str, list[AudioCapture]] = {}
 audio_buffers: dict[str, list[AudioBuffer]] = {}
 stream_managers: dict[str, list[StreamManager]] = {}
+# Per-session secret required as a WS query param on the native audio gateway.
+stream_keys: dict[str, str] = {}
+# Session-scoped StreamManagers for the native companion gateway (session_id ->
+# source_label -> StreamManager). Survives individual WebSocket reconnects; only
+# _stop_pipeline tears these down.
+native_stream_managers: dict[str, dict[str, StreamManager]] = {}
+native_sm_lock = asyncio.Lock()
+# Merged companion_health view per session. native_stream_endpoint serves
+# MULTIPLE concurrent WS connections per session (browser mic sends
+# source="microphone"; companion sends source="system_audio"); each
+# connection updates ONLY the source(s) it has actually observed a frame/gap/
+# stall-transition for, and every broadcast carries this merged two-source
+# view — so one connection's connect/disconnect never clobbers the other's
+# already-reported health. "connections" is the live WS count for the
+# session: physical_capture is "active" while it is >0, "stopped" only once
+# the LAST connection closes. Popped whole in _stop_pipeline.
+native_session_health: dict[str, dict] = {}
+# Windowed per-(session_id, source) duplicate-frame guard: the companion may
+# legitimately resend a frame whose send() timed out but actually landed,
+# which would otherwise feed one 50ms chunk to STT twice. Nested
+# session_id -> source -> last accepted sequence number, mirroring
+# native_stream_managers' shape so _stop_pipeline can pop a session's entry
+# in one call.
+native_frame_last_seq: dict[str, dict[str, int]] = {}
+NATIVE_FRAME_DEDUP_WINDOW = 200  # ~10s at 50ms/frame; see get_or_create_sm-adjacent dedup check below
+# Native companion stall watchdog: a source that has produced >=1 audio frame
+# but none for longer than the timeout (while the companion socket is still
+# connected) is flagged device_unavailable in companion_health until its next
+# frame recovers it. Read as module globals (not captured into locals) so
+# tests can monkeypatch them to drive the loop deterministically.
+NATIVE_STALL_CHECK_INTERVAL_SECONDS = 5.0
+NATIVE_STALL_TIMEOUT_SECONDS = 10.0
 pipeline_tasks: dict[str, list[asyncio.Task]] = {}
 session_stop_locks: dict[str, asyncio.Lock] = {}
 final_summary_scheduled: set[str] = set()
@@ -795,7 +831,7 @@ async def _check_single_audio_source(session_id: str) -> None:
         seq = ws_manager.next_sequence(session_id)
         error = ErrorPayload(
             severity=ErrorSeverity.WARNING,
-            message="Audio de apenas uma fonte detectado. Verifique a configuração do BlackHole para capturar o áudio remoto.",
+            message="Apenas um canal de áudio está produzindo transcrição. Verifique se o companion (Áudio do Sistema) está em execução e com permissão concedida.",
             code="single_audio_source",
         )
         msg = WSMessage.error_msg(session_id, seq, error)
@@ -1277,6 +1313,13 @@ def _schedule_final_summary_once(session_id: str) -> None:
 
 async def _stop_pipeline(session_id: str) -> bool:
     """Stop the audio pipeline and report whether every STT stream drained."""
+    # Captured before any cancellation/pop below. This is a list of object
+    # references, not a snapshot of their state: drain_completed is read from
+    # these same StreamManager instances at the very end of this function,
+    # after they've been stopped, so capturing the list early is safe. It must
+    # happen first because a legacy _run_audio_pipeline task (host capture
+    # path), when cancelled just below, pops stream_managers[session_id] out
+    # from under a later read as part of its own finally block.
     managers = list(stream_managers.get(session_id, []))
     tasks = pipeline_tasks.pop(session_id, None)
     if tasks:
@@ -1287,6 +1330,22 @@ async def _stop_pipeline(session_id: str) -> bool:
                 await task
             except asyncio.CancelledError:
                 pass
+
+    # Close the native gateway to this session atomically under native_sm_lock:
+    # pop the stream key first so both a fresh connection's accept-time guard
+    # and get_or_create_sm's in-flight check see the session as gone, then
+    # detach the SM registry. Stopping the SMs themselves happens outside the
+    # lock so a slow drain doesn't block unrelated sessions' connections.
+    async with native_sm_lock:
+        stream_keys.pop(session_id, None)
+        native_sms = native_stream_managers.pop(session_id, {})
+        native_session_health.pop(session_id, None)
+        native_frame_last_seq.pop(session_id, None)
+    for sm in native_sms.values():
+        try:
+            await sm.stop()
+        except Exception:
+            logger.exception("native_sm_stop_error", session_id=session_id)
 
     # Clean up interview runtime state (documents cleaned after final summary)
     interview_final_segment_counts.pop(session_id, None)
@@ -1338,6 +1397,12 @@ async def create_session(
     # Save to Firestore
     await firestore_storage.save_session(session)
 
+    # Per-session secret the native companion must present on the audio
+    # gateway WebSocket; without it any client could stream audio into any
+    # session_id it guessed.
+    stream_key = secrets.token_urlsafe(32)
+    stream_keys[session.id] = stream_key
+
     # Rolling summaries carry prior model context and counters; never share
     # that state between authenticated sessions or organizations.
     assert gemini_client
@@ -1372,6 +1437,7 @@ async def create_session(
         "mode": mode,
         "stop_capability": stop_capability,
         "stop_capability_expires_in": settings.auth_stop_capability_ttl_seconds,
+        "stream_key": stream_key,
     }
 
 
@@ -2333,23 +2399,189 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
 @app.websocket("/api/stream/native/{session_id}")
 async def native_stream_endpoint(websocket: WebSocket, session_id: str):
     """Ingest dual-channel audio from the native macOS companion over WebSocket."""
+    presented = websocket.query_params.get("stream_key", "")
+    expected = stream_keys.get(session_id)
+    session = session_mgr.get_session(session_id) if session_mgr else None
+    # secrets.compare_digest(str, str) raises TypeError on non-ASCII input
+    # (an attacker-controlled query param) before reaching the clean 1008
+    # close below. Comparing UTF-8 bytes instead accepts arbitrary str
+    # content without that restriction; the try/except is defense in depth
+    # in case anything still slips through as non-str/non-encodable.
+    try:
+        key_matches = bool(expected) and bool(presented) and secrets.compare_digest(
+            presented.encode("utf-8", "surrogatepass"),
+            expected.encode("utf-8", "surrogatepass"),
+        )
+    except TypeError:
+        key_matches = False
+    if (
+        not key_matches
+        or session is None
+        or session.status != SessionStatus.ACTIVE
+    ):
+        logger.warning("native_stream_rejected", session_id=session_id)
+        await websocket.close(code=1008)
+        return
     await websocket.accept()
     logger.info("native_companion_connected", session_id=session_id)
     app_settings = settings or get_settings()
 
-    sms: dict[str, StreamManager] = {}
+    # --- companion_health / coverage_gap emission -------------------------
+    # Session-scoped (not connection-scoped): native_stream_endpoint serves
+    # multiple concurrent WS connections per session (browser mic + native
+    # companion), so health is tracked in the shared native_session_health
+    # merged view keyed by session_id, and every broadcast carries that
+    # MERGED two-source view. This connection only ever mutates the source(s)
+    # it has itself observed a frame/gap/stall-transition for (tracked in
+    # `owned_sources`) — never resetting a source another still-open
+    # connection is carrying. `connections` is the live WS count for the
+    # session: physical_capture is "active" while it is >0, and this
+    # connection's own close only drives it to "stopped" if it was the last
+    # one open.
+    session_health = native_session_health.setdefault(
+        session_id,
+        {"sources": {"microphone": "unknown", "system_audio": "unknown"}, "connections": 0},
+    )
+    session_health["connections"] += 1
+    owned_sources: set[str] = set()
+    last_emitted_health: dict | None = None
+    last_frame_at: dict[str, float] = {}
+
+    def _mark_owned(source_name: str) -> None:
+        if source_name in ("microphone", "system_audio"):
+            owned_sources.add(source_name)
+
+    def _set_source_health(source_name: str, state: str) -> bool:
+        """Mutate the session's MERGED health for source_name to state;
+        return True if it actually changed (used to decide whether an
+        emission is warranted). Also records that THIS connection has
+        observed source_name, so its close-time cleanup (see `finally`
+        below) only resets sources it actually carried."""
+        if source_name not in ("microphone", "system_audio"):
+            return False
+        _mark_owned(source_name)
+        if session_health["sources"].get(source_name) == state:
+            return False
+        session_health["sources"][source_name] = state
+        return True
+
+    async def emit_health() -> None:
+        """Broadcast companion_health iff the payload changed since the last
+        emission (avoids spamming identical state every watchdog tick).
+        Broadcast failures must never break audio ingestion, so they are
+        caught here and only logged."""
+        nonlocal last_emitted_health
+        payload = CompanionHealthPayload(
+            physical_capture="active" if session_health["connections"] > 0 else "stopped",
+            sources=SourceHealthReport(**session_health["sources"]),
+        )
+        payload_dict = payload.model_dump()
+        if payload_dict == last_emitted_health:
+            return
+        last_emitted_health = payload_dict
+        try:
+            seq = ws_manager.next_sequence(session_id)
+            msg = WSMessage.companion_health_msg(session_id, seq, payload)
+            await ws_manager.broadcast(session_id, msg)
+        except Exception as e:
+            logger.debug(
+                "native_companion_health_emit_error",
+                session_id=session_id,
+                error=str(e),
+            )
+
+    async def emit_gap(gap: CoverageGapSegment) -> None:
+        try:
+            seq = ws_manager.next_sequence(session_id)
+            msg = WSMessage.coverage_gap_msg(session_id, seq, CoverageGapPayload(gap=gap))
+            await ws_manager.broadcast(session_id, msg)
+        except Exception as e:
+            logger.debug(
+                "native_companion_gap_emit_error",
+                session_id=session_id,
+                error=str(e),
+            )
+
+    async def stall_watchdog() -> None:
+        """Any source that has produced >=1 frame but none for longer than
+        NATIVE_STALL_TIMEOUT_SECONDS while the companion socket is still
+        connected is flagged device_unavailable; its next frame recovers it
+        to healthy (see the per-frame update in the receive loop below)."""
+        while True:
+            await asyncio.sleep(NATIVE_STALL_CHECK_INTERVAL_SECONDS)
+            try:
+                now = time.monotonic()
+                for source_name, last_seen in list(last_frame_at.items()):
+                    if now - last_seen > NATIVE_STALL_TIMEOUT_SECONDS:
+                        if _set_source_health(source_name, "device_unavailable"):
+                            await emit_health()
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                # A single bad tick must not kill the watchdog for the rest
+                # of the connection, nor escape `finally`'s cancellation
+                # await as anything other than CancelledError.
+                logger.debug(
+                    "native_stall_watchdog_tick_error",
+                    session_id=session_id,
+                    error=str(e),
+                )
+
+    await emit_health()
+    stall_task = asyncio.create_task(stall_watchdog())
+
+    def _is_duplicate_frame(source_name: str, sequence: object) -> bool:
+        """True iff `sequence` is a replay of an already-accepted frame for
+        (session_id, source_name). The companion may legitimately resend a
+        frame whose send() timed out but actually landed, so only a SMALL
+        backward step (< NATIVE_FRAME_DEDUP_WINDOW, ~10s at 50ms/frame) is
+        treated as that replay. A larger backward jump is a companion-process
+        restart (its own sequence counter restarts at 1) and is accepted,
+        moving the tracked baseline to wherever the new stream lands."""
+        if source_name not in ("microphone", "system_audio") or not isinstance(sequence, int):
+            return False
+        per_source = native_frame_last_seq.setdefault(session_id, {})
+        last_seq = per_source.get(source_name)
+        if last_seq is not None and sequence <= last_seq:
+            if (last_seq - sequence) < NATIVE_FRAME_DEDUP_WINDOW:
+                return True  # replay within window: drop, baseline untouched
+            # Restart branch: the backward jump is >= the window, so this is
+            # a legitimate companion-process restart, not a replay. REPLACE
+            # the baseline outright rather than max()-ing it against the old
+            # (now-irrelevant) high-water mark — otherwise, once the new
+            # stream's own sequence climbs back to within
+            # NATIVE_FRAME_DEDUP_WINDOW of that stale mark, its genuine
+            # frames would be misread as within-window replays of the OLD
+            # stream and silently dropped.
+            per_source[source_name] = sequence
+            return False
+        # First frame ever for this source, or normal forward progress
+        # (sequence > last_seq): max() and direct assignment agree here
+        # (sequence > last_seq always in the forward case), so max() is kept
+        # as the explicit, defensive form for this branch only.
+        per_source[source_name] = sequence if last_seq is None else max(last_seq, sequence)
+        return False
 
     async def get_or_create_sm(source_label: str) -> StreamManager:
-        if source_label not in sms:
-            sm = StreamManager(
-                settings=app_settings,
-                on_transcript=lambda seg: _on_transcript(session_id, seg),
-                source_label=source_label,
-            )
-            await sm.start()
-            sms[source_label] = sm
-            stream_managers.setdefault(session_id, []).append(sm)
-        return sms[source_label]
+        async with native_sm_lock:
+            per_session = native_stream_managers.setdefault(session_id, {})
+            if source_label not in per_session:
+                # _stop_pipeline pops stream_keys[session_id] under this same
+                # lock before tearing down the SM registry. If it's already
+                # gone, the session is stopping/stopped: refuse to spin up a
+                # StreamManager nothing will ever stop. Returning an existing,
+                # already-created SM below needs no such check.
+                if session_id not in stream_keys:
+                    raise RuntimeError("session stopping — native stream refused")
+                sm = StreamManager(
+                    settings=app_settings,
+                    on_transcript=lambda seg: _on_transcript(session_id, seg),
+                    source_label=source_label,
+                )
+                await sm.start()
+                per_session[source_label] = sm
+                stream_managers.setdefault(session_id, []).append(sm)
+            return per_session[source_label]
 
     try:
         while True:
@@ -2372,11 +2604,24 @@ async def native_stream_endpoint(websocket: WebSocket, session_id: str):
                     continue
 
                 source = header.get("source", "microphone")
+                if source in ("microphone", "system_audio"):
+                    last_frame_at[source] = time.monotonic()
+                    if _set_source_health(source, "healthy"):
+                        await emit_health()
                 source_label = (
                     app_settings.stt_speaker_label_other
                     if source == "system_audio"
                     else app_settings.stt_speaker_label_self
                 )
+
+                if _is_duplicate_frame(source, header.get("sequence")):
+                    logger.debug(
+                        "native_stream_duplicate_frame",
+                        session_id=session_id,
+                        source=source,
+                        sequence=header.get("sequence"),
+                    )
+                    continue
 
                 try:
                     sm = await get_or_create_sm(source_label)
@@ -2395,26 +2640,59 @@ async def native_stream_endpoint(websocket: WebSocket, session_id: str):
                     if text_data.get("type") == "ping":
                         await websocket.send_json({"type": "pong"})
                     elif text_data.get("type") == "gap":
+                        gap_source = text_data.get("source", "unknown")
+                        reason = text_data.get("reason", "unknown")
+                        _mark_owned(gap_source)
+                        first_sample = text_data.get("first_sample") or 0
                         logger.warning(
                             "native_companion_gap_reported",
                             session_id=session_id,
-                            source=text_data.get("source"),
-                            reason=text_data.get("reason"),
-                            first_sample=text_data.get("first_sample"),
+                            source=gap_source,
+                            reason=reason,
+                            first_sample=first_sample,
                         )
+                        await emit_gap(
+                            CoverageGapSegment(
+                                id=uuid4().hex[:12],
+                                source=gap_source,
+                                start_ms=first_sample / 16.0,
+                                reason=reason,
+                            )
+                        )
+                        # Map the companion's low-level gap reason onto a
+                        # source health state; unmapped reasons leave the
+                        # source's health state unchanged.
+                        health_state = {
+                            "permission_denied": "permission_missing",
+                            "device_lost": "device_unavailable",
+                            "overrun": "overflow",
+                            "buffer_exhaustion": "overflow",
+                        }.get(reason)
+                        if health_state and _set_source_health(gap_source, health_state):
+                            await emit_health()
                 except Exception:
                     pass
     except WebSocketDisconnect:
-        logger.info("native_companion_disconnected", session_id=session_id)
+        pass
     except Exception:
         logger.exception("native_stream_error", session_id=session_id)
     finally:
-        for sm in list(sms.values()):
-            try:
-                await sm.stop()
-            except Exception:
-                pass
-        stream_managers.pop(session_id, None)
+        stall_task.cancel()
+        try:
+            await stall_task
+        except asyncio.CancelledError:
+            pass
+        # Only decrement this connection's own share of the merged view: drop
+        # our slot in the live-connection count, and reset ONLY the source(s)
+        # we ourselves carried back to "unknown". A source another still-open
+        # connection is carrying (not in `owned_sources`) is left untouched,
+        # and physical_capture only reaches "stopped" via emit_health() once
+        # `connections` has dropped to 0 (i.e. every connection has closed).
+        session_health["connections"] -= 1
+        for source_name in owned_sources:
+            session_health["sources"][source_name] = "unknown"
+        await emit_health()
+        logger.info("native_companion_disconnected", session_id=session_id)
 
 
 # --- Entry point ---

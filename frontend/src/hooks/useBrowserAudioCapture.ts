@@ -7,6 +7,7 @@ import {
   resampleTo16k,
   type FrameMetadata,
 } from "@/lib/browserPcmEncoder";
+import { buildStreamUrl } from "@/lib/streamUrl";
 
 const WS_STREAM_BASE =
   process.env.NEXT_PUBLIC_WS_STREAM_URL ||
@@ -29,7 +30,7 @@ export interface UseBrowserAudioCaptureReturn {
   isStreaming: boolean;
   permissionState: PermissionState;
   requestPermission: () => Promise<boolean>;
-  startStreaming: (sessionId: string) => Promise<void>;
+  startStreaming: (sessionId: string, streamKey?: string) => Promise<void>;
   stopStreaming: () => void;
   lastError: string | null;
 }
@@ -299,14 +300,14 @@ export function useBrowserAudioCapture(): UseBrowserAudioCaptureReturn {
 
   // Start live streaming to native stream gateway
   const startStreaming = useCallback(
-    async (sessionId: string) => {
+    async (sessionId: string, streamKey?: string) => {
       activeSessionIdRef.current = sessionId;
       sequenceRef.current = 0;
       sampleOffsetRef.current = 0;
       pcmBufferRef.current = new Float32Array(0);
 
       // Open WebSocket connection to native stream gateway
-      const wsUrl = `${WS_STREAM_BASE}/${sessionId}`;
+      const wsUrl = buildStreamUrl(WS_STREAM_BASE, sessionId, streamKey);
       const ws = new WebSocket(wsUrl);
       ws.binaryType = "arraybuffer";
       wsRef.current = ws;

@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-End-to-End Pilot Verification Script
-Validates live streaming from tars-companion CLI binary to T.A.R.S. FastAPI gateway.
+Wire-format harness ONLY: connects the companion to an in-script mock gateway.
+Proves packet framing, NOT capture, NOT transcription, NOT launch readiness.
+For live proof see scripts/verify_live_system_audio.py.
 """
 
 from __future__ import annotations

@@ -24,6 +24,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\TarsNativeCompanion\TarsNativeCompanion.csproj" />
+    <ProjectReference Include="..\..\src\TarsCompanionCLI\TarsCompanionCLI.csproj" />
   </ItemGroup>
 
 </Project>

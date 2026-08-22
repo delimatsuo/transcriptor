@@ -8,6 +8,8 @@ public final class ScreenCaptureKitSystemAudioSource: NSObject, CaptureSource, S
     public let configuration: CaptureSourceConfiguration
     public private(set) var status: CaptureSourceStatus = .idle
 
+    /// Must be set before `start()`: the ordered relay that preserves frame
+    /// order is bound to this sink when capture starts.
     public var sink: CaptureFrameSink?
 
     private let liveCaptureEnabled: Bool
@@ -17,6 +19,10 @@ public final class ScreenCaptureKitSystemAudioSource: NSObject, CaptureSource, S
     private var sampleOffset: UInt64 = 0
     private var pcmAccumulator = Data()
     private let lock = NSLock()
+    /// Frames reach the sink through this relay rather than through one
+    /// unstructured `Task` each, which would let consecutive 50 ms frames
+    /// arrive out of order.
+    private var relay: OrderedFrameRelay?
 
     public init(configuration: CaptureSourceConfiguration, liveCaptureEnabled: Bool = true, sink: CaptureFrameSink? = nil) {
         self.configuration = configuration
@@ -47,6 +53,11 @@ public final class ScreenCaptureKitSystemAudioSource: NSObject, CaptureSource, S
             throw CompanionError.invalid("system-audio identity is invalid")
         }
 
+        if let sink {
+            let newRelay = OrderedFrameRelay(sink: sink)
+            lock.withLock { relay = newRelay }
+        }
+
         do {
             let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
             guard let display = content.displays.first else {
@@ -71,6 +82,13 @@ public final class ScreenCaptureKitSystemAudioSource: NSObject, CaptureSource, S
                 deviceIdentity: "ScreenCaptureKit.SystemAudio"
             ))
         } catch {
+            // A failed start must not leave the relay's forwarder task alive.
+            let orphan = lock.withLock { () -> OrderedFrameRelay? in
+                let current = relay
+                relay = nil
+                return current
+            }
+            await orphan?.finish()
             status = .failed("ScreenCaptureKit capture failed: \(error.localizedDescription)")
             throw error
         }
@@ -81,9 +99,14 @@ public final class ScreenCaptureKitSystemAudioSource: NSObject, CaptureSource, S
             try? await activeStream.stopCapture()
         }
         stream = nil
-        lock.withLock {
+        let pendingRelay = lock.withLock { () -> OrderedFrameRelay? in
             pcmAccumulator.removeAll(keepingCapacity: false)
+            let current = relay
+            relay = nil
+            return current
         }
+        // Drains what capture already produced before reporting stopped.
+        await pendingRelay?.finish()
         status = .stopped(SourceHealth(permission: .granted, route: .unknown))
     }
 
@@ -136,7 +159,7 @@ public final class ScreenCaptureKitSystemAudioSource: NSObject, CaptureSource, S
         let bytesPer50ms = samplesPer50ms * targetChannels * 2
 
         var readyFrames: [AudioFrame] = []
-        lock.withLock {
+        let activeRelay = lock.withLock { () -> OrderedFrameRelay? in
             pcmAccumulator.append(int16Data)
             while pcmAccumulator.count >= bytesPer50ms {
                 let framePayload = pcmAccumulator.prefix(bytesPer50ms)
@@ -156,13 +179,14 @@ public final class ScreenCaptureKitSystemAudioSource: NSObject, CaptureSource, S
                     readyFrames.append(frame)
                 }
             }
+            return relay
         }
 
+        // The sample handler queue is serial, so yielding outside the lock (the
+        // rule: never call out to foreign code while holding one) still hands
+        // frames over in capture order.
         for frame in readyFrames {
-            Task { [weak self, frame] in
-                guard let self else { return }
-                try? await self.sink?.receive(frame)
-            }
+            activeRelay?.yield(frame)
         }
     }
 

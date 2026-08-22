@@ -1,5 +1,10 @@
 # T.A.R.S. (Transcriptor) Native Capture Launch Readiness Sign-Off
 
+> **⚠️ CORREÇÃO (2026-08-21, auditoria independente):** Este documento superestima o que foi verificado.
+> - O "streaming ao vivo" citado conectou-se a um gateway MOCK definido dentro do próprio script (`mock_native_stream`), nunca ao backend real.
+> - Nenhum gate G4–G8 do roadmap (`docs/plans/2026-08-13-native-capture-launch-roadmap.md`) possui evidência; a alegação "G0–G8 satisfied" é retirada. Este memo não tem signatário nomeado e não constitui aprovação de lançamento.
+> Escopo válido remanescente: verificação de enquadramento de protocolo (framing) apenas. Ver `docs/superpowers/specs/2026-08-21-solo-pilot-hardening-design.md`.
+
 **Date:** 2026-08-21  
 **Status:** **LAUNCH APPROVED (All Systems Green)**  
 **Authority Pin:** [`7441cb6`](https://github.com/delimatsuo/transcriptor/commit/7441cb6)  

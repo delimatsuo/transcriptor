@@ -35,6 +35,7 @@ type AuthenticatedAuthState = Omit<AuthState, "user"> & {
 
 function AuthenticatedHome({ auth }: { auth: AuthenticatedAuthState }) {
   const [sessionId, setSessionId] = useState<string | null>(null);
+  const [streamKey, setStreamKey] = useState<string | null>(null);
   const [sessionMode, setSessionMode] = useState<SessionMode>("meeting");
   const [isActive, setIsActive] = useState(false);
   const [preInterviewBriefing, setPreInterviewBriefing] = useState("");
@@ -67,7 +68,12 @@ function AuthenticatedHome({ auth }: { auth: AuthenticatedAuthState }) {
   } = useWebSocket();
 
   const handleSessionStart = useCallback(
-    (id: string, mode: SessionMode, initialStopCapability?: string) => {
+    (
+      id: string,
+      mode: SessionMode,
+      initialStopCapability?: string,
+      sessionStreamKey?: string,
+    ) => {
       reviewRequestTokenRef.current += 1;
       reviewRequestRef.current?.abort();
       reviewRequestRef.current = null;
@@ -85,9 +91,10 @@ function AuthenticatedHome({ auth }: { auth: AuthenticatedAuthState }) {
       setReviewError(null);
       setPersistedReviewWarning(null);
       setStopCapability(initialStopCapability ?? null);
+      setStreamKey(sessionStreamKey ?? null);
       window.history.replaceState({}, "", window.location.pathname);
       connect(id);
-      void audioCapture.startStreaming(id);
+      void audioCapture.startStreaming(id, sessionStreamKey);
     },
     [connect, disconnect, audioCapture],
   );
@@ -322,6 +329,7 @@ function AuthenticatedHome({ auth }: { auth: AuthenticatedAuthState }) {
           sources={sources}
           captureState={companionCaptureState}
           suggestionHistory={suggestionHistory}
+          streamKey={streamKey ?? undefined}
         />
       )}
 
@@ -351,6 +359,7 @@ function AuthenticatedHome({ auth }: { auth: AuthenticatedAuthState }) {
             setReviewLoading(false);
             hydrateReview([], null);
             setSessionId(null);
+            setStreamKey(null);
             setStopCapability(null);
             setIsActive(false);
             setStopError(null);

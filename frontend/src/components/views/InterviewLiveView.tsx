@@ -3,6 +3,7 @@
 import { useState } from "react";
 
 import CaptureSourceStatus from "@/components/CaptureSourceStatus";
+import CompanionCommand from "@/components/CompanionCommand";
 import HeroQuestion from "@/components/HeroQuestion";
 import NoteChips from "@/components/NoteChips";
 import QuestionsSheet from "@/components/QuestionsSheet";
@@ -31,6 +32,7 @@ interface Props {
   sources?: SourceHealthReport;
   captureState?: PhysicalCaptureState;
   suggestionHistory: SuggestionEntry[];
+  streamKey?: string;
 }
 
 export default function InterviewLiveView({
@@ -40,6 +42,7 @@ export default function InterviewLiveView({
   sources,
   captureState,
   suggestionHistory,
+  streamKey,
 }: Props) {
   const [heroState, setHeroState] = useState(initialHeroState);
   const [sheetOpen, setSheetOpen] = useState(false);
@@ -68,6 +71,7 @@ export default function InterviewLiveView({
           padding: `${tokens.space.xs}px ${tokens.space.md}px`,
           borderBottom: `1px solid ${tokens.color.border.subtle}`,
           backgroundColor: tokens.color.surface.raised,
+          gap: tokens.space.md,
         }}
       >
         <CaptureSourceStatus
@@ -75,6 +79,7 @@ export default function InterviewLiveView({
           micHealth={sources?.microphone}
           systemAudioHealth={sources?.system_audio}
         />
+        <CompanionCommand sessionId={sessionId} streamKey={streamKey} />
       </div>
       <HeroQuestion
         hero={hero}

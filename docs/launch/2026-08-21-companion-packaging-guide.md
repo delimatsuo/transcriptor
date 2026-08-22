@@ -44,6 +44,7 @@ To run the automated release artifact verification suite:
 - Emits `dist/macos/SHA256SUMS`.
 
 ### B. Windows Self-Contained Packaging (`scripts/package_windows_companion.sh`)
+**ATENÇÃO: a captura WASAPI ainda não está implementada — o exe só opera em `--simulate`.**
 - Uses .NET 8 CLI with cross-target publishing:
   ```bash
   dotnet publish companion/native-windows/src/TarsCompanionCLI/TarsCompanionCLI.csproj \
@@ -55,7 +56,7 @@ To run the automated release artifact verification suite:
     -p:EnableCompressionInSingleFile=true \
     -o dist/windows-x64
   ```
-- Bundles the .NET runtime and native WASAPI interop inside `tars-companion.exe`. No .NET SDK or runtime installation required on the recruiter's machine.
+- Bundles the .NET runtime. **ATENÇÃO: a captura WASAPI ainda não está implementada — o exe só opera em `--simulate`.** No .NET SDK or runtime installation required on the recruiter's machine.
 - Emits `dist/windows-x64/SHA256SUMS` and `dist/windows-arm64/SHA256SUMS`.
 
 ### C. Master Release Manifest (`dist/manifest.json`)
