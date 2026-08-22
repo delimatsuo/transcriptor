@@ -2542,12 +2542,23 @@ async def native_stream_endpoint(websocket: WebSocket, session_id: str):
             return False
         per_source = native_frame_last_seq.setdefault(session_id, {})
         last_seq = per_source.get(source_name)
-        if (
-            last_seq is not None
-            and sequence <= last_seq
-            and (last_seq - sequence) < NATIVE_FRAME_DEDUP_WINDOW
-        ):
-            return True
+        if last_seq is not None and sequence <= last_seq:
+            if (last_seq - sequence) < NATIVE_FRAME_DEDUP_WINDOW:
+                return True  # replay within window: drop, baseline untouched
+            # Restart branch: the backward jump is >= the window, so this is
+            # a legitimate companion-process restart, not a replay. REPLACE
+            # the baseline outright rather than max()-ing it against the old
+            # (now-irrelevant) high-water mark — otherwise, once the new
+            # stream's own sequence climbs back to within
+            # NATIVE_FRAME_DEDUP_WINDOW of that stale mark, its genuine
+            # frames would be misread as within-window replays of the OLD
+            # stream and silently dropped.
+            per_source[source_name] = sequence
+            return False
+        # First frame ever for this source, or normal forward progress
+        # (sequence > last_seq): max() and direct assignment agree here
+        # (sequence > last_seq always in the forward case), so max() is kept
+        # as the explicit, defensive form for this branch only.
         per_source[source_name] = sequence if last_seq is None else max(last_seq, sequence)
         return False
 

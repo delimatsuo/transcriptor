@@ -667,3 +667,26 @@ def test_frame_dedup_accepts_normal_increments(mock_sm_cls, monkeypatch):
     asyncio.run(main.native_stream_endpoint(ws, "s-dedup-3"))
     assert mock_sm.send_audio.await_count == 3
 
+
+@patch("backend.main.StreamManager")
+def test_frame_dedup_restart_baseline_resets_not_max(mock_sm_cls, monkeypatch):
+    """Re-review regression test: after a restart-style backward jump is
+    accepted, the tracked baseline must be REPLACED with the new stream's
+    sequence, not max()-ed against the old (now-irrelevant) high-water mark.
+    Under max()-ing, the stale baseline survives the restart, and once the
+    new stream's own sequence climbs back within NATIVE_FRAME_DEDUP_WINDOW
+    of it, genuine post-restart frames get misread as within-window replays
+    of the OLD stream and silently dropped — here, seq 60 would wrongly
+    read as a replay of the old stream's seq 250 (250-60=190 < 200)."""
+    mock_sm = AsyncMock()
+    mock_sm_cls.return_value = mock_sm
+    key = _install_session(monkeypatch, "s-dedup-restart-baseline")
+    ws = FakeNativeWebSocket([
+        {"bytes": _encode_native_packet(_dedup_header("s-dedup-restart-baseline", 250))},  # old stream reaches 250
+        {"bytes": _encode_native_packet(_dedup_header("s-dedup-restart-baseline", 1))},    # restart: jump 249 >= 200, accepted
+        {"bytes": _encode_native_packet(_dedup_header("s-dedup-restart-baseline", 60))},   # new stream's own frame 60
+    ])
+    ws.query_params = {"stream_key": key}
+    asyncio.run(main.native_stream_endpoint(ws, "s-dedup-restart-baseline"))
+    assert mock_sm.send_audio.await_count == 3  # all three forwarded, none silently dropped
+
