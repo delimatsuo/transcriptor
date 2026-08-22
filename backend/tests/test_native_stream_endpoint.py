@@ -21,10 +21,14 @@ def configure_test_settings(monkeypatch):
     main.native_stream_managers.clear()
     main.stream_managers.clear()
     main.stream_keys.clear()
+    main.native_session_health.clear()
+    main.native_frame_last_seq.clear()
     yield
     main.native_stream_managers.clear()
     main.stream_managers.clear()
     main.stream_keys.clear()
+    main.native_session_health.clear()
+    main.native_frame_last_seq.clear()
 
 
 def _encode_native_packet(header: dict, payload: bytes = b"\x00\x00" * 800) -> bytes:
@@ -105,6 +109,19 @@ def test_native_stream_rejects_wrong_key(monkeypatch):
     ws.query_params = {"stream_key": "wrongkey"}
     asyncio.run(main.native_stream_endpoint(ws, "s1"))
     assert ws.accepted is False and ws.closed_code == 1008
+
+
+def test_native_stream_rejects_non_ascii_key_without_raising(monkeypatch):
+    """Regression test for a review finding: secrets.compare_digest(str, str)
+    raises TypeError on non-ASCII input before reaching the clean 1008
+    close, leaving a traceback for an attacker-controlled query param. The
+    probe must be cleanly rejected with no exception escaping the endpoint."""
+    _install_session(monkeypatch, "s-nonascii", key="rightkey")
+    ws = FakeNativeWebSocket([])
+    ws.query_params = {"stream_key": "café☃🔥"}
+    asyncio.run(main.native_stream_endpoint(ws, "s-nonascii"))
+    assert ws.accepted is False
+    assert ws.closed_code == 1008
 
 
 def test_native_stream_rejects_unknown_session(monkeypatch):
@@ -261,10 +278,17 @@ def test_stream_managers_survive_reconnect(mock_sm_cls, monkeypatch):
     mock_sm = AsyncMock()
     mock_sm_cls.return_value = mock_sm
     key = _install_session(monkeypatch, "s-reconnect")
-    header = {"session_id": "s-reconnect", "source": "system_audio", "sequence": 1,
-              "first_sample": 0, "captured_at_ms": 0, "sample_rate": 16000,
-              "channel_count": 1, "duration_ms": 50}
-    for _ in range(2):  # two sequential connections = drop + reconnect
+    # A mere WS reconnect (network blip) does not restart the companion
+    # process, so its own sequence counter keeps incrementing across it —
+    # only a companion PROCESS restart legitimately resets sequence to 1
+    # (see the dedup-guard restart test below). Each reconnect iteration
+    # here sends the next sequence number so this scenario isn't conflated
+    # with the replay-dedup guard: this test is specifically about
+    # StreamManager surviving reconnects, not about duplicate sequences.
+    for i in range(2):  # two sequential connections = drop + reconnect
+        header = {"session_id": "s-reconnect", "source": "system_audio", "sequence": i + 1,
+                  "first_sample": 0, "captured_at_ms": 0, "sample_rate": 16000,
+                  "channel_count": 1, "duration_ms": 50}
         ws = FakeNativeWebSocket([{"bytes": _encode_native_packet(header)}])
         ws.query_params = {"stream_key": key}
         asyncio.run(main.native_stream_endpoint(ws, "s-reconnect"))
@@ -280,11 +304,20 @@ def test_stop_pipeline_stops_native_sms(monkeypatch):
     main.native_stream_managers["s-stop"] = {"Candidato": sm}
     main.stream_managers["s-stop"] = [sm]
     main.stream_keys["s-stop"] = "k"
+    # Finding 1 + Finding 2 module state must be torn down alongside the
+    # other per-session state, not left to leak across sessions.
+    main.native_session_health["s-stop"] = {
+        "sources": {"microphone": "healthy", "system_audio": "unknown"},
+        "connections": 1,
+    }
+    main.native_frame_last_seq["s-stop"] = {"system_audio": 42}
     result = asyncio.run(main._stop_pipeline("s-stop"))
     assert result is True
     sm.stop.assert_awaited_once()
     assert "s-stop" not in main.native_stream_managers
     assert "s-stop" not in main.stream_keys
+    assert "s-stop" not in main.native_session_health
+    assert "s-stop" not in main.native_frame_last_seq
 
 
 def test_stop_pipeline_survives_legacy_pipeline_pop(monkeypatch):
@@ -464,4 +497,173 @@ def test_stall_watchdog_flags_and_recovers_source_health(monkeypatch):
     stalled_at = states.index("device_unavailable")
     assert "healthy" in states[stalled_at + 1:]  # next frame recovers it
     assert msgs[-1].payload["physical_capture"] == "stopped"
+
+
+# --- Finding 1: merged per-session health view across concurrent connections ---
+#
+# native_stream_endpoint serves MULTIPLE concurrent WS connections per
+# session (browser mic sends source="microphone"; companion sends
+# source="system_audio"). Before the fix, each connection kept its OWN
+# CompanionHealthPayload from scratch, so a companion connecting/disconnecting
+# after the browser would wipe the mic badge to "unknown" (and briefly report
+# physical_capture="stopped") even while the browser's mic connection was
+# still live. FakeNativeWebSocket-driven tests run everything on one thread
+# sequentially, so true concurrency is simulated via _MidStreamWebSocket's
+# on_second_receive hook: it runs connection B's *entire* endpoint lifecycle
+# (connect through disconnect) in the middle of connection A's own receive
+# loop, while A is still considered "open".
+
+def test_health_companion_connect_disconnect_does_not_clobber_open_mic_connection(monkeypatch):
+    """(a) A (microphone) goes healthy, then a companion-style connection B
+    connects and disconnects with NO frames of its own while A is still open.
+    No broadcast observed during B's lifetime may ever regress microphone
+    away from healthy, or report physical_capture as anything but active;
+    physical_capture must reach "stopped" only once A itself later closes
+    too (i.e. once both connections have closed)."""
+    fake_wsm = type("W", (), {"broadcast": AsyncMock(), "next_sequence": staticmethod(lambda sid: 1)})()
+    monkeypatch.setattr(main, "ws_manager", fake_wsm)
+    session_id = "s-merge-a"
+    key = _install_session(monkeypatch, session_id)
+    mic_header = {"session_id": session_id, "source": "microphone", "sequence": 1,
+                  "first_sample": 0, "captured_at_ms": 0, "sample_rate": 16000,
+                  "channel_count": 1, "duration_ms": 50}
+    captured: dict = {}
+
+    async def run_companion_b():
+        ws_b = FakeNativeWebSocket([])  # connects, observes nothing, disconnects
+        ws_b.query_params = {"stream_key": key}
+        await main.native_stream_endpoint(ws_b, session_id)
+        # Snapshot right after B has fully closed, while A is still open.
+        captured["mid_b_msgs"] = list(_health_msgs(fake_wsm))
+
+    with patch("backend.main.StreamManager") as mock_sm_cls:
+        mock_sm_cls.return_value = AsyncMock()
+        ws_a = _MidStreamWebSocket(
+            [{"bytes": _encode_native_packet(mic_header)}],
+            on_second_receive=run_companion_b,
+        )
+        ws_a.query_params = {"stream_key": key}
+        asyncio.run(main.native_stream_endpoint(ws_a, session_id))
+
+    mid_b_msgs = captured["mid_b_msgs"]
+    assert mid_b_msgs, "expected at least one health broadcast by the time B closed"
+    healthy_seen = False
+    for m in mid_b_msgs:
+        if m.payload["sources"]["microphone"] == "healthy":
+            healthy_seen = True
+        if healthy_seen:
+            assert m.payload["sources"]["microphone"] == "healthy", (
+                "microphone regressed away from healthy while A was still open"
+            )
+        assert m.payload["physical_capture"] == "active", (
+            "physical_capture must stay active while A (browser mic) is still open"
+        )
+    assert healthy_seen
+
+    # Only after A *itself* later closes (both connections now closed) does
+    # physical_capture finally reach "stopped".
+    all_msgs = _health_msgs(fake_wsm)
+    assert all_msgs[-1].payload["physical_capture"] == "stopped"
+
+
+def test_health_companion_disconnect_only_resets_its_own_source(monkeypatch):
+    """(b) A companion-style connection B produces system_audio frames (goes
+    healthy) then closes while A (microphone, already healthy) is still open.
+    Only system_audio must return to "unknown"; microphone must stay healthy
+    and physical_capture must stay active, since A is still connected."""
+    fake_wsm = type("W", (), {"broadcast": AsyncMock(), "next_sequence": staticmethod(lambda sid: 1)})()
+    monkeypatch.setattr(main, "ws_manager", fake_wsm)
+    session_id = "s-merge-b"
+    key = _install_session(monkeypatch, session_id)
+    mic_header = {"session_id": session_id, "source": "microphone", "sequence": 1,
+                  "first_sample": 0, "captured_at_ms": 0, "sample_rate": 16000,
+                  "channel_count": 1, "duration_ms": 50}
+    sys_header = {**mic_header, "source": "system_audio", "sequence": 1}
+    captured: dict = {}
+
+    async def run_companion_b():
+        ws_b = FakeNativeWebSocket([{"bytes": _encode_native_packet(sys_header)}])
+        ws_b.query_params = {"stream_key": key}
+        await main.native_stream_endpoint(ws_b, session_id)
+        captured["mid_b_msgs"] = list(_health_msgs(fake_wsm))
+
+    with patch("backend.main.StreamManager") as mock_sm_cls:
+        mock_sm_cls.return_value = AsyncMock()
+        ws_a = _MidStreamWebSocket(
+            [{"bytes": _encode_native_packet(mic_header)}],
+            on_second_receive=run_companion_b,
+        )
+        ws_a.query_params = {"stream_key": key}
+        asyncio.run(main.native_stream_endpoint(ws_a, session_id))
+
+    last = captured["mid_b_msgs"][-1]
+    assert last.payload["sources"]["system_audio"] == "unknown"
+    assert last.payload["sources"]["microphone"] == "healthy"
+    assert last.payload["physical_capture"] == "active"
+
+
+# --- Finding 2: windowed per-source sequence dedup at the gateway ---
+#
+# Replay-after-timeout is designed behavior (the companion may resend a frame
+# whose send() timed out but actually landed), which can otherwise feed one
+# 50ms chunk to STT twice. A frame is dropped (send_audio skipped) only when
+# its sequence is <= the last accepted sequence for that (session, source)
+# AND the backward gap is small (< 200, ~10s at 50ms/frame); a larger
+# backward jump is treated as a legitimate companion-process restart
+# (sequence counter restarts at 1) and passes through.
+
+def _dedup_header(session_id: str, seq: int) -> dict:
+    return {"session_id": session_id, "source": "system_audio", "sequence": seq,
+            "first_sample": 0, "captured_at_ms": 0, "sample_rate": 16000,
+            "channel_count": 1, "duration_ms": 50}
+
+
+@patch("backend.main.StreamManager")
+def test_frame_dedup_drops_replay_within_window(mock_sm_cls, monkeypatch):
+    """(1) seq 5 followed by another seq 5 for the same (session, source)
+    within the window is a replay, not new audio: the second is dropped."""
+    mock_sm = AsyncMock()
+    mock_sm_cls.return_value = mock_sm
+    key = _install_session(monkeypatch, "s-dedup-1")
+    ws = FakeNativeWebSocket([
+        {"bytes": _encode_native_packet(_dedup_header("s-dedup-1", 5))},
+        {"bytes": _encode_native_packet(_dedup_header("s-dedup-1", 5))},  # replay
+    ])
+    ws.query_params = {"stream_key": key}
+    asyncio.run(main.native_stream_endpoint(ws, "s-dedup-1"))
+    assert mock_sm.send_audio.await_count == 1  # duplicate dropped, count unchanged
+
+
+@patch("backend.main.StreamManager")
+def test_frame_dedup_accepts_large_backward_jump_as_restart(mock_sm_cls, monkeypatch):
+    """(2) seq 1 after seq 5000 is a backward jump far larger than the
+    window — a legitimate companion-process restart, not a replay — and
+    must be accepted."""
+    mock_sm = AsyncMock()
+    mock_sm_cls.return_value = mock_sm
+    key = _install_session(monkeypatch, "s-dedup-2")
+    ws = FakeNativeWebSocket([
+        {"bytes": _encode_native_packet(_dedup_header("s-dedup-2", 5000))},
+        {"bytes": _encode_native_packet(_dedup_header("s-dedup-2", 1))},  # restart-style reset
+    ])
+    ws.query_params = {"stream_key": key}
+    asyncio.run(main.native_stream_endpoint(ws, "s-dedup-2"))
+    assert mock_sm.send_audio.await_count == 2  # both accepted
+
+
+@patch("backend.main.StreamManager")
+def test_frame_dedup_accepts_normal_increments(mock_sm_cls, monkeypatch):
+    """(3) Ordinary strictly-increasing sequence numbers are never treated
+    as duplicates."""
+    mock_sm = AsyncMock()
+    mock_sm_cls.return_value = mock_sm
+    key = _install_session(monkeypatch, "s-dedup-3")
+    ws = FakeNativeWebSocket([
+        {"bytes": _encode_native_packet(_dedup_header("s-dedup-3", 1))},
+        {"bytes": _encode_native_packet(_dedup_header("s-dedup-3", 2))},
+        {"bytes": _encode_native_packet(_dedup_header("s-dedup-3", 3))},
+    ])
+    ws.query_params = {"stream_key": key}
+    asyncio.run(main.native_stream_endpoint(ws, "s-dedup-3"))
+    assert mock_sm.send_audio.await_count == 3
 

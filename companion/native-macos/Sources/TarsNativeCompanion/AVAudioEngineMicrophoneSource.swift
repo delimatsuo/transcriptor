@@ -55,6 +55,12 @@ public final class AVAudioEngineMicrophoneSource: CaptureSource, @unchecked Send
             }
 
             inputNode.removeTap(onBus: 0)
+            // KNOWN DEFECT (dormant): buffers arrive here at the hardware's
+            // native inputFormat.sampleRate, but are packed below and labeled
+            // as configuration.identity.sampleRate (16 kHz) with no
+            // resampling in between. Harmless today only because this source
+            // has been off the default capture path since --sources
+            // system_audio; fix the resampling before re-enabling mic capture.
             inputNode.installTap(onBus: 0, bufferSize: 1024, format: inputFormat) { [weak self] (buffer: AVAudioPCMBuffer, time: AVAudioTime) in
                 guard let self else { return }
                 guard let channelData = buffer.floatChannelData else { return }

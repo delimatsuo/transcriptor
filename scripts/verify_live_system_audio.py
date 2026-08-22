@@ -788,7 +788,6 @@ def phase_evidence(ph: Phases, args: argparse.Namespace) -> None:
     # código exercitado não é o do commit; arquivo apenas não versionado, não.
     tracked_changes = [ln for ln in porcelain if not ln.startswith("??")]
     untracked = [ln for ln in porcelain if ln.startswith("??")]
-    dirty = bool(porcelain)
     if tracked_changes:
         tree_state = f"**SUJO — {len(tracked_changes)} arquivo(s) versionado(s) modificado(s)**"
     elif untracked:

@@ -128,6 +128,24 @@ stream_keys: dict[str, str] = {}
 # _stop_pipeline tears these down.
 native_stream_managers: dict[str, dict[str, StreamManager]] = {}
 native_sm_lock = asyncio.Lock()
+# Merged companion_health view per session. native_stream_endpoint serves
+# MULTIPLE concurrent WS connections per session (browser mic sends
+# source="microphone"; companion sends source="system_audio"); each
+# connection updates ONLY the source(s) it has actually observed a frame/gap/
+# stall-transition for, and every broadcast carries this merged two-source
+# view — so one connection's connect/disconnect never clobbers the other's
+# already-reported health. "connections" is the live WS count for the
+# session: physical_capture is "active" while it is >0, "stopped" only once
+# the LAST connection closes. Popped whole in _stop_pipeline.
+native_session_health: dict[str, dict] = {}
+# Windowed per-(session_id, source) duplicate-frame guard: the companion may
+# legitimately resend a frame whose send() timed out but actually landed,
+# which would otherwise feed one 50ms chunk to STT twice. Nested
+# session_id -> source -> last accepted sequence number, mirroring
+# native_stream_managers' shape so _stop_pipeline can pop a session's entry
+# in one call.
+native_frame_last_seq: dict[str, dict[str, int]] = {}
+NATIVE_FRAME_DEDUP_WINDOW = 200  # ~10s at 50ms/frame; see get_or_create_sm-adjacent dedup check below
 # Native companion stall watchdog: a source that has produced >=1 audio frame
 # but none for longer than the timeout (while the companion socket is still
 # connected) is flagged device_unavailable in companion_health until its next
@@ -1321,6 +1339,8 @@ async def _stop_pipeline(session_id: str) -> bool:
     async with native_sm_lock:
         stream_keys.pop(session_id, None)
         native_sms = native_stream_managers.pop(session_id, {})
+        native_session_health.pop(session_id, None)
+        native_frame_last_seq.pop(session_id, None)
     for sm in native_sms.values():
         try:
             await sm.stop()
@@ -2382,10 +2402,20 @@ async def native_stream_endpoint(websocket: WebSocket, session_id: str):
     presented = websocket.query_params.get("stream_key", "")
     expected = stream_keys.get(session_id)
     session = session_mgr.get_session(session_id) if session_mgr else None
+    # secrets.compare_digest(str, str) raises TypeError on non-ASCII input
+    # (an attacker-controlled query param) before reaching the clean 1008
+    # close below. Comparing UTF-8 bytes instead accepts arbitrary str
+    # content without that restriction; the try/except is defense in depth
+    # in case anything still slips through as non-str/non-encodable.
+    try:
+        key_matches = bool(expected) and bool(presented) and secrets.compare_digest(
+            presented.encode("utf-8", "surrogatepass"),
+            expected.encode("utf-8", "surrogatepass"),
+        )
+    except TypeError:
+        key_matches = False
     if (
-        not expected
-        or not presented
-        or not secrets.compare_digest(presented, expected)
+        not key_matches
         or session is None
         or session.status != SessionStatus.ACTIVE
     ):
@@ -2397,22 +2427,42 @@ async def native_stream_endpoint(websocket: WebSocket, session_id: str):
     app_settings = settings or get_settings()
 
     # --- companion_health / coverage_gap emission -------------------------
-    # Connection-scoped (not session-scoped): each companion socket starts at
-    # physical_capture="active" with both sources "unknown" and always ends
-    # (in `finally`) at "stopped"/"unknown","unknown", so a reconnect never
-    # inherits stale source state from a prior connection.
-    health = CompanionHealthPayload(physical_capture="active", sources=SourceHealthReport())
+    # Session-scoped (not connection-scoped): native_stream_endpoint serves
+    # multiple concurrent WS connections per session (browser mic + native
+    # companion), so health is tracked in the shared native_session_health
+    # merged view keyed by session_id, and every broadcast carries that
+    # MERGED two-source view. This connection only ever mutates the source(s)
+    # it has itself observed a frame/gap/stall-transition for (tracked in
+    # `owned_sources`) — never resetting a source another still-open
+    # connection is carrying. `connections` is the live WS count for the
+    # session: physical_capture is "active" while it is >0, and this
+    # connection's own close only drives it to "stopped" if it was the last
+    # one open.
+    session_health = native_session_health.setdefault(
+        session_id,
+        {"sources": {"microphone": "unknown", "system_audio": "unknown"}, "connections": 0},
+    )
+    session_health["connections"] += 1
+    owned_sources: set[str] = set()
     last_emitted_health: dict | None = None
     last_frame_at: dict[str, float] = {}
 
+    def _mark_owned(source_name: str) -> None:
+        if source_name in ("microphone", "system_audio"):
+            owned_sources.add(source_name)
+
     def _set_source_health(source_name: str, state: str) -> bool:
-        """Mutate health.sources[source_name] to state; return True if it
-        actually changed (used to decide whether an emission is warranted)."""
+        """Mutate the session's MERGED health for source_name to state;
+        return True if it actually changed (used to decide whether an
+        emission is warranted). Also records that THIS connection has
+        observed source_name, so its close-time cleanup (see `finally`
+        below) only resets sources it actually carried."""
         if source_name not in ("microphone", "system_audio"):
             return False
-        if getattr(health.sources, source_name) == state:
+        _mark_owned(source_name)
+        if session_health["sources"].get(source_name) == state:
             return False
-        setattr(health.sources, source_name, state)
+        session_health["sources"][source_name] = state
         return True
 
     async def emit_health() -> None:
@@ -2421,13 +2471,17 @@ async def native_stream_endpoint(websocket: WebSocket, session_id: str):
         Broadcast failures must never break audio ingestion, so they are
         caught here and only logged."""
         nonlocal last_emitted_health
-        payload_dict = health.model_dump()
+        payload = CompanionHealthPayload(
+            physical_capture="active" if session_health["connections"] > 0 else "stopped",
+            sources=SourceHealthReport(**session_health["sources"]),
+        )
+        payload_dict = payload.model_dump()
         if payload_dict == last_emitted_health:
             return
         last_emitted_health = payload_dict
         try:
             seq = ws_manager.next_sequence(session_id)
-            msg = WSMessage.companion_health_msg(session_id, seq, health)
+            msg = WSMessage.companion_health_msg(session_id, seq, payload)
             await ws_manager.broadcast(session_id, msg)
         except Exception as e:
             logger.debug(
@@ -2475,6 +2529,27 @@ async def native_stream_endpoint(websocket: WebSocket, session_id: str):
 
     await emit_health()
     stall_task = asyncio.create_task(stall_watchdog())
+
+    def _is_duplicate_frame(source_name: str, sequence: object) -> bool:
+        """True iff `sequence` is a replay of an already-accepted frame for
+        (session_id, source_name). The companion may legitimately resend a
+        frame whose send() timed out but actually landed, so only a SMALL
+        backward step (< NATIVE_FRAME_DEDUP_WINDOW, ~10s at 50ms/frame) is
+        treated as that replay. A larger backward jump is a companion-process
+        restart (its own sequence counter restarts at 1) and is accepted,
+        moving the tracked baseline to wherever the new stream lands."""
+        if source_name not in ("microphone", "system_audio") or not isinstance(sequence, int):
+            return False
+        per_source = native_frame_last_seq.setdefault(session_id, {})
+        last_seq = per_source.get(source_name)
+        if (
+            last_seq is not None
+            and sequence <= last_seq
+            and (last_seq - sequence) < NATIVE_FRAME_DEDUP_WINDOW
+        ):
+            return True
+        per_source[source_name] = sequence if last_seq is None else max(last_seq, sequence)
+        return False
 
     async def get_or_create_sm(source_label: str) -> StreamManager:
         async with native_sm_lock:
@@ -2528,6 +2603,15 @@ async def native_stream_endpoint(websocket: WebSocket, session_id: str):
                     else app_settings.stt_speaker_label_self
                 )
 
+                if _is_duplicate_frame(source, header.get("sequence")):
+                    logger.debug(
+                        "native_stream_duplicate_frame",
+                        session_id=session_id,
+                        source=source,
+                        sequence=header.get("sequence"),
+                    )
+                    continue
+
                 try:
                     sm = await get_or_create_sm(source_label)
                     if pcm_payload:
@@ -2547,6 +2631,7 @@ async def native_stream_endpoint(websocket: WebSocket, session_id: str):
                     elif text_data.get("type") == "gap":
                         gap_source = text_data.get("source", "unknown")
                         reason = text_data.get("reason", "unknown")
+                        _mark_owned(gap_source)
                         first_sample = text_data.get("first_sample") or 0
                         logger.warning(
                             "native_companion_gap_reported",
@@ -2586,9 +2671,15 @@ async def native_stream_endpoint(websocket: WebSocket, session_id: str):
             await stall_task
         except asyncio.CancelledError:
             pass
-        health.physical_capture = "stopped"
-        health.sources.microphone = "unknown"
-        health.sources.system_audio = "unknown"
+        # Only decrement this connection's own share of the merged view: drop
+        # our slot in the live-connection count, and reset ONLY the source(s)
+        # we ourselves carried back to "unknown". A source another still-open
+        # connection is carrying (not in `owned_sources`) is left untouched,
+        # and physical_capture only reaches "stopped" via emit_health() once
+        # `connections` has dropped to 0 (i.e. every connection has closed).
+        session_health["connections"] -= 1
+        for source_name in owned_sources:
+            session_health["sources"][source_name] = "unknown"
         await emit_health()
         logger.info("native_companion_disconnected", session_id=session_id)
 
