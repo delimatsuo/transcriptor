@@ -30,6 +30,7 @@ import asyncio
 import json
 import os
 import pty
+import re
 import signal
 import socket
 import subprocess
@@ -40,6 +41,7 @@ import unicodedata
 import wave
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import IO
 
 import requests
 import websockets
@@ -121,14 +123,21 @@ def hits(text: str, words: set[str]) -> set[str]:
 # Fase 1 — Preflight
 # --------------------------------------------------------------------------
 
+# `say -v '?'` imprime "<nome>  <locale>  # <exemplo>"; o nome pode conter
+# espaços e parênteses ("Eddy (Portuguese (Brazil))"), então o corte tem de ser
+# feito no token de locale — não no primeiro par de espaços, que deixaria o
+# "pt_BR" grudado no nome registrado na evidência.
+VOICE_LINE = re.compile(r"^(?P<name>.+?)\s+(?P<locale>[a-z]{2}_[A-Z]{2})\s+#")
+
+
 def pick_voice() -> str | None:
     """Voz pt-BR preferida (Eddy, Flo); qualquer pt_BR serve como alternativa."""
     listing = subprocess.run(["say", "-v", "?"], capture_output=True, text=True)
-    br_voices = [
-        line.split("  ")[0].strip()
-        for line in listing.stdout.splitlines()
-        if "pt_BR" in line
-    ]
+    br_voices: list[str] = []
+    for line in listing.stdout.splitlines():
+        match = VOICE_LINE.match(line)
+        if match and match.group("locale") == "pt_BR":
+            br_voices.append(match.group("name").strip())
     for preferred in ("Eddy", "Flo"):
         for voice in br_voices:
             if voice.startswith(preferred):
@@ -192,7 +201,8 @@ def _binary_is_stale() -> bool:
 # Fase 2 — Backend real
 # --------------------------------------------------------------------------
 
-def phase_backend(ph: Phases) -> subprocess.Popen | None:
+def phase_backend(ph: Phases) -> tuple[subprocess.Popen, IO[bytes]] | None:
+    """Devolve (processo, handle do log) — o handle é fechado pelo `finally`."""
     banner("Fase 2/10 — Subindo o backend real (uvicorn)")
     env = dict(os.environ)
     env["AUTH_BYPASS"] = "true"
@@ -211,15 +221,17 @@ def phase_backend(ph: Phases) -> subprocess.Popen | None:
     while time.monotonic() < deadline:
         if proc.poll() is not None:
             ph.record("Backend up", "FAIL", f"uvicorn saiu com código {proc.returncode}")
+            log.close()
             return None
         try:
             if requests.get(f"{BASE_URL}/healthz", timeout=2).status_code == 200:
                 ph.record("Backend up", "PASS", f"/healthz respondendo em :{PORT}")
-                return proc
+                return proc, log
         except requests.RequestException:
             time.sleep(0.5)
     ph.record("Backend up", "FAIL", "timeout esperando /healthz")
     proc.terminate()
+    log.close()
     return None
 
 
@@ -251,31 +263,72 @@ def phase_session(ph: Phases) -> tuple[str, str] | None:
 # Fase 4 — Sonda de chave errada (não depende de TCC; roda cedo de propósito)
 # --------------------------------------------------------------------------
 
-async def _wrong_key_probe(session_id: str) -> tuple[bool, str]:
+# Só estes dois desfechos provam que o gateway REJEITOU a chave. Um OSError, um
+# timeout ou qualquer outro status provam apenas que a conexão não vingou — o que
+# aconteceria igualmente com o backend fora do ar — e por isso contam como FAIL.
+REJECT_HTTP_STATUSES = {401, 403}
+REJECT_CLOSE_CODE = 1008
+
+
+async def _probe_invalid_key(session_id: str) -> tuple[bool, str]:
+    """Rejeição positiva: 401/403 no handshake, ou fechamento 1008 sem aceitar frames."""
     url = f"{WS_BASE}/{session_id}?stream_key=WRONG"
     try:
         async with ws_connect(url, open_timeout=10) as ws:
-            # Handshake aceito: o gateway ainda deve fechar sem aceitar frames.
+            # Handshake aceito: o gateway ainda tem de fechar sem aceitar frames.
             await ws.send(encode_frame("microphone", 0, 0, b"\x00" * FRAME_BYTES))
             try:
                 await asyncio.wait_for(ws.recv(), timeout=5)
             except websockets.exceptions.ConnectionClosed as closed:
-                return True, f"conexão fechada com código {closed.rcvd.code if closed.rcvd else '?'}"
+                code = closed.rcvd.code if closed.rcvd else None
+                if code == REJECT_CLOSE_CODE:
+                    return True, f"fechada com código {code} sem aceitar frames"
+                return False, f"fechada com código {code}, esperado {REJECT_CLOSE_CODE}"
             except asyncio.TimeoutError:
                 return False, "gateway manteve a conexão aberta com stream_key inválida"
             return False, "gateway respondeu dados com stream_key inválida"
     except websockets.exceptions.InvalidStatus as exc:
-        return True, f"handshake rejeitado com HTTP {exc.response.status_code}"
+        status = exc.response.status_code
+        if status in REJECT_HTTP_STATUSES:
+            return True, f"handshake rejeitado com HTTP {status}"
+        return False, f"HTTP {status} não é uma rejeição de autenticação (esperado {sorted(REJECT_HTTP_STATUSES)})"
     except websockets.exceptions.ConnectionClosed as closed:
-        return True, f"conexão fechada com código {closed.rcvd.code if closed.rcvd else '?'}"
-    except (OSError, asyncio.TimeoutError) as exc:
-        return True, f"conexão recusada ({type(exc).__name__})"
+        code = closed.rcvd.code if closed.rcvd else None
+        if code == REJECT_CLOSE_CODE:
+            return True, f"fechada com código {code}"
+        return False, f"fechada com código {code}, esperado {REJECT_CLOSE_CODE}"
+    except Exception as exc:
+        # Ausência de sucesso não é prova de rejeição.
+        return False, f"nenhuma rejeição observada — a conexão falhou por {type(exc).__name__}: {exc}"
 
 
-def phase_wrong_key(ph: Phases, session_id: str) -> None:
-    banner("Fase 4/10 — Sonda de chave de stream inválida")
-    ok, detail = asyncio.run(_wrong_key_probe(session_id))
-    ph.record("Chave inválida rejeitada", "PASS" if ok else "FAIL", detail)
+async def _probe_valid_key(session_id: str, stream_key: str) -> tuple[bool, str]:
+    """Controle positivo: sem uma aceitação no mesmo instante, a rejeição acima
+    não distingue "autenticação funciona" de "o gateway recusa todo mundo".
+    Nenhum frame é enviado aqui, então nenhum StreamManager é criado."""
+    url = f"{WS_BASE}/{session_id}?stream_key={stream_key}"
+    try:
+        async with ws_connect(url, open_timeout=10) as ws:
+            try:
+                message = await asyncio.wait_for(ws.recv(), timeout=2)
+                return False, f"gateway respondeu/fechou inesperadamente com a chave válida: {message!r}"
+            except asyncio.TimeoutError:
+                pass  # silêncio = conexão aceita e mantida aberta
+            await ws.close()
+            return True, "conexão aceita e mantida aberta, encerrada limpa"
+    except Exception as exc:
+        return False, f"chave válida recusada: {type(exc).__name__}: {exc}"
+
+
+def phase_wrong_key(ph: Phases, session_id: str, stream_key: str) -> None:
+    banner("Fase 4/10 — Sondas de chave de stream (rejeição + controle positivo)")
+
+    async def both() -> tuple[tuple[bool, str], tuple[bool, str]]:
+        return await _probe_invalid_key(session_id), await _probe_valid_key(session_id, stream_key)
+
+    (bad_ok, bad_detail), (good_ok, good_detail) = asyncio.run(both())
+    ph.record("Chave inválida rejeitada", "PASS" if bad_ok else "FAIL", bad_detail)
+    ph.record("Chave válida aceita (controle positivo)", "PASS" if good_ok else "FAIL", good_detail)
 
 
 # --------------------------------------------------------------------------
@@ -402,16 +455,22 @@ def phase_companion(ph: Phases, session_id: str, stream_key: str) -> CompanionRu
 # Fase 6 — Áudio do candidato (alto-falante -> ScreenCaptureKit)
 # --------------------------------------------------------------------------
 
-def speak(voice: str, sentence: str) -> None:
-    subprocess.run(["say", "-v", voice, sentence], check=False)
+def speak(voice: str, sentence: str) -> int:
+    """Devolve o código de saída do `say` — um PASS incondicional aqui
+    registraria "áudio reproduzido" mesmo quando nada tocou."""
+    return subprocess.run(["say", "-v", voice, sentence], check=False).returncode
 
 
 def phase_candidate_audio(ph: Phases, voice: str) -> None:
     banner("Fase 6/10 — Falando a frase do candidato pelos alto-falantes")
+    codes: list[int] = []
     for i in range(2):
-        speak(voice, CANDIDATE_SENTENCE)
+        codes.append(speak(voice, CANDIDATE_SENTENCE))
         if i == 0:
             time.sleep(2)
+    if any(code != 0 for code in codes):
+        ph.record("Áudio do candidato reproduzido", "FAIL", f"`say` retornou {codes}")
+        return
     ph.record("Áudio do candidato reproduzido", "PASS", "frase dita 2x pela saída do sistema")
 
 
@@ -532,15 +591,18 @@ def phase_restart_drill(ph: Phases, run: CompanionRun, session_id: str, stream_k
     run.kill()
     time.sleep(1)
     again = CompanionRun(session_id, stream_key, "restart")
-    state, output = again.wait_for_capture()
+    # Registrado ANTES de qualquer verificação: se esta fase falhar ou levantar,
+    # o `finally` do main precisa conseguir matar este processo de qualquer jeito.
+    ph.facts["restart_run"] = again
+    state, _ = again.wait_for_capture()
     if state != "ativo":
         ph.record("Reinício do companion", "FAIL", f"não recapturou após SIGKILL (estado={state})")
-        again.stop()
         return
-    speak(voice, RESTART_SENTENCE)
+    if speak(voice, RESTART_SENTENCE) != 0:
+        ph.record("Reinício do companion", "FAIL", "`say` falhou ao reproduzir a frase pós-reinício")
+        return
     time.sleep(2)
     ph.record("Reinício do companion", "PASS", "capturou de novo com a mesma stream_key")
-    ph.facts["restart_run"] = again
 
 
 # --------------------------------------------------------------------------
@@ -581,6 +643,22 @@ def phase_stop_and_assert(
         ph.facts["mic_frames"] = mic.frames_sent
         ph.facts["mic_speech_frames"] = mic.speech_frames
         ph.facts["mic_bytes"] = mic.frames_sent * FRAME_BYTES
+        # O canal só é "sustentado até o /stop" se o socket sobreviveu até aqui.
+        # Uma morte no meio do caminho encerra a sustentação em silêncio, e a
+        # evidência não pode afirmar continuidade que não houve.
+        if mic.error is not None:
+            ph.record(
+                "Canal do entrevistador sustentado até o /stop",
+                "FAIL",
+                f"socket do microfone morreu durante a execução: "
+                f"{type(mic.error).__name__}: {mic.error}",
+            )
+        else:
+            ph.record(
+                "Canal do entrevistador sustentado até o /stop",
+                "PASS",
+                f"{mic.frames_sent} frames entregues sem erro de socket",
+            )
     if companion is not None:
         companion.stop()
 
@@ -699,21 +777,75 @@ def phase_evidence(ph: Phases, args: argparse.Namespace) -> None:
     commit = subprocess.run(
         ["git", "rev-parse", "HEAD"], cwd=str(REPO_ROOT), capture_output=True, text=True
     ).stdout.strip()
+    # Um commit sozinho não identifica o que rodou: com o working tree sujo, o
+    # código exercitado não é o do commit. E o binário do companion é compilado
+    # à parte, então a sua data é a única pista de qual revisão ele carrega.
+    porcelain = subprocess.run(
+        ["git", "status", "--porcelain"], cwd=str(REPO_ROOT), capture_output=True, text=True
+    ).stdout.splitlines()
+    # Qualquer saída conta como sujo, mas as duas causas têm pesos diferentes e
+    # colapsá-las gastaria o sinal: arquivo versionado modificado significa que o
+    # código exercitado não é o do commit; arquivo apenas não versionado, não.
+    tracked_changes = [ln for ln in porcelain if not ln.startswith("??")]
+    untracked = [ln for ln in porcelain if ln.startswith("??")]
+    dirty = bool(porcelain)
+    if tracked_changes:
+        tree_state = f"**SUJO — {len(tracked_changes)} arquivo(s) versionado(s) modificado(s)**"
+    elif untracked:
+        tree_state = f"**SUJO — apenas {len(untracked)} arquivo(s) não versionado(s) presente(s)**"
+    else:
+        tree_state = "limpo"
+    binary_mtime = (
+        datetime.fromtimestamp(COMPANION_BIN.stat().st_mtime, timezone.utc).isoformat(timespec="seconds")
+        if COMPANION_BIN.exists()
+        else "ausente"
+    )
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
 
     lines = [
         "# Evidência — prova ao vivo do canal do candidato (piloto-solo)",
         "",
+    ]
+
+    if ph.failed:
+        lines += [
+            "> ## ❌ EXECUÇÃO COM FALHAS",
+            ">",
+            "> **Este documento NÃO comprova o canal do candidato.** Uma ou mais fases "
+            "reprovaram (veja a tabela abaixo). O registro serve apenas para diagnóstico "
+            "da tentativa malsucedida.",
+            "",
+        ]
+
+    lines += [
         f"- **Gerado por:** `scripts/verify_live_system_audio.py`{' --with-restart-drill' if args.with_restart_drill else ''}",
         f"- **Data (UTC):** {now}",
         f"- **Máquina:** {machine} ({arch})",
-        f"- **Commit:** `{commit}`",
+        f"- **Commit:** `{commit}` — working tree: {tree_state}",
+        f"- **Binário `tars-companion` exercitado:** compilado em {binary_mtime} (UTC)",
         f"- **Voz pt-BR usada:** {ph.facts.get('voice', 'n/d')}",
         f"- **Backend:** uvicorn real em `127.0.0.1:{PORT}`, `AUTH_BYPASS=true`, "
         "`HOST_AUDIO_CAPTURE_ENABLED` não definido",
         "- **STT:** Google Speech-to-Text real (ADC verificada apenas por código de saída; "
         "nenhum token foi lido, impresso ou gravado)",
         "- **Dependências Python:** `requests` e `websockets` já presentes no `.venv` — nada foi instalado",
+    ]
+
+    if tracked_changes:
+        lines += [
+            "",
+            "> ⚠ **Arquivos versionados estavam modificados durante esta execução.** O código e "
+            "o binário exercitados NÃO correspondem ao commit acima; reproduza a partir de uma "
+            "árvore limpa antes de tratar este documento como evidência desse commit.",
+        ]
+    elif untracked:
+        lines += [
+            "",
+            f"> ℹ Havia {len(untracked)} arquivo(s) não versionado(s) na árvore, mas nenhum "
+            "arquivo versionado modificado — o código exercitado corresponde ao commit acima.",
+        ]
+
+    lines += [
         "",
         "## Resultado por fase",
         "",
@@ -788,27 +920,46 @@ def phase_evidence(ph: Phases, args: argparse.Namespace) -> None:
         "no mesmo instante, na mesma máquina, com o mesmo áudio.",
         "",
         "A correção (`withExtendedLifetime(activeSources)` no laço principal de "
-        "`Sources/TarsCompanionCLI/main.swift`) faz parte do mesmo commit desta evidência. "
+        "`Sources/TarsCompanionCLI/main.swift`) está no commit `365fe20`. "
         "**Reproduzir esta prova exige um `tars-companion` compilado desse commit ou posterior**; "
         "binários anteriores falham nas fases do Candidato.",
         "",
-        "## Teto de alegação",
-        "",
-        "> Comprova apenas: espinha de captura nativa funcionando ao vivo na máquina do "
-        "proprietário (escopo piloto-solo). Não comprova: piloto G6, Windows, hospedagem, lançamento.",
-        "",
     ]
 
-    if ph.blocked:
+    # O teto de alegação é uma afirmação positiva: só aparece quando todas as
+    # fases executadas passaram. Numa execução com falhas, imprimi-lo diria que
+    # a espinha de captura está comprovada — exatamente o que não aconteceu.
+    if ph.failed:
         lines += [
-            "**Ressalva desta execução:** as fases marcadas `BLOQUEADO` não foram executadas por "
-            "falta da permissão de Gravação de Tela e Áudio do Sistema neste host de Terminal. "
-            "O que está comprovado aqui é: autenticação do gateway por `stream_key` (chave válida "
-            "aceita, chave inválida rejeitada), o enquadramento binário do gateway, e a rotulagem "
-            "por fonte do canal `microphone` → **Entrevistador** com STT real. O canal do candidato "
-            "(`system_audio` → ScreenCaptureKit → **Candidato**) **não** foi comprovado ao vivo.",
+            "## Conclusão desta execução",
+            "",
+            "**Esta execução FALHOU.** As fases marcadas `FAIL` acima não foram satisfeitas, "
+            "portanto este documento não sustenta alegação alguma sobre o canal do candidato, "
+            "sobre a rotulagem por fonte ou sobre a espinha de captura nativa. Ele registra "
+            "somente o que foi observado numa tentativa malsucedida. O teto de alegação desta "
+            "prova é deliberadamente omitido: ele vale apenas quando todas as fases executadas "
+            "passam.",
             "",
         ]
+    else:
+        lines += [
+            "## Teto de alegação",
+            "",
+            "> Comprova apenas: espinha de captura nativa funcionando ao vivo na máquina do "
+            "proprietário (escopo piloto-solo). Não comprova: piloto G6, Windows, hospedagem, lançamento.",
+            "",
+        ]
+
+        if ph.blocked:
+            lines += [
+                "**Ressalva desta execução:** as fases marcadas `BLOQUEADO` não foram executadas por "
+                "falta da permissão de Gravação de Tela e Áudio do Sistema neste host de Terminal. "
+                "O que está comprovado aqui é: autenticação do gateway por `stream_key` (chave válida "
+                "aceita, chave inválida rejeitada), o enquadramento binário do gateway, e a rotulagem "
+                "por fonte do canal `microphone` → **Entrevistador** com STT real. O canal do candidato "
+                "(`system_audio` → ScreenCaptureKit → **Candidato**) **não** foi comprovado ao vivo.",
+                "",
+            ]
 
     EVIDENCE_DOC.parent.mkdir(parents=True, exist_ok=True)
     EVIDENCE_DOC.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -835,24 +986,25 @@ def main() -> int:
 
     ph = Phases()
     backend: subprocess.Popen | None = None
+    backend_log: IO[bytes] | None = None
     companion: CompanionRun | None = None
-    restart_run: CompanionRun | None = None
     mic: MicChannel | None = None
 
     try:
         if not phase_preflight(ph):
             return EXIT_PREFLIGHT
 
-        backend = phase_backend(ph)
-        if backend is None:
+        started = phase_backend(ph)
+        if started is None:
             return EXIT_FAILED
+        backend, backend_log = started
 
         created = phase_session(ph)
         if created is None:
             return EXIT_FAILED
         session_id, stream_key = created
 
-        phase_wrong_key(ph, session_id)
+        phase_wrong_key(ph, session_id, stream_key)
 
         voice = str(ph.facts["voice"])
         companion = phase_companion(ph, session_id, stream_key)
@@ -873,11 +1025,12 @@ def main() -> int:
         did_restart = False
         if args.with_restart_drill and companion is not None:
             phase_restart_drill(ph, companion, session_id, stream_key, voice)
-            restart_run = ph.facts.pop("restart_run", None)  # type: ignore[assignment]
+            # O relançado é registrado em facts assim que nasce, inclusive quando
+            # a fase reprova — só assim o `finally` consegue sempre matá-lo.
+            replacement = ph.facts.pop("restart_run", None)
             did_restart = any(r["name"] == "Reinício do companion" and r["status"] == "PASS" for r in ph.rows)
-            if restart_run is not None:
-                companion = restart_run  # o processo vivo agora é o relançado
-                restart_run = None
+            if isinstance(replacement, CompanionRun):
+                companion = replacement  # o processo vivo agora é o relançado
         elif args.with_restart_drill:
             ph.record("Reinício do companion", "BLOQUEADO", "depende da captura de áudio do sistema")
 
@@ -894,7 +1047,9 @@ def main() -> int:
     finally:
         if mic is not None:
             mic.stop()
-        for run in (restart_run, companion):
+        # `restart_run` só sai de facts quando a fase do reinício rodou; se ela
+        # levantou no meio, o processo relançado ainda está lá para ser morto.
+        for run in (ph.facts.pop("restart_run", None), companion):
             if isinstance(run, CompanionRun):
                 run.stop()
         if backend is not None and backend.poll() is None:
@@ -903,6 +1058,8 @@ def main() -> int:
                 backend.wait(timeout=15)
             except subprocess.TimeoutExpired:
                 backend.kill()
+        if backend_log is not None:
+            backend_log.close()
 
     print("\n" + "━" * 62)
     if ph.failed:
