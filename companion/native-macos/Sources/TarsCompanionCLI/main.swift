@@ -249,9 +249,17 @@ struct CompanionApp {
         print("\nEnviando áudio (\(sourcesLabel(options.sources))) para o gateway T.A.R.S....")
         print("Press Ctrl+C to terminate.\n")
 
-        // Keep running until interrupted
+        // `activeSources` is never read after the appends above, and Swift's ARC
+        // is free to release a local at its LAST USE — not at end of scope. In a
+        // release build that dropped the only strong reference to the capture
+        // sources moments after start(), tearing down the SCStream while this
+        // loop slept: capture reported "active" and then not one frame ever
+        // reached the sink (silently — no error, no disconnect, just zero system
+        // audio forever). Touching the array on every tick keeps every source
+        // alive for the whole process lifetime.
         while true {
             try await Task.sleep(nanoseconds: 1_000_000_000)
+            withExtendedLifetime(activeSources) {}
         }
     }
 }
