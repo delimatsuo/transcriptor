@@ -4,15 +4,47 @@ import TarsNativeCompanion
 
 @main
 struct TarsCompanionApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var controller = CompanionSessionController()
 
     var body: some Scene {
         MenuBarExtra {
             CompanionMenuView(controller: controller)
+                .onOpenURL { url in
+                    if let request = JoinLink.parse(url.absoluteString) {
+                        handleJoin(request)
+                    } else {
+                        NSLog("TarsCompanion: link inválido")
+                    }
+                }
         } label: {
             Image(systemName: iconName(for: controller.state))
+                .onAppear {
+                    // Wire up the AppDelegate URL event handler on label appearance, which executes
+                    // immediately upon app launch when the menu bar item is mounted in the macOS status bar.
+                    appDelegate.onJoinRequest = { request in
+                        handleJoin(request)
+                    }
+                }
         }
         .menuBarExtraStyle(.window)
+    }
+
+    private func handleJoin(_ request: JoinRequest) {
+        switch controller.state {
+        case .idle, .error:
+            let storedGateway = UserDefaults.standard.string(forKey: "tars_gateway_base") ?? "ws://127.0.0.1:8000/api/stream/native"
+            let effectiveGateway = request.gateway ?? storedGateway
+            Task {
+                await controller.start(
+                    sessionID: request.sessionID,
+                    streamKey: request.streamKey,
+                    gatewayBase: effectiveGateway
+                )
+            }
+        case .connecting, .capturing, .reconnecting:
+            NSLog("TarsCompanion: sessão já ativa — link ignorado")
+        }
     }
 
     private func iconName(for state: CompanionState) -> String {
