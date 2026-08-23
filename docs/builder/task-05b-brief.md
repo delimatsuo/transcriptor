@@ -16,6 +16,7 @@ Modify only:
 - `frontend/src/lib/streamUrl.ts`
 - `frontend/src/lib/streamUrl.test.ts`
 - `frontend/src/hooks/useBrowserAudioCapture.ts`
+- `scripts/verify_live_system_audio.py`
 - `companion/native-macos/Sources/TarsNativeCompanion/URLSessionWebSocketTransport.swift`
 - `companion/native-macos/Sources/TarsNativeCompanion/ReconnectingAudioSink.swift`
 - `companion/native-macos/Sources/TarsNativeCompanion/CompanionSessionController.swift`
@@ -186,6 +187,23 @@ Add three focused `ReconnectingAudioSinkTests`:
 
 Parse hello JSON in assertions; do not depend on dictionary key serialization order.
 
+## Canonical live-proof harness: migrate without running live proof
+
+`scripts/verify_live_system_audio.py` is the repository's canonical live system-audio proof and is reused by the later taps re-proof. It currently has three query-auth call sites that would break as soon as the backend fallback is removed. Migrate its WebSocket construction in this task, but do **not** execute the live proof (it invokes TCC, real audio, Google STT, and provider credentials).
+
+- Add a small content-free helper returning `['tars-stream', stream_key]` for the `websockets` client's `subprotocols=` argument. The harness receives backend-generated keys; do not print or embed them in a URL.
+- `_probe_invalid_key` uses the keyless session URL and `subprotocols=['tars-stream', 'WRONG']`; preserve its positive rejection semantics and accepted close/status cases.
+- `_probe_valid_key` uses the keyless URL and valid subprotocols. Immediately after connect, send a microphone hello before waiting for the control-positive silence. It must still create no `StreamManager` because it sends no audio frame.
+- `MicChannel` stores a keyless URL plus the protocol list. Immediately after connect, send the microphone hello before setting `_ready` or sending any real/silence frame.
+- Preserve all phase names, exit semantics, ADC/TCC isolation, evidence generation, frame encoding, timing, and real-audio behavior.
+- Do not modify generated evidence docs. Do not run this script in Task 05b.
+
+Run only this offline syntax gate for the harness:
+
+```bash
+cd "/Volumes/Extreme Pro/MYPROJECTS/Transcriptor" && .venv/bin/python -m py_compile scripts/verify_live_system_audio.py
+```
+
 ## TDD and verification
 
 Write the new/changed tests first and capture real RED results. Then implement and run:
@@ -196,11 +214,12 @@ cd "/Volumes/Extreme Pro/MYPROJECTS/Transcriptor" && .venv/bin/python -m pytest 
 cd "/Volumes/Extreme Pro/MYPROJECTS/Transcriptor/frontend" && npm test
 cd "/Volumes/Extreme Pro/MYPROJECTS/Transcriptor/frontend" && npm run build
 cd "/Volumes/Extreme Pro/MYPROJECTS/Transcriptor/companion/native-macos" && swift test
+cd "/Volumes/Extreme Pro/MYPROJECTS/Transcriptor" && .venv/bin/python -m py_compile scripts/verify_live_system_audio.py
 ```
 
 Baselines before this task: endpoint `36`, backend `301`, frontend `62`, Swift `73`. Expected minimums: endpoint `36`, backend `301`, frontend `64`, Swift `79`; all zero failures, and Next.js build succeeds.
 
-Also run a non-Git production-source scan proving there is no `stream_key=` URL construction, no backend query read, and no `native_stream_query_key_deprecated` event in the production files changed by this task. It is expected that the backend rejection test still mentions `query_params`.
+Also run a non-Git production-source scan proving there is no `stream_key=` URL construction, no backend query read, and no `native_stream_query_key_deprecated` event in the production files changed by this task, including `scripts/verify_live_system_audio.py`. It is expected that the backend rejection test still mentions `query_params`, and ordinary variable/response-field names such as `stream_key` remain valid.
 
 ## Out of scope
 
@@ -218,6 +237,7 @@ Write `docs/builder/task-05b-report.md` with:
 - every file changed;
 - exact RED and GREEN commands/output and final counts;
 - proof that browser, menu-bar controller, and CLI URLs are keyless;
+- proof that the canonical live-proof probes and mic injector are keyless and hello-first (offline source/syntax evidence only);
 - proof of exact subprotocol order;
 - proof hello is first and repeated on reconnect;
 - the production-source no-query scan;
