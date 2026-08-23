@@ -38,15 +38,18 @@ def _encode_native_packet(header: dict, payload: bytes = b"\x00\x00" * 800) -> b
 
 
 class FakeNativeWebSocket:
-    def __init__(self, incoming_messages: list[dict], query_params: dict | None = None):
+    def __init__(self, incoming_messages: list[dict], query_params: dict | None = None, headers: dict | None = None):
         self.incoming = list(incoming_messages)
         self.sent_json: list[dict] = []
         self.accepted = False
+        self.accepted_subprotocol: str | None = None
         self.query_params = dict(query_params) if query_params else {}
+        self.headers = dict(headers) if headers else {}
         self.closed_code: int | None = None
 
-    async def accept(self):
+    async def accept(self, subprotocol: str | None = None):
         self.accepted = True
+        self.accepted_subprotocol = subprotocol
 
     async def close(self, code=1000):
         self.closed_code = code
@@ -69,8 +72,8 @@ class _MidStreamWebSocket(FakeNativeWebSocket):
     second message. Used to simulate a still-connected companion socket racing
     a concurrent session stop between two of its own frames."""
 
-    def __init__(self, incoming_messages, on_second_receive):
-        super().__init__(incoming_messages)
+    def __init__(self, incoming_messages, on_second_receive, query_params=None, headers=None):
+        super().__init__(incoming_messages, query_params=query_params, headers=headers)
         self._on_second_receive = on_second_receive
         self._receive_count = 0
 
@@ -690,3 +693,73 @@ def test_frame_dedup_restart_baseline_resets_not_max(mock_sm_cls, monkeypatch):
     asyncio.run(main.native_stream_endpoint(ws, "s-dedup-restart-baseline"))
     assert mock_sm.send_audio.await_count == 3  # all three forwarded, none silently dropped
 
+
+def test_native_stream_accepts_subprotocol_key(monkeypatch):
+    key = _install_session(monkeypatch, "s-sub-1")
+    ws = FakeNativeWebSocket(
+        [{"text": json.dumps({"type": "ping"})}],
+        headers={"sec-websocket-protocol": f"tars-stream, {key}"},
+    )
+    asyncio.run(main.native_stream_endpoint(ws, "s-sub-1"))
+    assert ws.accepted is True
+    assert ws.accepted_subprotocol == "tars-stream"
+    assert ws.sent_json == [{"type": "pong"}]
+
+
+def test_native_stream_rejects_wrong_subprotocol_key(monkeypatch):
+    _install_session(monkeypatch, "s-sub-2", key="rightkey")
+    ws = FakeNativeWebSocket(
+        [],
+        headers={"sec-websocket-protocol": "tars-stream, wrongkey"},
+    )
+    asyncio.run(main.native_stream_endpoint(ws, "s-sub-2"))
+    assert ws.accepted is False
+    assert ws.closed_code == 1008
+
+
+def test_native_stream_rejects_unknown_subprotocol_name(monkeypatch):
+    key = _install_session(monkeypatch, "s-sub-3")
+    ws = FakeNativeWebSocket(
+        [],
+        headers={"sec-websocket-protocol": f"something-else, {key}"},
+    )
+    asyncio.run(main.native_stream_endpoint(ws, "s-sub-3"))
+    assert ws.accepted is False
+    assert ws.closed_code == 1008
+
+
+def test_native_stream_query_key_still_works_and_warns(monkeypatch):
+    key = _install_session(monkeypatch, "s-query-warn")
+    warnings_recorded = []
+    original_warning = main.logger.warning
+
+    def fake_warning(event, **kw):
+        warnings_recorded.append((event, kw))
+        try:
+            return original_warning(event, **kw)
+        except Exception:
+            pass
+
+    monkeypatch.setattr(main.logger, "warning", fake_warning)
+    ws = FakeNativeWebSocket(
+        [{"text": json.dumps({"type": "ping"})}],
+        query_params={"stream_key": key},
+    )
+    asyncio.run(main.native_stream_endpoint(ws, "s-query-warn"))
+    assert ws.accepted is True
+    assert ws.accepted_subprotocol is None
+    assert ws.sent_json == [{"type": "pong"}]
+    assert warnings_recorded == [
+        ("native_stream_query_key_deprecated", {"session_id": "s-query-warn"})
+    ]
+
+
+def test_native_stream_rejects_subprotocol_with_extra_empty_entry(monkeypatch):
+    key = _install_session(monkeypatch, "s-sub-extra-empty")
+    ws = FakeNativeWebSocket(
+        [],
+        headers={"sec-websocket-protocol": f"tars-stream, {key},"},
+    )
+    asyncio.run(main.native_stream_endpoint(ws, "s-sub-extra-empty"))
+    assert ws.accepted is False
+    assert ws.closed_code == 1008
