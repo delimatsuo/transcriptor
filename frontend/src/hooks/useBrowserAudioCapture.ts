@@ -7,7 +7,7 @@ import {
   resampleTo16k,
   type FrameMetadata,
 } from "@/lib/browserPcmEncoder";
-import { buildStreamUrl } from "@/lib/streamUrl";
+import { buildStreamSocketConfig } from "@/lib/streamUrl";
 
 const WS_STREAM_BASE =
   process.env.NEXT_PUBLIC_WS_STREAM_URL ||
@@ -52,6 +52,7 @@ export function useBrowserAudioCapture(): UseBrowserAudioCaptureReturn {
   const animFrameRef = useRef<number | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const pingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const helloReadySocketRef = useRef<WebSocket | null>(null);
 
   const activeSessionIdRef = useRef<string | null>(null);
   const sequenceRef = useRef<number>(0);
@@ -223,7 +224,13 @@ export function useBrowserAudioCapture(): UseBrowserAudioCaptureReturn {
 
       processor.onaudioprocess = (e: AudioProcessingEvent) => {
         const inputData = e.inputBuffer.getChannelData(0);
-        if (!activeSessionIdRef.current || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+        const currentWs = wsRef.current;
+        if (
+          !activeSessionIdRef.current ||
+          !currentWs ||
+          currentWs.readyState !== WebSocket.OPEN ||
+          helloReadySocketRef.current !== currentWs
+        ) {
           return;
         }
 
@@ -261,7 +268,7 @@ export function useBrowserAudioCapture(): UseBrowserAudioCaptureReturn {
 
           const binaryPacket = encodeAudioFrame(meta, chunkInt16);
           try {
-            wsRef.current?.send(binaryPacket);
+            currentWs.send(binaryPacket);
           } catch {
             // Socket write failed, ignore transient error
           }
@@ -298,60 +305,9 @@ export function useBrowserAudioCapture(): UseBrowserAudioCaptureReturn {
     [isStreaming, setupAudioGraph],
   );
 
-  // Start live streaming to native stream gateway
-  const startStreaming = useCallback(
-    async (sessionId: string, streamKey?: string) => {
-      activeSessionIdRef.current = sessionId;
-      sequenceRef.current = 0;
-      sampleOffsetRef.current = 0;
-      pcmBufferRef.current = new Float32Array(0);
-
-      // Open WebSocket connection to native stream gateway
-      const wsUrl = buildStreamUrl(WS_STREAM_BASE, sessionId, streamKey);
-      const ws = new WebSocket(wsUrl);
-      ws.binaryType = "arraybuffer";
-      wsRef.current = ws;
-
-      ws.onopen = () => {
-        setIsStreaming(true);
-        // Start ping keepalive
-        if (pingIntervalRef.current) clearInterval(pingIntervalRef.current);
-        pingIntervalRef.current = setInterval(() => {
-          if (ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({ type: "ping" }));
-          }
-        }, 5000);
-      };
-
-      ws.onerror = () => {
-        setLastError("Erro na conexão com o gateway de áudio.");
-      };
-
-      ws.onclose = () => {
-        setIsStreaming(false);
-        if (pingIntervalRef.current) {
-          clearInterval(pingIntervalRef.current);
-          pingIntervalRef.current = null;
-        }
-      };
-
-      // Start audio graph
-      try {
-        await setupAudioGraph(selectedDeviceId);
-      } catch (err) {
-        setLastError(
-          err instanceof Error
-            ? err.message
-            : "Falha ao iniciar captura de áudio do microfone.",
-        );
-        stopStreaming();
-      }
-    },
-    [selectedDeviceId, setupAudioGraph],
-  );
-
   // Stop streaming & release resources
   const stopStreaming = useCallback(() => {
+    helloReadySocketRef.current = null;
     activeSessionIdRef.current = null;
     if (pingIntervalRef.current) {
       clearInterval(pingIntervalRef.current);
@@ -380,6 +336,114 @@ export function useBrowserAudioCapture(): UseBrowserAudioCaptureReturn {
     stopLevelMeter();
     setIsStreaming(false);
   }, [stopLevelMeter]);
+
+  // Start live streaming to native stream gateway
+  const startStreaming = useCallback(
+    async (sessionId: string, streamKey?: string) => {
+      if (!streamKey) {
+        setLastError("Chave do fluxo de áudio ausente.");
+        return;
+      }
+
+      let config;
+      try {
+        config = buildStreamSocketConfig(
+          WS_STREAM_BASE,
+          sessionId,
+          streamKey,
+          ["microphone"],
+        );
+      } catch (err) {
+        setLastError(
+          err instanceof Error
+            ? err.message
+            : "Configuração inválida para transmissão.",
+        );
+        return;
+      }
+
+      // Open WebSocket connection to native stream gateway before mutating active state
+      let ws: WebSocket;
+      try {
+        ws = new WebSocket(config.url, config.protocols);
+      } catch {
+        setLastError("Falha ao abrir conexão com o gateway de áudio.");
+        return;
+      }
+
+      helloReadySocketRef.current = null;
+      activeSessionIdRef.current = sessionId;
+      sequenceRef.current = 0;
+      sampleOffsetRef.current = 0;
+      pcmBufferRef.current = new Float32Array(0);
+      ws.binaryType = "arraybuffer";
+      wsRef.current = ws;
+
+      ws.onopen = () => {
+        if (wsRef.current !== ws) {
+          return;
+        }
+        try {
+          ws.send(config.hello);
+          helloReadySocketRef.current = ws;
+          setIsStreaming(true);
+        } catch {
+          if (helloReadySocketRef.current === ws) {
+            helloReadySocketRef.current = null;
+          }
+          setIsStreaming(false);
+          setLastError("Falha ao anunciar a fonte de áudio ao gateway.");
+          ws.close();
+          return;
+        }
+
+        // Start ping keepalive
+        if (pingIntervalRef.current) clearInterval(pingIntervalRef.current);
+        pingIntervalRef.current = setInterval(() => {
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: "ping" }));
+          }
+        }, 5000);
+      };
+
+      ws.onerror = () => {
+        if (wsRef.current !== ws) {
+          return;
+        }
+        if (helloReadySocketRef.current === ws) {
+          helloReadySocketRef.current = null;
+        }
+        setLastError("Erro na conexão com o gateway de áudio.");
+      };
+
+      ws.onclose = () => {
+        if (wsRef.current !== ws) {
+          return;
+        }
+        if (helloReadySocketRef.current === ws) {
+          helloReadySocketRef.current = null;
+        }
+        setIsStreaming(false);
+        if (pingIntervalRef.current) {
+          clearInterval(pingIntervalRef.current);
+          pingIntervalRef.current = null;
+        }
+      };
+
+      // Start audio graph
+      try {
+        await setupAudioGraph(selectedDeviceId);
+      } catch (err) {
+        setLastError(
+          err instanceof Error
+            ? err.message
+            : "Falha ao iniciar captura de áudio do microfone.",
+        );
+        stopStreaming();
+      }
+    },
+    [selectedDeviceId, setupAudioGraph, stopStreaming],
+  );
 
   // Initial load: enumerate devices & listen for changes
   useEffect(() => {

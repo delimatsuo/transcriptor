@@ -99,8 +99,7 @@ def _install_session(monkeypatch, session_id, key="k" * 43, status="active"):
 
 def test_native_stream_rejects_missing_key(monkeypatch):
     _install_session(monkeypatch, "s1")
-    ws = FakeNativeWebSocket([], )
-    ws.query_params = {}
+    ws = FakeNativeWebSocket([])
     asyncio.run(main.native_stream_endpoint(ws, "s1"))
     assert ws.accepted is False
     assert ws.closed_code == 1008
@@ -108,8 +107,7 @@ def test_native_stream_rejects_missing_key(monkeypatch):
 
 def test_native_stream_rejects_wrong_key(monkeypatch):
     _install_session(monkeypatch, "s1", key="rightkey")
-    ws = FakeNativeWebSocket([])
-    ws.query_params = {"stream_key": "wrongkey"}
+    ws = FakeNativeWebSocket([], headers={"sec-websocket-protocol": "tars-stream, wrongkey"})
     asyncio.run(main.native_stream_endpoint(ws, "s1"))
     assert ws.accepted is False and ws.closed_code == 1008
 
@@ -117,11 +115,10 @@ def test_native_stream_rejects_wrong_key(monkeypatch):
 def test_native_stream_rejects_non_ascii_key_without_raising(monkeypatch):
     """Regression test for a review finding: secrets.compare_digest(str, str)
     raises TypeError on non-ASCII input before reaching the clean 1008
-    close, leaving a traceback for an attacker-controlled query param. The
+    close, leaving a traceback for attacker-controlled subprotocol/header input. The
     probe must be cleanly rejected with no exception escaping the endpoint."""
     _install_session(monkeypatch, "s-nonascii", key="rightkey")
-    ws = FakeNativeWebSocket([])
-    ws.query_params = {"stream_key": "café☃🔥"}
+    ws = FakeNativeWebSocket([], headers={"sec-websocket-protocol": "tars-stream, café☃🔥"})
     asyncio.run(main.native_stream_endpoint(ws, "s-nonascii"))
     assert ws.accepted is False
     assert ws.closed_code == 1008
@@ -130,27 +127,29 @@ def test_native_stream_rejects_non_ascii_key_without_raising(monkeypatch):
 def test_native_stream_rejects_unknown_session(monkeypatch):
     monkeypatch.setattr(main, "session_mgr", type("M", (), {"get_session": lambda self, sid: None})())
     main.stream_keys.pop("ghost", None)
-    ws = FakeNativeWebSocket([])
-    ws.query_params = {"stream_key": "anything"}
+    ws = FakeNativeWebSocket([], headers={"sec-websocket-protocol": "tars-stream, anything"})
     asyncio.run(main.native_stream_endpoint(ws, "ghost"))
     assert ws.accepted is False and ws.closed_code == 1008
 
 
 def test_native_stream_accepts_valid_key(monkeypatch):
     key = _install_session(monkeypatch, "s1")
-    ws = FakeNativeWebSocket([{"text": json.dumps({"type": "ping"})}])
-    ws.query_params = {"stream_key": key}
+    ws = FakeNativeWebSocket(
+        [{"text": json.dumps({"type": "ping"})}],
+        headers={"sec-websocket-protocol": f"tars-stream, {key}"},
+    )
     asyncio.run(main.native_stream_endpoint(ws, "s1"))
     assert ws.accepted is True
+    assert ws.accepted_subprotocol == "tars-stream"
     assert ws.sent_json == [{"type": "pong"}]
 
 
 def test_native_stream_endpoint_handles_ping(monkeypatch):
     key = _install_session(monkeypatch, "test-sess-ping")
-    ws = FakeNativeWebSocket([
-        {"text": json.dumps({"type": "ping"})}
-    ])
-    ws.query_params = {"stream_key": key}
+    ws = FakeNativeWebSocket(
+        [{"text": json.dumps({"type": "ping"})}],
+        headers={"sec-websocket-protocol": f"tars-stream, {key}"},
+    )
     asyncio.run(main.native_stream_endpoint(ws, "test-sess-ping"))
     assert ws.accepted is True
     assert ws.sent_json == [{"type": "pong"}]
@@ -165,11 +164,13 @@ def test_native_stream_endpoint_routes_microphone_and_system_audio(mock_sm_cls, 
     sys_packet = _encode_native_packet({"source": "system_audio", "sequence": 1})
 
     key = _install_session(monkeypatch, "test-sess-dual")
-    ws = FakeNativeWebSocket([
-        {"bytes": mic_packet},
-        {"bytes": sys_packet},
-    ])
-    ws.query_params = {"stream_key": key}
+    ws = FakeNativeWebSocket(
+        [
+            {"bytes": mic_packet},
+            {"bytes": sys_packet},
+        ],
+        headers={"sec-websocket-protocol": f"tars-stream, {key}"},
+    )
 
     asyncio.run(main.native_stream_endpoint(ws, "test-sess-dual"))
 
@@ -185,12 +186,14 @@ def test_native_stream_endpoint_routes_microphone_and_system_audio(mock_sm_cls, 
 
 def test_native_stream_endpoint_handles_short_packets_gracefully(monkeypatch):
     key = _install_session(monkeypatch, "test-sess-malformed")
-    ws = FakeNativeWebSocket([
-        {"bytes": b"\x00\x01"},
-        {"bytes": b"\x00\x00\x00\x05hello"},
-        {"text": json.dumps({"type": "ping"})},
-    ])
-    ws.query_params = {"stream_key": key}
+    ws = FakeNativeWebSocket(
+        [
+            {"bytes": b"\x00\x01"},
+            {"bytes": b"\x00\x00\x00\x05hello"},
+            {"text": json.dumps({"type": "ping"})},
+        ],
+        headers={"sec-websocket-protocol": f"tars-stream, {key}"},
+    )
 
     asyncio.run(main.native_stream_endpoint(ws, "test-sess-malformed"))
     assert ws.accepted is True
@@ -199,11 +202,13 @@ def test_native_stream_endpoint_handles_short_packets_gracefully(monkeypatch):
 
 def test_native_stream_endpoint_handles_gap_messages(monkeypatch):
     key = _install_session(monkeypatch, "test-sess-gap")
-    ws = FakeNativeWebSocket([
-        {"text": json.dumps({"type": "gap", "source": "system_audio", "reason": "overrun", "first_sample": 16000})},
-        {"text": json.dumps({"type": "ping"})},
-    ])
-    ws.query_params = {"stream_key": key}
+    ws = FakeNativeWebSocket(
+        [
+            {"text": json.dumps({"type": "gap", "source": "system_audio", "reason": "overrun", "first_sample": 16000})},
+            {"text": json.dumps({"type": "ping"})},
+        ],
+        headers={"sec-websocket-protocol": f"tars-stream, {key}"},
+    )
 
     asyncio.run(main.native_stream_endpoint(ws, "test-sess-gap"))
     assert ws.accepted is True
@@ -214,11 +219,13 @@ def test_native_stream_endpoint_handles_corrupt_json_header(monkeypatch):
     # Length is 4 bytes indicating 10 bytes header, but header is invalid JSON
     bad_header = b"\x00\x00\x00\x0a{invalid:}" + (b"\x00\x00" * 800)
     key = _install_session(monkeypatch, "test-sess-bad-json")
-    ws = FakeNativeWebSocket([
-        {"bytes": bad_header},
-        {"text": json.dumps({"type": "ping"})},
-    ])
-    ws.query_params = {"stream_key": key}
+    ws = FakeNativeWebSocket(
+        [
+            {"bytes": bad_header},
+            {"text": json.dumps({"type": "ping"})},
+        ],
+        headers={"sec-websocket-protocol": f"tars-stream, {key}"},
+    )
 
     asyncio.run(main.native_stream_endpoint(ws, "test-sess-bad-json"))
     assert ws.accepted is True
@@ -233,7 +240,7 @@ def test_native_stream_endpoint_testclient_e2e(mock_sm_cls, monkeypatch):
 
     key = _install_session(monkeypatch, "test-sess-client-e2e")
     client = TestClient(main.app)
-    with client.websocket_connect(f"/api/stream/native/test-sess-client-e2e?stream_key={key}") as ws:
+    with client.websocket_connect("/api/stream/native/test-sess-client-e2e", subprotocols=["tars-stream", key]) as ws:
         # Ping
         ws.send_text(json.dumps({"type": "ping"}))
         response = ws.receive_json()
@@ -292,8 +299,10 @@ def test_stream_managers_survive_reconnect(mock_sm_cls, monkeypatch):
         header = {"session_id": "s-reconnect", "source": "system_audio", "sequence": i + 1,
                   "first_sample": 0, "captured_at_ms": 0, "sample_rate": 16000,
                   "channel_count": 1, "duration_ms": 50}
-        ws = FakeNativeWebSocket([{"bytes": _encode_native_packet(header)}])
-        ws.query_params = {"stream_key": key}
+        ws = FakeNativeWebSocket(
+            [{"bytes": _encode_native_packet(header)}],
+            headers={"sec-websocket-protocol": f"tars-stream, {key}"},
+        )
         asyncio.run(main.native_stream_endpoint(ws, "s-reconnect"))
     assert mock_sm_cls.call_count == 1          # one SM per source per SESSION, not per connection
     assert mock_sm.send_audio.await_count == 2  # both connections fed it
@@ -383,8 +392,8 @@ def test_get_or_create_sm_refuses_new_sm_after_stop_pipeline(mock_sm_cls, monkey
             {"bytes": _encode_native_packet(sys_header)},
         ],
         on_second_receive=stop_session_mid_flight,
+        headers={"sec-websocket-protocol": f"tars-stream, {key}"},
     )
-    ws.query_params = {"stream_key": key}
 
     asyncio.run(main.native_stream_endpoint(ws, "s-mid-stop"))
 
@@ -419,8 +428,8 @@ def test_get_or_create_sm_refuses_new_sm_when_stream_key_popped(mock_sm_cls, mon
             {"bytes": _encode_native_packet(sys_header)},
         ],
         on_second_receive=pop_stream_key_only,
+        headers={"sec-websocket-protocol": f"tars-stream, {key}"},
     )
-    ws.query_params = {"stream_key": key}
 
     asyncio.run(main.native_stream_endpoint(ws, "s-key-popped"))
 
@@ -441,8 +450,10 @@ def test_health_emitted_on_connect_first_frame_and_disconnect(monkeypatch):
               "captured_at_ms": 0, "sample_rate": 16000, "channel_count": 1, "duration_ms": 50}
     with patch("backend.main.StreamManager") as sm_cls:
         sm_cls.return_value = AsyncMock()
-        ws = FakeNativeWebSocket([{"bytes": _encode_native_packet(header)}])
-        ws.query_params = {"stream_key": key}
+        ws = FakeNativeWebSocket(
+            [{"bytes": _encode_native_packet(header)}],
+            headers={"sec-websocket-protocol": f"tars-stream, {key}"},
+        )
         asyncio.run(main.native_stream_endpoint(ws, "s-h"))
     msgs = _health_msgs(fake_wsm)
     assert msgs[0].payload["physical_capture"] == "active"
@@ -456,8 +467,10 @@ def test_gap_rebroadcast_as_coverage_gap(monkeypatch):
     monkeypatch.setattr(main, "ws_manager", fake_wsm)
     key = _install_session(monkeypatch, "s-g")
     gap = {"type": "gap", "source": "system_audio", "reason": "device_lost", "first_sample": 16000}
-    ws = FakeNativeWebSocket([{"text": json.dumps(gap)}])
-    ws.query_params = {"stream_key": key}
+    ws = FakeNativeWebSocket(
+        [{"text": json.dumps(gap)}],
+        headers={"sec-websocket-protocol": f"tars-stream, {key}"},
+    )
     asyncio.run(main.native_stream_endpoint(ws, "s-g"))
     gaps = [c.args[1] for c in fake_wsm.broadcast.await_args_list if c.args[1].type.value == "coverage_gap"]
     assert len(gaps) == 1
@@ -491,8 +504,8 @@ def test_stall_watchdog_flags_and_recovers_source_health(monkeypatch):
                 {"bytes": _encode_native_packet(header)},
             ],
             on_second_receive=pause_past_stall_threshold,
+            headers={"sec-websocket-protocol": f"tars-stream, {key}"},
         )
-        ws.query_params = {"stream_key": key}
         asyncio.run(main.native_stream_endpoint(ws, "s-stall"))
 
     msgs = _health_msgs(fake_wsm)
@@ -534,8 +547,7 @@ def test_health_companion_connect_disconnect_does_not_clobber_open_mic_connectio
     captured: dict = {}
 
     async def run_companion_b():
-        ws_b = FakeNativeWebSocket([])  # connects, observes nothing, disconnects
-        ws_b.query_params = {"stream_key": key}
+        ws_b = FakeNativeWebSocket([], headers={"sec-websocket-protocol": f"tars-stream, {key}"})
         await main.native_stream_endpoint(ws_b, session_id)
         # Snapshot right after B has fully closed, while A is still open.
         captured["mid_b_msgs"] = list(_health_msgs(fake_wsm))
@@ -545,8 +557,8 @@ def test_health_companion_connect_disconnect_does_not_clobber_open_mic_connectio
         ws_a = _MidStreamWebSocket(
             [{"bytes": _encode_native_packet(mic_header)}],
             on_second_receive=run_companion_b,
+            headers={"sec-websocket-protocol": f"tars-stream, {key}"},
         )
-        ws_a.query_params = {"stream_key": key}
         asyncio.run(main.native_stream_endpoint(ws_a, session_id))
 
     mid_b_msgs = captured["mid_b_msgs"]
@@ -586,8 +598,10 @@ def test_health_companion_disconnect_only_resets_its_own_source(monkeypatch):
     captured: dict = {}
 
     async def run_companion_b():
-        ws_b = FakeNativeWebSocket([{"bytes": _encode_native_packet(sys_header)}])
-        ws_b.query_params = {"stream_key": key}
+        ws_b = FakeNativeWebSocket(
+            [{"bytes": _encode_native_packet(sys_header)}],
+            headers={"sec-websocket-protocol": f"tars-stream, {key}"},
+        )
         await main.native_stream_endpoint(ws_b, session_id)
         captured["mid_b_msgs"] = list(_health_msgs(fake_wsm))
 
@@ -596,8 +610,8 @@ def test_health_companion_disconnect_only_resets_its_own_source(monkeypatch):
         ws_a = _MidStreamWebSocket(
             [{"bytes": _encode_native_packet(mic_header)}],
             on_second_receive=run_companion_b,
+            headers={"sec-websocket-protocol": f"tars-stream, {key}"},
         )
-        ws_a.query_params = {"stream_key": key}
         asyncio.run(main.native_stream_endpoint(ws_a, session_id))
 
     last = captured["mid_b_msgs"][-1]
@@ -629,11 +643,13 @@ def test_frame_dedup_drops_replay_within_window(mock_sm_cls, monkeypatch):
     mock_sm = AsyncMock()
     mock_sm_cls.return_value = mock_sm
     key = _install_session(monkeypatch, "s-dedup-1")
-    ws = FakeNativeWebSocket([
-        {"bytes": _encode_native_packet(_dedup_header("s-dedup-1", 5))},
-        {"bytes": _encode_native_packet(_dedup_header("s-dedup-1", 5))},  # replay
-    ])
-    ws.query_params = {"stream_key": key}
+    ws = FakeNativeWebSocket(
+        [
+            {"bytes": _encode_native_packet(_dedup_header("s-dedup-1", 5))},
+            {"bytes": _encode_native_packet(_dedup_header("s-dedup-1", 5))},  # replay
+        ],
+        headers={"sec-websocket-protocol": f"tars-stream, {key}"},
+    )
     asyncio.run(main.native_stream_endpoint(ws, "s-dedup-1"))
     assert mock_sm.send_audio.await_count == 1  # duplicate dropped, count unchanged
 
@@ -646,11 +662,13 @@ def test_frame_dedup_accepts_large_backward_jump_as_restart(mock_sm_cls, monkeyp
     mock_sm = AsyncMock()
     mock_sm_cls.return_value = mock_sm
     key = _install_session(monkeypatch, "s-dedup-2")
-    ws = FakeNativeWebSocket([
-        {"bytes": _encode_native_packet(_dedup_header("s-dedup-2", 5000))},
-        {"bytes": _encode_native_packet(_dedup_header("s-dedup-2", 1))},  # restart-style reset
-    ])
-    ws.query_params = {"stream_key": key}
+    ws = FakeNativeWebSocket(
+        [
+            {"bytes": _encode_native_packet(_dedup_header("s-dedup-2", 5000))},
+            {"bytes": _encode_native_packet(_dedup_header("s-dedup-2", 1))},  # restart-style reset
+        ],
+        headers={"sec-websocket-protocol": f"tars-stream, {key}"},
+    )
     asyncio.run(main.native_stream_endpoint(ws, "s-dedup-2"))
     assert mock_sm.send_audio.await_count == 2  # both accepted
 
@@ -662,12 +680,14 @@ def test_frame_dedup_accepts_normal_increments(mock_sm_cls, monkeypatch):
     mock_sm = AsyncMock()
     mock_sm_cls.return_value = mock_sm
     key = _install_session(monkeypatch, "s-dedup-3")
-    ws = FakeNativeWebSocket([
-        {"bytes": _encode_native_packet(_dedup_header("s-dedup-3", 1))},
-        {"bytes": _encode_native_packet(_dedup_header("s-dedup-3", 2))},
-        {"bytes": _encode_native_packet(_dedup_header("s-dedup-3", 3))},
-    ])
-    ws.query_params = {"stream_key": key}
+    ws = FakeNativeWebSocket(
+        [
+            {"bytes": _encode_native_packet(_dedup_header("s-dedup-3", 1))},
+            {"bytes": _encode_native_packet(_dedup_header("s-dedup-3", 2))},
+            {"bytes": _encode_native_packet(_dedup_header("s-dedup-3", 3))},
+        ],
+        headers={"sec-websocket-protocol": f"tars-stream, {key}"},
+    )
     asyncio.run(main.native_stream_endpoint(ws, "s-dedup-3"))
     assert mock_sm.send_audio.await_count == 3
 
@@ -685,12 +705,14 @@ def test_frame_dedup_restart_baseline_resets_not_max(mock_sm_cls, monkeypatch):
     mock_sm = AsyncMock()
     mock_sm_cls.return_value = mock_sm
     key = _install_session(monkeypatch, "s-dedup-restart-baseline")
-    ws = FakeNativeWebSocket([
-        {"bytes": _encode_native_packet(_dedup_header("s-dedup-restart-baseline", 250))},  # old stream reaches 250
-        {"bytes": _encode_native_packet(_dedup_header("s-dedup-restart-baseline", 1))},    # restart: jump 249 >= 200, accepted
-        {"bytes": _encode_native_packet(_dedup_header("s-dedup-restart-baseline", 60))},   # new stream's own frame 60
-    ])
-    ws.query_params = {"stream_key": key}
+    ws = FakeNativeWebSocket(
+        [
+            {"bytes": _encode_native_packet(_dedup_header("s-dedup-restart-baseline", 250))},  # old stream reaches 250
+            {"bytes": _encode_native_packet(_dedup_header("s-dedup-restart-baseline", 1))},    # restart: jump 249 >= 200, accepted
+            {"bytes": _encode_native_packet(_dedup_header("s-dedup-restart-baseline", 60))},   # new stream's own frame 60
+        ],
+        headers={"sec-websocket-protocol": f"tars-stream, {key}"},
+    )
     asyncio.run(main.native_stream_endpoint(ws, "s-dedup-restart-baseline"))
     assert mock_sm.send_audio.await_count == 3  # all three forwarded, none silently dropped
 
@@ -729,30 +751,17 @@ def test_native_stream_rejects_unknown_subprotocol_name(monkeypatch):
     assert ws.closed_code == 1008
 
 
-def test_native_stream_query_key_still_works_and_warns(monkeypatch):
-    key = _install_session(monkeypatch, "s-query-warn")
-    warnings_recorded = []
-    original_warning = main.logger.warning
-
-    def fake_warning(event, **kw):
-        warnings_recorded.append((event, kw))
-        try:
-            return original_warning(event, **kw)
-        except Exception:
-            pass
-
-    monkeypatch.setattr(main.logger, "warning", fake_warning)
+def test_native_stream_rejects_query_key_without_subprotocol(monkeypatch):
+    key = _install_session(monkeypatch, "s-query-rej")
     ws = FakeNativeWebSocket(
         [{"text": json.dumps({"type": "ping"})}],
         query_params={"stream_key": key},
     )
-    asyncio.run(main.native_stream_endpoint(ws, "s-query-warn"))
-    assert ws.accepted is True
+    asyncio.run(main.native_stream_endpoint(ws, "s-query-rej"))
+    assert ws.accepted is False
+    assert ws.closed_code == 1008
+    assert ws.sent_json == []
     assert ws.accepted_subprotocol is None
-    assert ws.sent_json == [{"type": "pong"}]
-    assert warnings_recorded == [
-        ("native_stream_query_key_deprecated", {"session_id": "s-query-warn"})
-    ]
 
 
 def test_native_stream_rejects_subprotocol_with_extra_empty_entry(monkeypatch):
