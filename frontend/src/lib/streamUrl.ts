@@ -1,20 +1,52 @@
 /**
- * Build the native audio stream WebSocket URL for a session.
- *
- * The native stream gateway (`/api/stream/native/{session_id}`) requires a
- * `stream_key` query parameter minted by `POST /api/sessions` — connections
- * without a matching key are rejected at the WebSocket handshake (close code
- * 1008). When no key is supplied, the base session URL is returned
- * unchanged, e.g. for callers that predate stream-key auth.
+ * Configuration and wire contract helpers for the native stream WebSocket gateway.
  */
-export function buildStreamUrl(
+
+export type NativeStreamSource = "microphone" | "system_audio";
+
+export interface NativeStreamSocketConfig {
+  url: string;
+  protocols: [string, string];
+  hello: string;
+}
+
+export function buildStreamSocketConfig(
   base: string,
   sessionId: string,
-  streamKey?: string,
-): string {
-  const url = `${base}/${sessionId}`;
-  if (!streamKey) {
-    return url;
+  streamKey: string,
+  sources: NativeStreamSource[],
+): NativeStreamSocketConfig {
+  if (!streamKey || typeof streamKey !== "string" || streamKey.trim() === "") {
+    throw new Error("Chave do fluxo de áudio ausente ou inválida.");
   }
-  return `${url}?stream_key=${encodeURIComponent(streamKey)}`;
+  if (!Array.isArray(sources) || sources.length === 0) {
+    throw new Error("Nenhuma fonte de áudio especificada.");
+  }
+  for (const src of sources) {
+    if (src !== "microphone" && src !== "system_audio") {
+      throw new Error(`Fonte de áudio desconhecida: ${String(src)}`);
+    }
+  }
+
+  const uniqueSources = new Set(sources);
+  const canonicalSources: NativeStreamSource[] = [];
+  if (uniqueSources.has("microphone")) {
+    canonicalSources.push("microphone");
+  }
+  if (uniqueSources.has("system_audio")) {
+    canonicalSources.push("system_audio");
+  }
+
+  const url = `${base}/${sessionId}`;
+  const protocols: [string, string] = ["tars-stream", streamKey];
+  const hello = JSON.stringify({
+    type: "hello",
+    sources: canonicalSources,
+  });
+
+  return {
+    url,
+    protocols,
+    hello,
+  };
 }

@@ -71,6 +71,7 @@ public final class ReconnectingAudioSink: CaptureFrameSink, @unchecked Sendable 
     private let connectTimeoutSeconds: Double
     private let sendTimeoutSeconds: Double
     private let sleepHandler: @Sendable (Double) async -> Void
+    private let helloText: String?
 
     private let lock = NSLock()
 
@@ -110,7 +111,8 @@ public final class ReconnectingAudioSink: CaptureFrameSink, @unchecked Sendable 
         sendTimeoutSeconds: Double = 5,
         sleep: @escaping @Sendable (Double) async -> Void = {
             try? await Task.sleep(nanoseconds: UInt64($0 * 1_000_000_000))
-        }
+        },
+        intendedSources: [AudioSource] = []
     ) {
         self.sessionID = sessionID
         self.transportFactory = transportFactory
@@ -119,6 +121,25 @@ public final class ReconnectingAudioSink: CaptureFrameSink, @unchecked Sendable 
         self.connectTimeoutSeconds = connectTimeoutSeconds
         self.sendTimeoutSeconds = sendTimeoutSeconds
         self.sleepHandler = sleep
+
+        let uniqueSources = Set(intendedSources)
+        var canonical: [String] = []
+        if uniqueSources.contains(.microphone) { canonical.append("microphone") }
+        if uniqueSources.contains(.systemAudio) { canonical.append("system_audio") }
+        if !canonical.isEmpty {
+            let helloDict: [String: Any] = [
+                "type": "hello",
+                "sources": canonical
+            ]
+            if let data = try? JSONSerialization.data(withJSONObject: helloDict),
+               let text = String(data: data, encoding: .utf8) {
+                self.helloText = text
+            } else {
+                self.helloText = nil
+            }
+        } else {
+            self.helloText = nil
+        }
     }
 
     // MARK: - Public surface
@@ -488,6 +509,18 @@ public final class ReconnectingAudioSink: CaptureFrameSink, @unchecked Sendable 
             candidate.cancel()
             notifyStateChange(false)
             return
+        }
+
+        if let helloText = self.helloText {
+            do {
+                try await withDeadline(sendTimeoutSeconds, operation: "hello", transport: candidate) {
+                    try await candidate.sendText(helloText)
+                }
+            } catch {
+                candidate.cancel()
+                notifyStateChange(false)
+                return
+            }
         }
 
         let accepted: Bool = lock.withLock {

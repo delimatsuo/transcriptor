@@ -270,11 +270,16 @@ REJECT_HTTP_STATUSES = {401, 403}
 REJECT_CLOSE_CODE = 1008
 
 
+def stream_subprotocols(stream_key: str) -> list[str]:
+    """Retorna os subprotocolos WebSocket na ordem canônica do gateway."""
+    return ["tars-stream", stream_key]
+
+
 async def _probe_invalid_key(session_id: str) -> tuple[bool, str]:
     """Rejeição positiva: 401/403 no handshake, ou fechamento 1008 sem aceitar frames."""
-    url = f"{WS_BASE}/{session_id}?stream_key=WRONG"
+    url = f"{WS_BASE}/{session_id}"
     try:
-        async with ws_connect(url, open_timeout=10) as ws:
+        async with ws_connect(url, subprotocols=["tars-stream", "WRONG"], open_timeout=10) as ws:
             # Handshake aceito: o gateway ainda tem de fechar sem aceitar frames.
             await ws.send(encode_frame("microphone", 0, 0, b"\x00" * FRAME_BYTES))
             try:
@@ -306,9 +311,10 @@ async def _probe_valid_key(session_id: str, stream_key: str) -> tuple[bool, str]
     """Controle positivo: sem uma aceitação no mesmo instante, a rejeição acima
     não distingue "autenticação funciona" de "o gateway recusa todo mundo".
     Nenhum frame é enviado aqui, então nenhum StreamManager é criado."""
-    url = f"{WS_BASE}/{session_id}?stream_key={stream_key}"
+    url = f"{WS_BASE}/{session_id}"
     try:
-        async with ws_connect(url, open_timeout=10) as ws:
+        async with ws_connect(url, subprotocols=stream_subprotocols(stream_key), open_timeout=10) as ws:
+            await ws.send(json.dumps({"type": "hello", "sources": ["microphone"]}))
             try:
                 message = await asyncio.wait_for(ws.recv(), timeout=2)
                 return False, f"gateway respondeu/fechou inesperadamente com a chave válida: {message!r}"
@@ -520,7 +526,8 @@ class MicChannel:
     """
 
     def __init__(self, session_id: str, stream_key: str, pcm: bytes) -> None:
-        self._url = f"{WS_BASE}/{session_id}?stream_key={stream_key}"
+        self._url = f"{WS_BASE}/{session_id}"
+        self._subprotocols = stream_subprotocols(stream_key)
         self._pcm = pcm
         self._stop = threading.Event()
         self.frames_sent = 0
@@ -542,7 +549,8 @@ class MicChannel:
 
     async def _pump(self) -> None:
         silence = b"\x00" * FRAME_BYTES
-        async with ws_connect(self._url, open_timeout=10) as ws:
+        async with ws_connect(self._url, subprotocols=self._subprotocols, open_timeout=10) as ws:
+            await ws.send(json.dumps({"type": "hello", "sources": ["microphone"]}))
             self._ready.set()
             sample = 0
             # 1) fala real do entrevistador

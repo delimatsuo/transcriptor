@@ -14,7 +14,7 @@ public final class CompanionSessionController: ObservableObject {
         sink?.framesSent(for: .systemAudio) ?? 0
     }
 
-    public typealias TransportFactory = @Sendable (URL) -> AudioStreamTransport
+    public typealias TransportFactory = @Sendable (URL, [String]) -> AudioStreamTransport
     public typealias SourceFactory = (CaptureSourceConfiguration, CaptureFrameSink) -> any CaptureSource
 
     private let transportFactory: TransportFactory
@@ -36,8 +36,8 @@ public final class CompanionSessionController: ObservableObject {
         sourceFactory: SourceFactory? = nil
     ) {
         self.isCustomSourceFactory = sourceFactory != nil
-        self.transportFactory = transportFactory ?? { url in
-            URLSessionWebSocketTransport(url: url)
+        self.transportFactory = transportFactory ?? { url, protocols in
+            URLSessionWebSocketTransport(url: url, protocols: protocols)
         }
         self.sourceFactory = sourceFactory ?? { config, sink in
             ScreenCaptureKitSystemAudioSource(configuration: config, liveCaptureEnabled: true, sink: sink)
@@ -67,10 +67,16 @@ public final class CompanionSessionController: ObservableObject {
         }
 
         let url: URL
+        let protocols: [String]
         do {
-            url = try makeGatewayURL(gatewayBase: gatewayBase, sessionID: sessionID, streamKey: streamKey)
+            let base = "\(gatewayBase)/\(sessionID)"
+            guard let parsedURL = URL(string: base) else {
+                throw CompanionError.invalid("invalid gateway URL: \(base)")
+            }
+            url = parsedURL
+            protocols = try NativeStreamHandshake.protocols(streamKey: streamKey)
         } catch {
-            log("falha ao montar URL do gateway: \(error.localizedDescription)")
+            log("falha ao configurar gateway: \(error.localizedDescription)")
             state = .error("Falha ao iniciar a captura de áudio do sistema: \(error.localizedDescription)")
             return
         }
@@ -78,7 +84,8 @@ public final class CompanionSessionController: ObservableObject {
         let tf = self.transportFactory
         let newSink = ReconnectingAudioSink(
             sessionID: sessionID,
-            transportFactory: { tf(url) }
+            transportFactory: { tf(url, protocols) },
+            intendedSources: [.systemAudio]
         )
         self.sink = newSink
 
@@ -97,18 +104,7 @@ public final class CompanionSessionController: ObservableObject {
             }
         }
         newSink.start()
-
-        var redactedURLString = url.absoluteString
-        if !streamKey.isEmpty {
-            redactedURLString = redactedURLString.replacingOccurrences(of: streamKey, with: "***")
-            let unreserved = CharacterSet(
-                charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~"
-            )
-            if let encodedKey = streamKey.addingPercentEncoding(withAllowedCharacters: unreserved), !encodedKey.isEmpty {
-                redactedURLString = redactedURLString.replacingOccurrences(of: encodedKey, with: "***")
-            }
-        }
-        log("sink iniciado — conectando a \(redactedURLString)")
+        log("sink iniciado — conectando a \(url.absoluteString)")
 
         do {
             let identity = try SourceIdentity(
@@ -138,7 +134,7 @@ public final class CompanionSessionController: ObservableObject {
             self.source = nil
             self.activeSessionID = nil
             log("falha ao iniciar captura: \(error.localizedDescription)")
-            self.state = .error("Falha ao iniciar a captura de áudio do sistema: \(error.localizedDescription)")
+            state = .error("Falha ao iniciar a captura de áudio do sistema: \(error.localizedDescription)")
             return
         }
     }
@@ -163,27 +159,5 @@ public final class CompanionSessionController: ObservableObject {
     private func isErrorState(_ state: CompanionState) -> Bool {
         if case .error = state { return true }
         return false
-    }
-
-    private func makeGatewayURL(gatewayBase: String, sessionID: String, streamKey: String) throws -> URL {
-        let base = "\(gatewayBase)/\(sessionID)"
-        guard var components = URLComponents(string: base) else {
-            throw CompanionError.invalid("invalid gateway URL: \(base)")
-        }
-        if streamKey.isEmpty {
-            components.percentEncodedQuery = nil
-        } else {
-            let unreserved = CharacterSet(
-                charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~"
-            )
-            guard let encodedKey = streamKey.addingPercentEncoding(withAllowedCharacters: unreserved) else {
-                throw CompanionError.invalid("unable to percent-encode stream key")
-            }
-            components.percentEncodedQuery = "stream_key=\(encodedKey)"
-        }
-        guard let url = components.url else {
-            throw CompanionError.invalid("invalid gateway URL: \(base)")
-        }
-        return url
     }
 }
