@@ -25,6 +25,10 @@ public final class CompanionSessionController: ObservableObject {
     private var source: (any CaptureSource)?
     private var sink: ReconnectingAudioSink?
 
+    private func log(_ message: String) {
+        NSLog("TarsCompanion: %@", message)
+    }
+
     /// Defaults: URLSessionWebSocketTransport + ScreenCaptureKitSystemAudioSource.
     /// Both injectable so unit tests never touch real sockets or ScreenCaptureKit.
     public init(
@@ -41,7 +45,10 @@ public final class CompanionSessionController: ObservableObject {
     }
 
     public func start(sessionID: String, streamKey: String, gatewayBase: String) async {
+        log("start solicitado — sessão \(sessionID.prefix(8)), gateway \(gatewayBase)")
+
         guard state == .idle || isErrorState(state) else {
+            log("start ignorado — estado atual \(state)")
             return
         }
 
@@ -51,16 +58,19 @@ public final class CompanionSessionController: ObservableObject {
             if !CGPreflightScreenCaptureAccess() {
                 _ = CGRequestScreenCaptureAccess()
                 if !CGPreflightScreenCaptureAccess() {
+                    log("preflight de permissão falhou — CGPreflightScreenCaptureAccess=false")
                     state = .error("Permissão ausente. Habilite em Ajustes do Sistema → Privacidade e Segurança → Gravação de Tela e Áudio do Sistema para o TarsCompanion, e tente novamente.")
                     return
                 }
             }
+            log("permissão de captura concedida")
         }
 
         let url: URL
         do {
             url = try makeGatewayURL(gatewayBase: gatewayBase, sessionID: sessionID, streamKey: streamKey)
         } catch {
+            log("falha ao montar URL do gateway: \(error.localizedDescription)")
             state = .error("Falha ao iniciar a captura de áudio do sistema: \(error.localizedDescription)")
             return
         }
@@ -75,6 +85,7 @@ public final class CompanionSessionController: ObservableObject {
         newSink.onStateChange = { [weak self] connected in
             Task { @MainActor [weak self] in
                 guard let self = self else { return }
+                self.log("conexão: \(connected ? "estabelecida" : "perdida")")
                 guard self.state == .capturing || self.state == .reconnecting || self.state == .connecting else {
                     return
                 }
@@ -86,6 +97,18 @@ public final class CompanionSessionController: ObservableObject {
             }
         }
         newSink.start()
+
+        var redactedURLString = url.absoluteString
+        if !streamKey.isEmpty {
+            redactedURLString = redactedURLString.replacingOccurrences(of: streamKey, with: "***")
+            let unreserved = CharacterSet(
+                charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~"
+            )
+            if let encodedKey = streamKey.addingPercentEncoding(withAllowedCharacters: unreserved), !encodedKey.isEmpty {
+                redactedURLString = redactedURLString.replacingOccurrences(of: encodedKey, with: "***")
+            }
+        }
+        log("sink iniciado — conectando a \(redactedURLString)")
 
         do {
             let identity = try SourceIdentity(
@@ -104,6 +127,7 @@ public final class CompanionSessionController: ObservableObject {
             self.source = newSource
 
             try await newSource.start()
+            log("captura de áudio do sistema ativa")
             self.activeSessionID = sessionID
             if self.state == .connecting {
                 self.state = .capturing
@@ -113,12 +137,14 @@ public final class CompanionSessionController: ObservableObject {
             self.sink = nil
             self.source = nil
             self.activeSessionID = nil
+            log("falha ao iniciar captura: \(error.localizedDescription)")
             self.state = .error("Falha ao iniciar a captura de áudio do sistema: \(error.localizedDescription)")
             return
         }
     }
 
     public func stop() async {
+        log("sessão encerrada")
         let currentSource = self.source
         let currentSink = self.sink
         self.source = nil

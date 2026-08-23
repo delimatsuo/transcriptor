@@ -186,4 +186,23 @@ final class CompanionSessionControllerTests: XCTestCase {
         XCTAssertEqual(controller.activeSessionID, "sess-5")
         XCTAssertEqual(controller.state, .capturing)
     }
+
+    // (f) error state message is surfaced
+    func testErrorStateMessageIsSurfaced() async throws {
+        let failingSource = FakeCaptureSource(configuration: try dummyConfig(), shouldFailStart: true)
+        let controller = CompanionSessionController(
+            transportFactory: { _ in FakeTransport() },
+            sourceFactory: { config, _ in failingSource }
+        )
+
+        await controller.start(sessionID: "sess-err", streamKey: "key-err", gatewayBase: "ws://127.0.0.1:8000/api")
+
+        let state = controller.state
+        guard case .error(let message) = state else {
+            XCTFail("Expected .error state, got \(state)")
+            return
+        }
+        XCTAssertFalse(message.isEmpty, "Error message should not be empty")
+        XCTAssertTrue(message.contains("Falha ao iniciar"), "Expected message to contain 'Falha ao iniciar', got: \(message)")
+    }
 }
