@@ -6,7 +6,8 @@ let package = Package(
     platforms: [.macOS(.v13)],
     products: [
         .library(name: "TarsNativeCompanion", targets: ["TarsNativeCompanion"]),
-        .executable(name: "tars-companion", targets: ["TarsCompanionCLI"])
+        .executable(name: "tars-companion", targets: ["TarsCompanionCLI"]),
+        .executable(name: "TarsCompanionApp", targets: ["TarsCompanionApp"])
     ],
     targets: [
         .target(
@@ -17,6 +18,11 @@ let package = Package(
             name: "TarsCompanionCLI",
             dependencies: ["TarsNativeCompanion"],
             path: "Sources/TarsCompanionCLI"
+        ),
+        .executableTarget(
+            name: "TarsCompanionApp",
+            dependencies: ["TarsNativeCompanion"],
+            path: "Sources/TarsCompanionApp"
         ),
         .testTarget(
             name: "TarsNativeCompanionTests",
