@@ -2399,7 +2399,16 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
 @app.websocket("/api/stream/native/{session_id}")
 async def native_stream_endpoint(websocket: WebSocket, session_id: str):
     """Ingest dual-channel audio from the native macOS companion over WebSocket."""
-    presented = websocket.query_params.get("stream_key", "")
+    raw_subprotocol = websocket.headers.get("sec-websocket-protocol")
+    offered = [item.strip() for item in raw_subprotocol.split(",")] if raw_subprotocol is not None else []
+    subprotocol: str | None = None
+    if len(offered) == 2 and offered[0] == "tars-stream":
+        presented = offered[1]
+        subprotocol = "tars-stream"
+    else:
+        presented = websocket.query_params.get("stream_key", "")
+        if presented:
+            logger.warning("native_stream_query_key_deprecated", session_id=session_id)
     expected = stream_keys.get(session_id)
     session = session_mgr.get_session(session_id) if session_mgr else None
     # secrets.compare_digest(str, str) raises TypeError on non-ASCII input
@@ -2422,7 +2431,10 @@ async def native_stream_endpoint(websocket: WebSocket, session_id: str):
         logger.warning("native_stream_rejected", session_id=session_id)
         await websocket.close(code=1008)
         return
-    await websocket.accept()
+    if subprotocol:
+        await websocket.accept(subprotocol=subprotocol)
+    else:
+        await websocket.accept()
     logger.info("native_companion_connected", session_id=session_id)
     app_settings = settings or get_settings()
 
