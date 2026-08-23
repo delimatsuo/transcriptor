@@ -15,10 +15,10 @@ logger = structlog.get_logger()
 class GCSStorage:
     """Upload files (resumes, JDs, audio) to Google Cloud Storage."""
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, client: storage.Client | None = None) -> None:
         self.settings = settings
-        self._client: storage.Client | None = None
-        self._bucket_name = f"{settings.google_cloud_project}-tars"
+        self._client = client
+        self._bucket_name = settings.effective_gcs_bucket_name
 
     def _get_client(self) -> storage.Client:
         if self._client is None:
@@ -27,11 +27,7 @@ class GCSStorage:
 
     def _get_bucket(self) -> storage.Bucket:
         client = self._get_client()
-        bucket = client.bucket(self._bucket_name)
-        if not bucket.exists():
-            bucket = client.create_bucket(self._bucket_name, location="us-central1")
-            logger.info("gcs_bucket_created", bucket=self._bucket_name)
-        return bucket
+        return client.bucket(self._bucket_name)
 
     def upload_file(
         self,

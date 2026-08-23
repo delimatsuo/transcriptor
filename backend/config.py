@@ -2,8 +2,154 @@
 
 from __future__ import annotations
 
+import ipaddress
+from urllib.parse import urlsplit
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings
+
+DEFAULT_LOCAL_CORS_ORIGINS: list[str] = [
+    "http://localhost:3000",
+    "http://localhost:3003",
+    "http://127.0.0.1:3000",
+    "http://127.0.0.1:3003",
+    "chrome-extension://fhnadcdkfgdlkomjpilmgehhpgmkjnga",
+]
+
+
+def parse_cors_allowed_origins(raw: str | None) -> list[str]:
+    """Parse, validate, and normalize CORS_ALLOWED_ORIGINS.
+
+    If absent (None), returns DEFAULT_LOCAL_CORS_ORIGINS.
+    If provided, splits comma-separated origins, trims surrounding spaces,
+    removes a single trailing slash, validates strict ASCII origin syntax (no wildcards,
+    no paths, no queries, no fragments, no credentials, no internal whitespace,
+    no backslashes, no percent encoding, no control characters, valid host/ID format),
+    deduplicates preserving order, and returns the resulting list.
+    """
+    if raw is None:
+        return list(DEFAULT_LOCAL_CORS_ORIGINS)
+
+    stripped = raw.strip()
+    if not stripped:
+        raise ValueError("CORS_ALLOWED_ORIGINS must not be blank")
+
+    raw_items = [item.strip(" ") for item in raw.split(",")]
+    parsed_origins: list[str] = []
+
+    for item in raw_items:
+        if not item:
+            raise ValueError("Empty entry in CORS_ALLOWED_ORIGINS")
+
+        try:
+            item.encode("ascii")
+        except UnicodeEncodeError:
+            raise ValueError("Non-ASCII character in CORS origin") from None
+
+        if "*" in item:
+            raise ValueError("Wildcards are prohibited in CORS_ALLOWED_ORIGINS")
+        if "\\" in item:
+            raise ValueError("Backslash is prohibited in CORS origin")
+        if "%" in item:
+            raise ValueError("Percent encoding is prohibited in CORS origin")
+        if "?" in item or "#" in item:
+            raise ValueError("Query and fragment delimiters are prohibited in CORS origin")
+        if any(c.isspace() for c in item):
+            raise ValueError("Whitespace is prohibited within CORS origin")
+        if any(ord(c) < 32 or ord(c) == 127 for c in item):
+            raise ValueError("Control characters are prohibited in CORS origin")
+
+        # Normalize only a single trailing slash
+        if item.endswith("/"):
+            item = item[:-1]
+
+        if item.endswith(":"):
+            raise ValueError("Empty port delimiter in CORS origin")
+
+        try:
+            split = urlsplit(item)
+        except Exception:
+            raise ValueError("Malformed CORS origin URI") from None
+
+        if split.scheme not in ("http", "https", "chrome-extension"):
+            raise ValueError("Invalid scheme in CORS origin")
+        if split.query or split.fragment:
+            raise ValueError("Query or fragment not allowed in CORS origin")
+        if split.username is not None or split.password is not None or "@" in split.netloc:
+            raise ValueError("Credentials/userinfo not allowed in CORS origin")
+        if split.path and split.path != "":
+            raise ValueError("Non-root path not allowed in CORS origin")
+        if not split.hostname:
+            raise ValueError("Missing host/extension ID in CORS origin")
+
+        try:
+            port = split.port
+        except ValueError:
+            raise ValueError("Invalid port in CORS origin") from None
+
+        if port is not None and not (1 <= port <= 65535):
+            raise ValueError("Port out of range in CORS origin")
+
+        if split.scheme == "chrome-extension":
+            if port is not None or ":" in split.netloc:
+                raise ValueError("Port not allowed in chrome-extension origin")
+            raw_id = split.netloc
+            # Chrome extension ID: exactly 32 lowercase chars in 'a' through 'p'
+            if len(raw_id) != 32 or not all("a" <= c <= "p" for c in raw_id):
+                raise ValueError("Invalid chrome-extension ID in CORS origin")
+            normalized_origin = f"chrome-extension://{raw_id}"
+        else:
+            # http or https
+            if split.netloc.startswith("["):
+                # Bracketed IPv6
+                if "]" not in split.netloc:
+                    raise ValueError("Malformed bracketed host in CORS origin")
+                bracket_host = split.netloc[1:split.netloc.index("]")]
+                try:
+                    ipaddress.IPv6Address(bracket_host)
+                except ValueError:
+                    raise ValueError("Invalid IPv6 host in CORS origin") from None
+                expected_prefix = f"[{bracket_host}]"
+                if not (split.netloc == expected_prefix or split.netloc.startswith(f"{expected_prefix}:")):
+                    raise ValueError("Malformed bracketed host in CORS origin")
+            else:
+                if "[" in split.netloc or "]" in split.netloc:
+                    raise ValueError("Malformed host brackets in CORS origin")
+
+                hostname = split.hostname
+                is_ipv4 = False
+                try:
+                    ipaddress.IPv4Address(hostname)
+                    is_ipv4 = True
+                except ValueError:
+                    pass
+
+                if not is_ipv4:
+                    labels = hostname.split(".")
+                    for label in labels:
+                        if not label or len(label) > 63:
+                            raise ValueError("Invalid DNS label in CORS origin")
+                        if not (label[0].isalnum() and label[-1].isalnum()):
+                            raise ValueError("DNS label must start and end with alphanumeric")
+                        if not all(c.isalnum() or c == "-" for c in label):
+                            raise ValueError("DNS label contains invalid character")
+
+            normalized_origin = f"{split.scheme}://{split.netloc}"
+
+        if normalized_origin not in parsed_origins:
+            parsed_origins.append(normalized_origin)
+
+    return parsed_origins
+
+
+class CorsSettings(BaseSettings):
+    """Isolated settings reader for CORS configuration without full Settings requirements."""
+
+    model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
+
+    cors_allowed_origins: str | None = Field(
+        default=None,
+        description="Optional comma-separated list of allowed CORS origins",
+    )
 
 
 class Settings(BaseSettings):
@@ -13,6 +159,10 @@ class Settings(BaseSettings):
 
     # GCP
     google_cloud_project: str = Field(..., description="GCP project ID")
+    gcs_bucket_name: str | None = Field(
+        default=None,
+        description="Optional override for GCS bucket name",
+    )
 
     # Authentication / internal tenancy
     firebase_project_id: str | None = Field(
@@ -28,6 +178,24 @@ class Settings(BaseSettings):
         description="Comma-separated exact email allowlist for internal access",
     )
     auth_ws_ticket_ttl_seconds: int = Field(default=60, gt=0, le=300)
+
+    @field_validator("gcs_bucket_name")
+    @classmethod
+    def validate_gcs_bucket_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized:
+            return None
+        if any(c.isspace() for c in normalized) or "/" in normalized or normalized.startswith("gs://"):
+            raise ValueError("GCS_BUCKET_NAME must be a bare bucket name (no gs://, no slashes, no whitespace)")
+        return normalized
+
+    @property
+    def effective_gcs_bucket_name(self) -> str:
+        if self.gcs_bucket_name:
+            return self.gcs_bucket_name.strip()
+        return f"{self.google_cloud_project}-tars"
     auth_stop_capability_ttl_seconds: int = Field(default=14_400, gt=0, le=86_400)
     auth_extension_capability_ttl_seconds: int = Field(default=900, gt=0, le=3600)
     extension_enabled: bool = Field(

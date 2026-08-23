@@ -1,16 +1,23 @@
-# CURRENT PROTOTYPE CONTAINER, NOT A PRODUCTION-READY CONTROL PLANE.
-# The packaged backend still couples server orchestration with local
-# sounddevice/BlackHole capture, while the approved target moves capture into a
-# native macOS companion. Deployment remains blocked pending containment, auth,
-# ownership, isolated environments, tests, and a re-run plan gate.
+# Backend image source for the single-instance hosted pilot candidate.
+# Server orchestration serves authenticated API/WS sessions while capture is
+# handled by browser Web Audio or the native macOS companion.
+# Real deployment remains blocked pending Task 07 and Task 08 gates.
 FROM python:3.12-slim
 
 WORKDIR /app
 
-# System deps for soundfile
+# System dependencies: libsndfile1 for audio file processing and libportaudio2
+# for import-time sounddevice compatibility.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libsndfile1 \
+    libportaudio2 \
     && rm -rf /var/lib/apt/lists/*
+
+# Runtime environment settings: safe non-capture defaults and unbuffered Python
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    HOST_AUDIO_CAPTURE_ENABLED=false \
+    AUDIO_BACKUP_ENABLED=false
 
 # Install Python dependencies
 COPY requirements.txt .
@@ -25,4 +32,5 @@ USER appuser
 
 EXPOSE 8080
 
-CMD ["sh", "-c", "python -m uvicorn backend.main:app --host 0.0.0.0 --port ${PORT:-8080}"]
+# Exec Uvicorn in single process without reload/workers (process-local state)
+CMD ["sh", "-c", "exec python -m uvicorn backend.main:app --host 0.0.0.0 --port ${PORT:-8080}"]

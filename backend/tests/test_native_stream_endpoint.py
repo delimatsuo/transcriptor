@@ -160,8 +160,8 @@ def test_native_stream_endpoint_routes_microphone_and_system_audio(mock_sm_cls, 
     mock_sm_instance = AsyncMock()
     mock_sm_cls.return_value = mock_sm_instance
 
-    mic_packet = _encode_native_packet({"source": "microphone", "sequence": 1})
-    sys_packet = _encode_native_packet({"source": "system_audio", "sequence": 1})
+    mic_packet = _encode_native_packet({"session_id": "test-sess-dual", "source": "microphone", "sequence": 1})
+    sys_packet = _encode_native_packet({"session_id": "test-sess-dual", "source": "system_audio", "sequence": 1})
 
     key = _install_session(monkeypatch, "test-sess-dual")
     ws = FakeNativeWebSocket(
@@ -179,9 +179,204 @@ def test_native_stream_endpoint_routes_microphone_and_system_audio(mock_sm_cls, 
     assert mock_sm_cls.call_count == 2
     assert mock_sm_instance.start.call_count == 2
     assert mock_sm_instance.send_audio.call_count == 2
+    assert mock_sm_instance.stop.call_count == 0
+
+
+def test_native_stream_rejects_frame_missing_session_id_before_side_effects(monkeypatch):
+    key = _install_session(monkeypatch, "s-missing-id")
+    fake_wsm = type("W", (), {"broadcast": AsyncMock(), "next_sequence": staticmethod(lambda sid: 1)})()
+    monkeypatch.setattr(main, "ws_manager", fake_wsm)
+
+    warnings = []
+    orig_warning = main.logger.warning
+
+    def fake_warning(event, *args, **kw):
+        warnings.append((event, args, kw))
+        try:
+            return orig_warning(event, *args, **kw)
+        except Exception:
+            pass
+
+    monkeypatch.setattr(main.logger, "warning", fake_warning)
+
+    # Frame 1: missing session_id field
+    bad_header_1 = {"source": "microphone", "sequence": 1}
+    bad_packet_1 = _encode_native_packet(bad_header_1)
+
+    with patch("backend.main.StreamManager") as sm_cls:
+        mock_sm = AsyncMock()
+        sm_cls.return_value = mock_sm
+        ws = FakeNativeWebSocket(
+            [{"bytes": bad_packet_1}],
+            headers={"sec-websocket-protocol": f"tars-stream, {key}"},
+        )
+        asyncio.run(main.native_stream_endpoint(ws, "s-missing-id"))
+
+    assert ws.closed_code == 1008
+    assert sm_cls.call_count == 0
+    assert mock_sm.start.call_count == 0
+    assert mock_sm.send_audio.call_count == 0
+    assert "s-missing-id" not in main.native_frame_last_seq
+    # Neither source became owned or healthy (checking both microphone and system_audio)
+    session_health = main.native_session_health.get("s-missing-id", {})
+    assert session_health.get("sources", {}).get("microphone") != "healthy"
+    assert session_health.get("source_connections", {}).get("microphone", 0) == 0
+    assert session_health.get("sources", {}).get("system_audio") != "healthy"
+    assert session_health.get("source_connections", {}).get("system_audio", 0) == 0
+
+    rejections = [kw for e, _, kw in warnings if e == "native_stream_frame_rejected"]
+    assert len(rejections) == 1
+    assert rejections[0] == {"session_id": "s-missing-id", "reason": "missing_session_id"}
+
+    # Frame 2: non-string session_id (e.g. integer 12345)
+    warnings.clear()
+    key2 = _install_session(monkeypatch, "s-nonstring-id")
+    bad_header_2 = {"session_id": 12345, "source": "system_audio", "sequence": 1}
+    bad_packet_2 = _encode_native_packet(bad_header_2)
+
+    with patch("backend.main.StreamManager") as sm_cls:
+        mock_sm = AsyncMock()
+        sm_cls.return_value = mock_sm
+        ws = FakeNativeWebSocket(
+            [{"bytes": bad_packet_2}],
+            headers={"sec-websocket-protocol": f"tars-stream, {key2}"},
+        )
+        asyncio.run(main.native_stream_endpoint(ws, "s-nonstring-id"))
+
+    assert ws.closed_code == 1008
+    assert sm_cls.call_count == 0
+    assert mock_sm.start.call_count == 0
+    assert mock_sm.send_audio.call_count == 0
+    assert "s-nonstring-id" not in main.native_frame_last_seq
+    session_health = main.native_session_health.get("s-nonstring-id", {})
+    assert session_health.get("sources", {}).get("microphone") != "healthy"
+    assert session_health.get("source_connections", {}).get("microphone", 0) == 0
+    assert session_health.get("sources", {}).get("system_audio") != "healthy"
+    assert session_health.get("source_connections", {}).get("system_audio", 0) == 0
+    rejections = [kw for e, _, kw in warnings if e == "native_stream_frame_rejected"]
+    assert len(rejections) == 1
+    assert rejections[0] == {"session_id": "s-nonstring-id", "reason": "missing_session_id"}
+
+    # Frame 3: non-object JSON header (e.g. list ["not-an-object"])
+    warnings.clear()
+    key3 = _install_session(monkeypatch, "s-nonobject-id")
+    bad_packet_3 = _encode_native_packet(["not-an-object"])
+
+    with patch("backend.main.StreamManager") as sm_cls:
+        mock_sm = AsyncMock()
+        sm_cls.return_value = mock_sm
+        ws = FakeNativeWebSocket(
+            [{"bytes": bad_packet_3}],
+            headers={"sec-websocket-protocol": f"tars-stream, {key3}"},
+        )
+        asyncio.run(main.native_stream_endpoint(ws, "s-nonobject-id"))
+
+    assert ws.closed_code == 1008
+    assert sm_cls.call_count == 0
+    assert mock_sm.start.call_count == 0
+    assert mock_sm.send_audio.call_count == 0
+    assert "s-nonobject-id" not in main.native_frame_last_seq
+    session_health = main.native_session_health.get("s-nonobject-id", {})
+    assert session_health.get("sources", {}).get("microphone") != "healthy"
+    assert session_health.get("source_connections", {}).get("microphone", 0) == 0
+    assert session_health.get("sources", {}).get("system_audio") != "healthy"
+    assert session_health.get("source_connections", {}).get("system_audio", 0) == 0
+    rejections = [kw for e, _, kw in warnings if e == "native_stream_frame_rejected"]
+    assert len(rejections) == 1
+    assert rejections[0] == {"session_id": "s-nonobject-id", "reason": "missing_session_id"}
+
+
+def test_native_stream_rejects_frame_session_id_mismatch_before_side_effects(monkeypatch):
+    attacker_id = "attacker-evil-session-id-999"
+    key = _install_session(monkeypatch, "s-path-target")
+    fake_wsm = type("W", (), {"broadcast": AsyncMock(), "next_sequence": staticmethod(lambda sid: 1)})()
+    monkeypatch.setattr(main, "ws_manager", fake_wsm)
+
+    warnings = []
+    orig_warning = main.logger.warning
+
+    def fake_warning(event, *args, **kw):
+        warnings.append((event, args, kw))
+        try:
+            return orig_warning(event, *args, **kw)
+        except Exception:
+            pass
+
+    monkeypatch.setattr(main.logger, "warning", fake_warning)
+
+    mismatched_header = {"session_id": attacker_id, "source": "microphone", "sequence": 1}
+    packet = _encode_native_packet(mismatched_header)
+
+    with patch("backend.main.StreamManager") as sm_cls:
+        mock_sm = AsyncMock()
+        sm_cls.return_value = mock_sm
+        ws = FakeNativeWebSocket(
+            [{"bytes": packet}],
+            headers={"sec-websocket-protocol": f"tars-stream, {key}"},
+        )
+        asyncio.run(main.native_stream_endpoint(ws, "s-path-target"))
+
+    assert ws.closed_code == 1008
+    assert sm_cls.call_count == 0
+    assert mock_sm.start.call_count == 0
+    assert mock_sm.send_audio.call_count == 0
+    assert "s-path-target" not in main.native_frame_last_seq
+    assert attacker_id not in main.native_frame_last_seq
+    session_health = main.native_session_health.get("s-path-target", {})
+    assert session_health.get("sources", {}).get("microphone") != "healthy"
+    assert session_health.get("source_connections", {}).get("microphone", 0) == 0
+    assert session_health.get("sources", {}).get("system_audio") != "healthy"
+    assert session_health.get("source_connections", {}).get("system_audio", 0) == 0
+
+    rejections = [kw for e, _, kw in warnings if e == "native_stream_frame_rejected"]
+    assert len(rejections) == 1
+    assert rejections[0] == {"session_id": "s-path-target", "reason": "mismatched_session_id"}
+
+    # Attacker controlled value must NOT appear in entire warning record (event, positional args, keywords)
+    for event, args, kw in warnings:
+        assert attacker_id not in str(event)
+        assert attacker_id not in str(args)
+        assert attacker_id not in str(kw)
+
+
+def test_native_stream_accepts_frame_session_id_matching_path(monkeypatch):
+    key = _install_session(monkeypatch, "s-matching")
+    fake_wsm = type("W", (), {"broadcast": AsyncMock(), "next_sequence": staticmethod(lambda sid: 1)})()
+    monkeypatch.setattr(main, "ws_manager", fake_wsm)
+
+    matching_header = {
+        "session_id": "s-matching",
+        "source": "system_audio",
+        "sequence": 1,
+        "first_sample": 0,
+        "captured_at_ms": 1000,
+        "sample_rate": 16000,
+        "channel_count": 1,
+        "duration_ms": 50,
+    }
+    packet = _encode_native_packet(matching_header, payload=b"\x05\x00" * 800)
+
+    with patch("backend.main.StreamManager") as sm_cls:
+        mock_sm = AsyncMock()
+        sm_cls.return_value = mock_sm
+        ws = FakeNativeWebSocket(
+            [{"bytes": packet}],
+            headers={"sec-websocket-protocol": f"tars-stream, {key}"},
+        )
+        asyncio.run(main.native_stream_endpoint(ws, "s-matching"))
+
+    assert ws.accepted is True
+    assert ws.closed_code != 1008
+    assert mock_sm.start.call_count == 1
+    assert mock_sm.send_audio.call_count == 1
+    assert main.native_frame_last_seq.get("s-matching", {}).get("system_audio") == 1
+    msgs = _health_msgs(fake_wsm)
+    assert any(m.payload["sources"]["system_audio"] == "healthy" for m in msgs)
+    session_health = main.native_session_health.get("s-matching", {})
+    assert session_health.get("sources", {}).get("system_audio") == "reconnecting"
     # Session-scoped StreamManagers: a companion disconnect must not stop/drain
     # them. Only _stop_pipeline (session end) does that.
-    assert mock_sm_instance.stop.call_count == 0
+    assert mock_sm.stop.call_count == 0
 
 
 def test_native_stream_endpoint_handles_short_packets_gracefully(monkeypatch):
