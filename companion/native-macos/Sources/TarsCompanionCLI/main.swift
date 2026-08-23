@@ -62,10 +62,12 @@ struct CompanionApp {
         }
 
         let url: URL
+        let protocols: [String]
         do {
             url = try options.gatewayURL()
+            protocols = try options.webSocketProtocols()
         } catch {
-            fputs("Invalid gateway URL: \(error)\n", stderr)
+            fputs("Invalid gateway configuration: \(error.localizedDescription)\n", stderr)
             exit(1)
         }
 
@@ -96,6 +98,13 @@ struct CompanionApp {
         print("Driver Setup: ZERO virtual devices or MIDI configuration needed")
         print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
 
+        let intendedSources: [AudioSource]
+        switch options.sources {
+        case .systemAudio: intendedSources = [.systemAudio]
+        case .microphone: intendedSources = [.microphone]
+        case .both: intendedSources = [.systemAudio, .microphone]
+        }
+
         // The sink owns connection lifetime from here: it buffers ~30 s of
         // audio across a gateway outage, replays it in capture order, and only
         // reports a gap when the outage actually outlasted the buffer.
@@ -103,7 +112,8 @@ struct CompanionApp {
         let announcer = ConnectionAnnouncer()
         let sink = ReconnectingAudioSink(
             sessionID: options.sessionID,
-            transportFactory: { URLSessionWebSocketTransport(url: url, session: session) }
+            transportFactory: { URLSessionWebSocketTransport(url: url, protocols: protocols, session: session) },
+            intendedSources: intendedSources
         )
         sink.onStateChange = { connected in announcer.announce(connected: connected) }
         sink.start()

@@ -376,7 +376,8 @@ final class ReconnectingAudioSinkTests: XCTestCase {
     private func makeSink(
         gateway: MockGateway,
         clock: TestClock,
-        bufferCapacityFrames: Int = 600
+        bufferCapacityFrames: Int = 600,
+        intendedSources: [AudioSource] = []
     ) -> ReconnectingAudioSink {
         ReconnectingAudioSink(
             sessionID: sessionID,
@@ -385,7 +386,8 @@ final class ReconnectingAudioSinkTests: XCTestCase {
             reconnectDelaysSeconds: [1, 2, 4, 8, 16, 30],
             connectTimeoutSeconds: connectTimeout,
             sendTimeoutSeconds: sendTimeout,
-            sleep: { delay in await clock.sleep(delay) }
+            sleep: { delay in await clock.sleep(delay) },
+            intendedSources: intendedSources
         )
     }
 
@@ -678,5 +680,108 @@ final class ReconnectingAudioSinkTests: XCTestCase {
             "the gap must point at frame 2 — never at the in-flight frame 1"
         )
         XCTAssertEqual(sink.framesSent(for: .systemAudio), 3)
+    }
+
+    func testHelloIsFirstApplicationMessageAndCanonicalizesSources() async throws {
+        let gateway = MockGateway()
+        let clock = steadyClock()
+        let sink = makeSink(
+            gateway: gateway,
+            clock: clock,
+            intendedSources: [.systemAudio, .microphone, .systemAudio]
+        )
+
+        let frames = try makeFrames(identity: systemIdentity(), indices: 1...1)
+        try await sink.receive(frames[0])
+
+        let delivered = gateway.expectEvents(2)
+        sink.start()
+        await fulfillment(of: [delivered], timeout: 5.0)
+        await sink.stop()
+
+        XCTAssertEqual(gateway.events.count, 2)
+        guard case .text(let helloText) = gateway.events[0] else {
+            XCTFail("Expected first event to be hello text")
+            return
+        }
+        let helloJSON = try decodeJSONObject(helloText)
+        XCTAssertEqual(helloJSON["type"] as? String, "hello")
+        XCTAssertEqual(helloJSON["sources"] as? [String], ["microphone", "system_audio"])
+
+        guard case .data(let frameData) = gateway.events[1] else {
+            XCTFail("Expected second event to be frame data")
+            return
+        }
+        let seq = try decodePacket(frameData).sequence
+        XCTAssertEqual(seq, 1)
+        XCTAssertEqual(sink.framesSent(for: .systemAudio), 1)
+    }
+
+    func testEveryReconnectSendsHelloBeforeRetriedFrame() async throws {
+        // Call 1 is hello (succeeds), Call 2 is frame 1 (fails).
+        // On reconnect, Call 3 is hello (succeeds), Call 4 is frame 1 (succeeds).
+        let gateway = MockGateway(failingSendCalls: [2])
+        let clock = steadyClock()
+        let sink = makeSink(
+            gateway: gateway,
+            clock: clock,
+            intendedSources: [.systemAudio]
+        )
+
+        let frames = try makeFrames(identity: systemIdentity(), indices: 1...1)
+        try await sink.receive(frames[0])
+
+        let delivered = gateway.expectEvents(3)
+        sink.start()
+        await fulfillment(of: [delivered], timeout: 5.0)
+        await sink.stop()
+
+        XCTAssertEqual(gateway.events.count, 3)
+        guard case .text(let hello1Text) = gateway.events[0],
+              case .text(let hello2Text) = gateway.events[1],
+              case .data(let frameData) = gateway.events[2] else {
+            XCTFail("Expected event order: hello, hello, data")
+            return
+        }
+        let h1 = try decodeJSONObject(hello1Text)
+        let h2 = try decodeJSONObject(hello2Text)
+        XCTAssertEqual(h1["type"] as? String, "hello")
+        XCTAssertEqual(h2["type"] as? String, "hello")
+        XCTAssertEqual(try decodePacket(frameData).sequence, 1)
+        XCTAssertEqual(gateway.connectAttempts, 2)
+        XCTAssertEqual(clock.recorded, [1], "Standard first backoff should be used on frame failure")
+        XCTAssertEqual(sink.framesSent(for: .systemAudio), 1)
+    }
+
+    func testFailedHelloRetriesWithoutDequeuingFrame() async throws {
+        // Call 1 is hello (fails).
+        // On reconnect, Call 2 is hello (succeeds), Call 3 is frame 1 (succeeds).
+        let gateway = MockGateway(failingSendCalls: [1])
+        let clock = steadyClock()
+        let sink = makeSink(
+            gateway: gateway,
+            clock: clock,
+            intendedSources: [.systemAudio]
+        )
+
+        let frames = try makeFrames(identity: systemIdentity(), indices: 1...1)
+        try await sink.receive(frames[0])
+
+        let delivered = gateway.expectEvents(2)
+        sink.start()
+        await fulfillment(of: [delivered], timeout: 5.0)
+        await sink.stop()
+
+        XCTAssertEqual(gateway.events.count, 2)
+        guard case .text(let helloText) = gateway.events[0],
+              case .data(let frameData) = gateway.events[1] else {
+            XCTFail("Expected event order: hello, data")
+            return
+        }
+        let h = try decodeJSONObject(helloText)
+        XCTAssertEqual(h["type"] as? String, "hello")
+        XCTAssertEqual(try decodePacket(frameData).sequence, 1)
+        XCTAssertEqual(gateway.connectAttempts, 2)
+        XCTAssertEqual(sink.framesSent(for: .systemAudio), 1)
     }
 }

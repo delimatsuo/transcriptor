@@ -92,7 +92,7 @@ final class CompanionSessionControllerTests: XCTestCase {
         let fakeSource = FakeCaptureSource(configuration: try dummyConfig())
         var sourceCreatedCount = 0
         let controller = CompanionSessionController(
-            transportFactory: { _ in FakeTransport() },
+            transportFactory: { _, _ in FakeTransport() },
             sourceFactory: { config, _ in
                 sourceCreatedCount += 1
                 return fakeSource
@@ -113,7 +113,7 @@ final class CompanionSessionControllerTests: XCTestCase {
     func testFailingTransportBecomesReconnecting() async throws {
         let fakeSource = FakeCaptureSource(configuration: try dummyConfig())
         let controller = CompanionSessionController(
-            transportFactory: { _ in FakeTransport(shouldFailConnect: true) },
+            transportFactory: { _, _ in FakeTransport(shouldFailConnect: true) },
             sourceFactory: { config, _ in fakeSource }
         )
 
@@ -130,7 +130,7 @@ final class CompanionSessionControllerTests: XCTestCase {
     func testSourceStartThrowResultsInErrorState() async throws {
         let failingSource = FakeCaptureSource(configuration: try dummyConfig(), shouldFailStart: true)
         let controller = CompanionSessionController(
-            transportFactory: { _ in FakeTransport() },
+            transportFactory: { _, _ in FakeTransport() },
             sourceFactory: { config, _ in failingSource }
         )
 
@@ -149,7 +149,7 @@ final class CompanionSessionControllerTests: XCTestCase {
     func testStopFromCapturingReturnsToIdle() async throws {
         let fakeSource = FakeCaptureSource(configuration: try dummyConfig())
         let controller = CompanionSessionController(
-            transportFactory: { _ in FakeTransport() },
+            transportFactory: { _, _ in FakeTransport() },
             sourceFactory: { config, _ in fakeSource }
         )
 
@@ -168,7 +168,7 @@ final class CompanionSessionControllerTests: XCTestCase {
         var sourceFactoryCount = 0
         let fakeSource = FakeCaptureSource(configuration: try dummyConfig())
         let controller = CompanionSessionController(
-            transportFactory: { _ in FakeTransport() },
+            transportFactory: { _, _ in FakeTransport() },
             sourceFactory: { config, _ in
                 sourceFactoryCount += 1
                 return fakeSource
@@ -191,7 +191,7 @@ final class CompanionSessionControllerTests: XCTestCase {
     func testErrorStateMessageIsSurfaced() async throws {
         let failingSource = FakeCaptureSource(configuration: try dummyConfig(), shouldFailStart: true)
         let controller = CompanionSessionController(
-            transportFactory: { _ in FakeTransport() },
+            transportFactory: { _, _ in FakeTransport() },
             sourceFactory: { config, _ in failingSource }
         )
 
@@ -204,5 +204,35 @@ final class CompanionSessionControllerTests: XCTestCase {
         }
         XCTAssertFalse(message.isEmpty, "Error message should not be empty")
         XCTAssertTrue(message.contains("Falha ao iniciar"), "Expected message to contain 'Falha ao iniciar', got: \(message)")
+    }
+
+    // (g) controller passes key only as subprotocol and builds keyless URL
+    func testControllerPassesKeyOnlyAsSubprotocol() async throws {
+        let fakeSource = FakeCaptureSource(configuration: try dummyConfig())
+        final class CapturedState: @unchecked Sendable {
+            var url: URL?
+            var protocols: [String]?
+        }
+        let captured = CapturedState()
+        let controller = CompanionSessionController(
+            transportFactory: { url, protocols in
+                captured.url = url
+                captured.protocols = protocols
+                return FakeTransport()
+            },
+            sourceFactory: { config, _ in fakeSource }
+        )
+
+        await controller.start(
+            sessionID: "sess-proto",
+            streamKey: "safe_stream_key-123",
+            gatewayBase: "ws://127.0.0.1:8000/api/stream/native"
+        )
+
+        let reached = await waitForState(controller: controller, condition: { $0 == .capturing })
+        XCTAssertTrue(reached)
+        XCTAssertEqual(captured.url?.absoluteString, "ws://127.0.0.1:8000/api/stream/native/sess-proto")
+        XCTAssertNil(captured.url?.query)
+        XCTAssertEqual(captured.protocols, ["tars-stream", "safe_stream_key-123"])
     }
 }

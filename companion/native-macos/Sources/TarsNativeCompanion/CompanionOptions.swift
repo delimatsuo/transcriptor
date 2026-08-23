@@ -88,43 +88,18 @@ public struct CompanionOptions: Equatable, Sendable {
         return options
     }
 
-    /// Builds `<gatewayBase>/<sessionID>`, appending `?stream_key=` with the
-    /// key percent-encoded when non-empty. `URLComponents`'s default query
-    /// encoding leaves `/`, `+`, and `=` unescaped (they're legal generic-URI
-    /// query characters), which would corrupt a stream key containing them
-    /// or make it ambiguous with the `stream_key=` delimiter itself. Encoding
-    /// against the RFC 3986 unreserved set via `percentEncodedQuery` (set
-    /// directly, bypassing `queryItems`' own looser encoding) guarantees every
-    /// byte of the key survives intact.
+    /// Builds the keyless `<gatewayBase>/<sessionID>` WebSocket URL.
     public func gatewayURL() throws -> URL {
         let base = "\(gatewayBase)/\(sessionID)"
-        guard var components = URLComponents(string: base) else {
-            throw CompanionError.invalid("invalid gateway URL: \(base)")
-        }
-        if streamKey.isEmpty {
-            components.percentEncodedQuery = nil
-        } else {
-            guard let encodedKey = streamKey.addingPercentEncoding(withAllowedCharacters: .companionUnreserved) else {
-                throw CompanionError.invalid("unable to percent-encode stream key")
-            }
-            components.percentEncodedQuery = "stream_key=\(encodedKey)"
-        }
-        guard let url = components.url else {
+        guard let url = URL(string: base) else {
             throw CompanionError.invalid("invalid gateway URL: \(base)")
         }
         return url
     }
-}
 
-private extension CharacterSet {
-    /// RFC 3986 `unreserved` characters: ALPHA / DIGIT / "-" / "." / "_" / "~".
-    /// Built from explicit ASCII ranges rather than `.alphanumerics`, which is
-    /// a Unicode-general set (accented letters, other scripts) and would let
-    /// non-ASCII bytes through un-encoded — invalid in a URL and outside the
-    /// RFC 3986 definition this set is meant to express. Deliberately
-    /// narrower than `.urlQueryAllowed` so every reserved and sub-delim
-    /// character in a stream key gets percent-encoded too.
-    static let companionUnreserved = CharacterSet(
-        charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~"
-    )
+    /// Derives the two-element WebSocket subprotocol array `["tars-stream", streamKey]`
+    /// for gateway authentication.
+    public func webSocketProtocols() throws -> [String] {
+        return try NativeStreamHandshake.protocols(streamKey: streamKey)
+    }
 }
