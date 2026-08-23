@@ -153,6 +153,11 @@ NATIVE_FRAME_DEDUP_WINDOW = 200  # ~10s at 50ms/frame; see get_or_create_sm-adja
 # tests can monkeypatch them to drive the loop deterministically.
 NATIVE_STALL_CHECK_INTERVAL_SECONDS = 5.0
 NATIVE_STALL_TIMEOUT_SECONDS = 10.0
+NATIVE_NEVER_PRODUCED_TIMEOUT_SECONDS = 15.0
+NEVER_PRODUCED_MESSAGES = {
+    "system_audio": "Nenhum frame recebido de Áudio do Sistema em 15 s. Verifique se há áudio em reprodução e se a permissão do companion está ativa.",
+    "microphone": "Nenhum frame recebido do Microfone em 15 s. Verifique a permissão e o dispositivo selecionado.",
+}
 pipeline_tasks: dict[str, list[asyncio.Task]] = {}
 session_stop_locks: dict[str, asyncio.Lock] = {}
 final_summary_scheduled: set[str] = set()
@@ -2447,21 +2452,33 @@ async def native_stream_endpoint(websocket: WebSocket, session_id: str):
     # it has itself observed a frame/gap/stall-transition for (tracked in
     # `owned_sources`) — never resetting a source another still-open
     # connection is carrying. `connections` is the live WS count for the
-    # session: physical_capture is "active" while it is >0, and this
-    # connection's own close only drives it to "stopped" if it was the last
-    # one open.
+    # session: physical_capture is "active" while it is >0, "unknown" while
+    # connections == 0 but >=1 source is "reconnecting", and "stopped"
+    # otherwise.
     session_health = native_session_health.setdefault(
         session_id,
-        {"sources": {"microphone": "unknown", "system_audio": "unknown"}, "connections": 0},
+        {
+            "sources": {"microphone": "unknown", "system_audio": "unknown"},
+            "source_connections": {"microphone": 0, "system_audio": 0},
+            "alerts": {},
+            "connections": 0,
+        },
     )
+    session_health.setdefault("source_connections", {"microphone": 0, "system_audio": 0})
+    session_health.setdefault("alerts", {})
     session_health["connections"] += 1
     owned_sources: set[str] = set()
+    intended_since: dict[str, float] = {}
     last_emitted_health: dict | None = None
     last_frame_at: dict[str, float] = {}
 
     def _mark_owned(source_name: str) -> None:
         if source_name in ("microphone", "system_audio"):
-            owned_sources.add(source_name)
+            if source_name not in owned_sources:
+                owned_sources.add(source_name)
+                session_health["source_connections"][source_name] = (
+                    session_health["source_connections"].get(source_name, 0) + 1
+                )
 
     def _set_source_health(source_name: str, state: str) -> bool:
         """Mutate the session's MERGED health for source_name to state;
@@ -2483,9 +2500,23 @@ async def native_stream_endpoint(websocket: WebSocket, session_id: str):
         Broadcast failures must never break audio ingestion, so they are
         caught here and only logged."""
         nonlocal last_emitted_health
+        if session_health["connections"] > 0:
+            phys_capture = "active"
+        elif any(s == "reconnecting" for s in session_health["sources"].values()):
+            phys_capture = "unknown"
+        else:
+            phys_capture = "stopped"
+
+        active_alerts = []
+        for src in ("microphone", "system_audio"):
+            if src in session_health["alerts"]:
+                active_alerts.append(session_health["alerts"][src])
+        msg_text = " ".join(active_alerts) if active_alerts else None
+
         payload = CompanionHealthPayload(
-            physical_capture="active" if session_health["connections"] > 0 else "stopped",
+            physical_capture=phys_capture,
             sources=SourceHealthReport(**session_health["sources"]),
+            message=msg_text,
         )
         payload_dict = payload.model_dump()
         if payload_dict == last_emitted_health:
@@ -2515,18 +2546,44 @@ async def native_stream_endpoint(websocket: WebSocket, session_id: str):
             )
 
     async def stall_watchdog() -> None:
-        """Any source that has produced >=1 frame but none for longer than
-        NATIVE_STALL_TIMEOUT_SECONDS while the companion socket is still
-        connected is flagged device_unavailable; its next frame recovers it
-        to healthy (see the per-frame update in the receive loop below)."""
+        """Watchdog for:
+        1. Never-produced timeout: an intended source that has not produced any frame
+           within NATIVE_NEVER_PRODUCED_TIMEOUT_SECONDS is flagged device_unavailable
+           with a descriptive alert message.
+        2. Post-first-frame stall: a source that has produced >=1 frame but none for
+           longer than NATIVE_STALL_TIMEOUT_SECONDS is flagged device_unavailable."""
         while True:
             await asyncio.sleep(NATIVE_STALL_CHECK_INTERVAL_SECONDS)
             try:
                 now = time.monotonic()
+                changed = False
+
+                # 1. Never-produced checks for intended sources
+                for source_name, start_time in list(intended_since.items()):
+                    if source_name not in last_frame_at and (now - start_time > NATIVE_NEVER_PRODUCED_TIMEOUT_SECONDS):
+                        if (
+                            session_health["source_connections"].get(source_name, 0) > 1
+                            and session_health["sources"].get(source_name) == "healthy"
+                        ):
+                            continue
+                        if source_name not in session_health["alerts"]:
+                            session_health["alerts"][source_name] = NEVER_PRODUCED_MESSAGES[source_name]
+                            _set_source_health(source_name, "device_unavailable")
+                            logger.warning(
+                                "native_source_never_produced_frames",
+                                session_id=session_id,
+                                source=source_name,
+                            )
+                            changed = True
+
+                # 2. Post-first-frame stall checks
                 for source_name, last_seen in list(last_frame_at.items()):
                     if now - last_seen > NATIVE_STALL_TIMEOUT_SECONDS:
                         if _set_source_health(source_name, "device_unavailable"):
-                            await emit_health()
+                            changed = True
+
+                if changed:
+                    await emit_health()
             except asyncio.CancelledError:
                 raise
             except Exception as e:
@@ -2617,8 +2674,12 @@ async def native_stream_endpoint(websocket: WebSocket, session_id: str):
 
                 source = header.get("source", "microphone")
                 if source in ("microphone", "system_audio"):
+                    _mark_owned(source)
                     last_frame_at[source] = time.monotonic()
-                    if _set_source_health(source, "healthy"):
+                    intended_since.pop(source, None)
+                    alert_cleared = bool(session_health["alerts"].pop(source, None))
+                    health_changed = _set_source_health(source, "healthy")
+                    if health_changed or alert_cleared:
                         await emit_health()
                 source_label = (
                     app_settings.stt_speaker_label_other
@@ -2649,9 +2710,30 @@ async def native_stream_endpoint(websocket: WebSocket, session_id: str):
             elif "text" in message and message["text"]:
                 try:
                     text_data = json.loads(message["text"])
-                    if text_data.get("type") == "ping":
+                    msg_type = text_data.get("type")
+                    if msg_type == "ping":
                         await websocket.send_json({"type": "pong"})
-                    elif text_data.get("type") == "gap":
+                    elif msg_type == "hello":
+                        raw_sources = text_data.get("sources")
+                        if (
+                            not isinstance(raw_sources, list)
+                            or not raw_sources
+                            or not all(isinstance(s, str) and s in ("microphone", "system_audio") for s in raw_sources)
+                        ):
+                            logger.warning("native_companion_hello_invalid", session_id=session_id)
+                        else:
+                            valid_sources = sorted(set(raw_sources))
+                            now = time.monotonic()
+                            for src in valid_sources:
+                                if src not in intended_since:
+                                    intended_since[src] = now
+                                _mark_owned(src)
+                            logger.info(
+                                "native_companion_hello",
+                                session_id=session_id,
+                                sources=valid_sources,
+                            )
+                    elif msg_type == "gap":
                         gap_source = text_data.get("source", "unknown")
                         reason = text_data.get("reason", "unknown")
                         _mark_owned(gap_source)
@@ -2694,15 +2776,26 @@ async def native_stream_endpoint(websocket: WebSocket, session_id: str):
             await stall_task
         except asyncio.CancelledError:
             pass
-        # Only decrement this connection's own share of the merged view: drop
-        # our slot in the live-connection count, and reset ONLY the source(s)
-        # we ourselves carried back to "unknown". A source another still-open
-        # connection is carrying (not in `owned_sources`) is left untouched,
-        # and physical_capture only reaches "stopped" via emit_health() once
-        # `connections` has dropped to 0 (i.e. every connection has closed).
+
         session_health["connections"] -= 1
+
+        session_obj = session_mgr.get_session(session_id) if session_mgr else None
+        session_is_active = (
+            session_id in stream_keys
+            and session_obj is not None
+            and session_obj.status == SessionStatus.ACTIVE
+        )
+
         for source_name in owned_sources:
-            session_health["sources"][source_name] = "unknown"
+            current_count = session_health["source_connections"].get(source_name, 1) - 1
+            session_health["source_connections"][source_name] = max(0, current_count)
+            if session_health["source_connections"][source_name] == 0:
+                session_health["alerts"].pop(source_name, None)
+                if session_is_active:
+                    session_health["sources"][source_name] = "reconnecting"
+                else:
+                    session_health["sources"][source_name] = "unknown"
+
         await emit_health()
         logger.info("native_companion_disconnected", session_id=session_id)
 

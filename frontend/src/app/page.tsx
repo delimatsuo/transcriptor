@@ -61,6 +61,7 @@ function AuthenticatedHome({ auth }: { auth: AuthenticatedAuthState }) {
     connectionHealth,
     companionCaptureState,
     sources,
+    companionMessage,
     lastError,
     connect,
     disconnect,
@@ -328,6 +329,7 @@ function AuthenticatedHome({ auth }: { auth: AuthenticatedAuthState }) {
           gaps={coverageGaps}
           sources={sources}
           captureState={companionCaptureState}
+          companionMessage={companionMessage}
           suggestionHistory={suggestionHistory}
           streamKey={streamKey ?? undefined}
         />

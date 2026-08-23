@@ -31,6 +31,7 @@ interface Props {
   gaps?: CoverageGapSegment[];
   sources?: SourceHealthReport;
   captureState?: PhysicalCaptureState;
+  companionMessage?: string | null;
   suggestionHistory: SuggestionEntry[];
   streamKey?: string;
 }
@@ -41,6 +42,7 @@ export default function InterviewLiveView({
   gaps = [],
   sources,
   captureState,
+  companionMessage,
   suggestionHistory,
   streamKey,
 }: Props) {
@@ -78,6 +80,7 @@ export default function InterviewLiveView({
           captureState={captureState}
           micHealth={sources?.microphone}
           systemAudioHealth={sources?.system_audio}
+          message={companionMessage}
         />
         <CompanionCommand sessionId={sessionId} streamKey={streamKey} />
       </div>

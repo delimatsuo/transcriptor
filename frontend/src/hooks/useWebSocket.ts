@@ -34,6 +34,7 @@ interface UseWebSocketReturn {
   connectionHealth: ConnectionHealth;
   companionCaptureState: PhysicalCaptureState;
   sources: SourceHealthReport;
+  companionMessage: string | null;
   lastError: string | null;
   connect: (sessionId: string) => void;
   disconnect: () => void;
@@ -59,6 +60,7 @@ export function useWebSocket(): UseWebSocketReturn {
     microphone: "unknown",
     system_audio: "unknown",
   });
+  const [companionMessage, setCompanionMessage] = useState<string | null>(null);
   const [lastError, setLastError] = useState<string | null>(null);
 
   const wsRef = useRef<WebSocket | null>(null);
@@ -162,6 +164,7 @@ export function useWebSocket(): UseWebSocketReturn {
         if (payload?.physical_capture) {
           setCompanionCaptureState(payload.physical_capture);
         }
+        setCompanionMessage(payload?.message ?? null);
         break;
       }
       case "speaker_relabel_batch": {
@@ -196,6 +199,7 @@ export function useWebSocket(): UseWebSocketReturn {
       setSuggestionHistory([]);
       setSources({ microphone: "unknown", system_audio: "unknown" });
       setCompanionCaptureState("not_started");
+      setCompanionMessage(null);
       setLastError(null);
       lastSeqRef.current = 0;
       retryDelayRef.current = INITIAL_RETRY_DELAY;
@@ -285,6 +289,7 @@ export function useWebSocket(): UseWebSocketReturn {
       setSuggestionHistory([]);
       setSources({ microphone: "unknown", system_audio: "unknown" });
       setCompanionCaptureState("not_started");
+      setCompanionMessage(null);
       setLastError(null);
       setConnectionHealth("disconnected");
     },
@@ -317,6 +322,7 @@ export function useWebSocket(): UseWebSocketReturn {
     connectionHealth,
     companionCaptureState,
     sources,
+    companionMessage,
     lastError,
     connect: connectWs,
     disconnect,
