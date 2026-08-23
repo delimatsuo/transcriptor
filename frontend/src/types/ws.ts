@@ -25,6 +25,7 @@ export type PhysicalCaptureState =
   | "unknown";
 export type SourceHealthState =
   | "healthy"
+  | "reconnecting"
   | "permission_missing"
   | "permission_revoked"
   | "device_unavailable"
@@ -205,7 +206,7 @@ export interface CoverageGapSegment {
 export interface CompanionHealthPayload {
   physical_capture: PhysicalCaptureState;
   sources: SourceHealthReport;
-  message?: string;
+  message?: string | null;
 }
 
 export interface CoverageGapPayload {

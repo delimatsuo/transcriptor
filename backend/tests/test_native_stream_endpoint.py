@@ -447,7 +447,8 @@ def test_health_emitted_on_connect_first_frame_and_disconnect(monkeypatch):
     msgs = _health_msgs(fake_wsm)
     assert msgs[0].payload["physical_capture"] == "active"
     assert any(m.payload["sources"]["system_audio"] == "healthy" for m in msgs)
-    assert msgs[-1].payload["physical_capture"] == "stopped"
+    assert msgs[-1].payload["sources"]["system_audio"] == "reconnecting"
+    assert msgs[-1].payload["physical_capture"] == "unknown"
 
 
 def test_gap_rebroadcast_as_coverage_gap(monkeypatch):
@@ -499,7 +500,7 @@ def test_stall_watchdog_flags_and_recovers_source_health(monkeypatch):
     assert "device_unavailable" in states
     stalled_at = states.index("device_unavailable")
     assert "healthy" in states[stalled_at + 1:]  # next frame recovers it
-    assert msgs[-1].payload["physical_capture"] == "stopped"
+    assert msgs[-1].payload["physical_capture"] == "unknown"
 
 
 # --- Finding 1: merged per-session health view across concurrent connections ---
@@ -521,8 +522,8 @@ def test_health_companion_connect_disconnect_does_not_clobber_open_mic_connectio
     connects and disconnects with NO frames of its own while A is still open.
     No broadcast observed during B's lifetime may ever regress microphone
     away from healthy, or report physical_capture as anything but active;
-    physical_capture must reach "stopped" only once A itself later closes
-    too (i.e. once both connections have closed)."""
+    physical_capture must reach "unknown" once A itself later closes
+    too (i.e. once both connections have closed) on an active session."""
     fake_wsm = type("W", (), {"broadcast": AsyncMock(), "next_sequence": staticmethod(lambda sid: 1)})()
     monkeypatch.setattr(main, "ws_manager", fake_wsm)
     session_id = "s-merge-a"
@@ -563,16 +564,16 @@ def test_health_companion_connect_disconnect_does_not_clobber_open_mic_connectio
         )
     assert healthy_seen
 
-    # Only after A *itself* later closes (both connections now closed) does
-    # physical_capture finally reach "stopped".
+    # When A *itself* later closes (both connections now closed on active session),
+    # physical_capture reaches "unknown" (reconnecting).
     all_msgs = _health_msgs(fake_wsm)
-    assert all_msgs[-1].payload["physical_capture"] == "stopped"
+    assert all_msgs[-1].payload["physical_capture"] == "unknown"
 
 
 def test_health_companion_disconnect_only_resets_its_own_source(monkeypatch):
     """(b) A companion-style connection B produces system_audio frames (goes
     healthy) then closes while A (microphone, already healthy) is still open.
-    Only system_audio must return to "unknown"; microphone must stay healthy
+    system_audio becomes "reconnecting"; microphone must stay healthy
     and physical_capture must stay active, since A is still connected."""
     fake_wsm = type("W", (), {"broadcast": AsyncMock(), "next_sequence": staticmethod(lambda sid: 1)})()
     monkeypatch.setattr(main, "ws_manager", fake_wsm)
@@ -600,7 +601,7 @@ def test_health_companion_disconnect_only_resets_its_own_source(monkeypatch):
         asyncio.run(main.native_stream_endpoint(ws_a, session_id))
 
     last = captured["mid_b_msgs"][-1]
-    assert last.payload["sources"]["system_audio"] == "unknown"
+    assert last.payload["sources"]["system_audio"] == "reconnecting"
     assert last.payload["sources"]["microphone"] == "healthy"
     assert last.payload["physical_capture"] == "active"
 
@@ -763,3 +764,281 @@ def test_native_stream_rejects_subprotocol_with_extra_empty_entry(monkeypatch):
     asyncio.run(main.native_stream_endpoint(ws, "s-sub-extra-empty"))
     assert ws.accepted is False
     assert ws.closed_code == 1008
+
+
+def test_hello_never_produced_source_alarms_then_recovers(monkeypatch):
+    fake_wsm = type("W", (), {"broadcast": AsyncMock(), "next_sequence": staticmethod(lambda sid: 1)})()
+    monkeypatch.setattr(main, "ws_manager", fake_wsm)
+    monkeypatch.setattr(main, "NATIVE_STALL_CHECK_INTERVAL_SECONDS", 0.01)
+    monkeypatch.setattr(main, "NATIVE_NEVER_PRODUCED_TIMEOUT_SECONDS", 0.03)
+    session_id = "s-never-prod"
+    key = _install_session(monkeypatch, session_id)
+
+    warnings: list[tuple[str, dict]] = []
+    orig_warning = main.logger.warning
+
+    def fake_warning(event, **kw):
+        warnings.append((event, kw))
+        try:
+            return orig_warning(event, **kw)
+        except Exception:
+            pass
+
+    monkeypatch.setattr(main.logger, "warning", fake_warning)
+
+    hello_msg = {"type": "hello", "sources": ["system_audio"]}
+    frame_header = {
+        "session_id": session_id,
+        "source": "system_audio",
+        "sequence": 1,
+        "first_sample": 0,
+        "captured_at_ms": 0,
+        "sample_rate": 16000,
+        "channel_count": 1,
+        "duration_ms": 50,
+    }
+
+    async def pause_past_timeout():
+        await asyncio.sleep(0.1)
+
+    with patch("backend.main.StreamManager") as sm_cls:
+        sm_cls.return_value = AsyncMock()
+        ws = _MidStreamWebSocket(
+            [
+                {"text": json.dumps(hello_msg)},
+                {"bytes": _encode_native_packet(frame_header)},
+            ],
+            on_second_receive=pause_past_timeout,
+            headers={"sec-websocket-protocol": f"tars-stream, {key}"},
+        )
+        asyncio.run(main.native_stream_endpoint(ws, session_id))
+
+    msgs = _health_msgs(fake_wsm)
+    expected_msg = (
+        "Nenhum frame recebido de Áudio do Sistema em 15 s. "
+        "Verifique se há áudio em reprodução e se a permissão do companion está ativa."
+    )
+    alarm_seen = any(
+        m.payload["sources"]["system_audio"] == "device_unavailable"
+        and m.payload.get("message") == expected_msg
+        for m in msgs
+    )
+    assert alarm_seen
+
+    recovered_seen = any(
+        m.payload["sources"]["system_audio"] == "healthy"
+        and m.payload.get("message") is None
+        for m in msgs
+    )
+    assert recovered_seen
+
+    never_prod_logs = [
+        kw for e, kw in warnings
+        if e == "native_source_never_produced_frames"
+        and kw.get("session_id") == session_id
+        and kw.get("source") == "system_audio"
+    ]
+    assert len(never_prod_logs) == 1
+
+
+def test_announced_source_disconnect_is_reconnecting_not_stopped(monkeypatch):
+    fake_wsm = type("W", (), {"broadcast": AsyncMock(), "next_sequence": staticmethod(lambda sid: 1)})()
+    monkeypatch.setattr(main, "ws_manager", fake_wsm)
+    session_id = "s-reconnect-disc"
+    key = _install_session(monkeypatch, session_id)
+
+    hello_msg = {"type": "hello", "sources": ["system_audio"]}
+    ws = FakeNativeWebSocket(
+        [{"text": json.dumps(hello_msg)}],
+        headers={"sec-websocket-protocol": f"tars-stream, {key}"},
+    )
+    asyncio.run(main.native_stream_endpoint(ws, session_id))
+
+    msgs = _health_msgs(fake_wsm)
+    last_msg = msgs[-1]
+    assert last_msg.payload["sources"]["system_audio"] == "reconnecting"
+    assert last_msg.payload["physical_capture"] == "unknown"
+    assert last_msg.payload.get("message") is None
+
+
+def test_session_stop_disconnect_is_stopped_not_reconnecting(monkeypatch):
+    fake_wsm = type("W", (), {"broadcast": AsyncMock(), "next_sequence": staticmethod(lambda sid: 1)})()
+    monkeypatch.setattr(main, "ws_manager", fake_wsm)
+    session_id = "s-stop-disc"
+    key = _install_session(monkeypatch, session_id)
+
+    async def simulate_session_stop():
+        main.stream_keys.pop(session_id, None)
+
+    hello_msg = {"type": "hello", "sources": ["system_audio"]}
+    ws = _MidStreamWebSocket(
+        [
+            {"text": json.dumps(hello_msg)},
+            {"text": json.dumps({"type": "ping"})},
+        ],
+        on_second_receive=simulate_session_stop,
+        headers={"sec-websocket-protocol": f"tars-stream, {key}"},
+    )
+    asyncio.run(main.native_stream_endpoint(ws, session_id))
+
+    msgs = _health_msgs(fake_wsm)
+    last_msg = msgs[-1]
+    assert last_msg.payload["sources"]["system_audio"] == "unknown"
+    assert last_msg.payload["physical_capture"] == "stopped"
+
+
+def test_invalid_hello_does_not_claim_sources(monkeypatch):
+    fake_wsm = type("W", (), {"broadcast": AsyncMock(), "next_sequence": staticmethod(lambda sid: 1)})()
+    monkeypatch.setattr(main, "ws_manager", fake_wsm)
+    session_id = "s-inv-hello"
+    key = _install_session(monkeypatch, session_id)
+
+    warnings: list[tuple[str, dict]] = []
+    orig_warning = main.logger.warning
+
+    def fake_warning(event, **kw):
+        warnings.append((event, kw))
+        try:
+            return orig_warning(event, **kw)
+        except Exception:
+            pass
+
+    monkeypatch.setattr(main.logger, "warning", fake_warning)
+
+    bad_hello = {"type": "hello", "sources": ["system_audio", "not-a-source"]}
+    ws = FakeNativeWebSocket(
+        [{"text": json.dumps(bad_hello)}],
+        headers={"sec-websocket-protocol": f"tars-stream, {key}"},
+    )
+    asyncio.run(main.native_stream_endpoint(ws, session_id))
+
+    msgs = _health_msgs(fake_wsm)
+    last_msg = msgs[-1]
+    assert last_msg.payload["sources"]["system_audio"] == "unknown"
+    assert last_msg.payload["sources"]["microphone"] == "unknown"
+    assert last_msg.payload["physical_capture"] == "stopped"
+
+    invalid_logs = [
+        kw for e, kw in warnings
+        if e == "native_companion_hello_invalid"
+    ]
+    assert len(invalid_logs) == 1
+    assert invalid_logs[0] == {"session_id": session_id}
+
+
+def test_overlapping_same_source_disconnect_preserves_live_owner(monkeypatch):
+    fake_wsm = type("W", (), {"broadcast": AsyncMock(), "next_sequence": staticmethod(lambda sid: 1)})()
+    monkeypatch.setattr(main, "ws_manager", fake_wsm)
+    session_id = "s-overlap"
+    key = _install_session(monkeypatch, session_id)
+    mic_header = {
+        "session_id": session_id,
+        "source": "microphone",
+        "sequence": 1,
+        "first_sample": 0,
+        "captured_at_ms": 0,
+        "sample_rate": 16000,
+        "channel_count": 1,
+        "duration_ms": 50,
+    }
+    captured: dict = {}
+
+    async def run_companion_b():
+        ws_b = FakeNativeWebSocket(
+            [{"text": json.dumps({"type": "hello", "sources": ["microphone"]})}],
+            headers={"sec-websocket-protocol": f"tars-stream, {key}"},
+        )
+        await main.native_stream_endpoint(ws_b, session_id)
+        captured["mid_b_msgs"] = list(_health_msgs(fake_wsm))
+
+    with patch("backend.main.StreamManager") as mock_sm_cls:
+        mock_sm_cls.return_value = AsyncMock()
+        ws_a = _MidStreamWebSocket(
+            [{"bytes": _encode_native_packet(mic_header)}],
+            on_second_receive=run_companion_b,
+            headers={"sec-websocket-protocol": f"tars-stream, {key}"},
+        )
+        asyncio.run(main.native_stream_endpoint(ws_a, session_id))
+
+    mid_b_msgs = captured["mid_b_msgs"]
+    last_after_b = mid_b_msgs[-1]
+    assert last_after_b.payload["sources"]["microphone"] == "healthy"
+    assert last_after_b.payload["physical_capture"] == "active"
+
+
+def test_never_produced_overlap_does_not_clobber_healthy_owner(monkeypatch):
+    fake_wsm = type("W", (), {"broadcast": AsyncMock(), "next_sequence": staticmethod(lambda sid: 1)})()
+    monkeypatch.setattr(main, "ws_manager", fake_wsm)
+    monkeypatch.setattr(main, "NATIVE_STALL_CHECK_INTERVAL_SECONDS", 0.01)
+    monkeypatch.setattr(main, "NATIVE_NEVER_PRODUCED_TIMEOUT_SECONDS", 0.03)
+    session_id = "s-overlap-healthy"
+    key = _install_session(monkeypatch, session_id)
+
+    warnings: list[tuple[str, dict]] = []
+    orig_warning = main.logger.warning
+
+    def fake_warning(event, **kw):
+        warnings.append((event, kw))
+        try:
+            return orig_warning(event, **kw)
+        except Exception:
+            pass
+
+    monkeypatch.setattr(main.logger, "warning", fake_warning)
+
+    mic_header = {
+        "session_id": session_id,
+        "source": "microphone",
+        "sequence": 1,
+        "first_sample": 0,
+        "captured_at_ms": 0,
+        "sample_rate": 16000,
+        "channel_count": 1,
+        "duration_ms": 50,
+    }
+    captured: dict = {}
+
+    async def pause_past_timeout_in_b():
+        await asyncio.sleep(0.1)
+
+    async def run_companion_b():
+        ws_b = _MidStreamWebSocket(
+            [
+                {"text": json.dumps({"type": "hello", "sources": ["microphone"]})},
+                {"text": json.dumps({"type": "ping"})},
+            ],
+            on_second_receive=pause_past_timeout_in_b,
+            headers={"sec-websocket-protocol": f"tars-stream, {key}"},
+        )
+        await main.native_stream_endpoint(ws_b, session_id)
+        captured["mid_b_msgs"] = list(_health_msgs(fake_wsm))
+
+    with patch("backend.main.StreamManager") as mock_sm_cls:
+        mock_sm_cls.return_value = AsyncMock()
+        ws_a = _MidStreamWebSocket(
+            [{"bytes": _encode_native_packet(mic_header)}],
+            on_second_receive=run_companion_b,
+            headers={"sec-websocket-protocol": f"tars-stream, {key}"},
+        )
+        asyncio.run(main.native_stream_endpoint(ws_a, session_id))
+
+    mid_b_msgs = captured["mid_b_msgs"]
+    assert mid_b_msgs, "expected health broadcasts during test"
+
+    for m in mid_b_msgs:
+        if m.payload["sources"]["microphone"] != "unknown":
+            assert m.payload["sources"]["microphone"] == "healthy"
+            assert m.payload.get("message") is None
+
+    never_prod_logs = [
+        kw for e, kw in warnings
+        if e == "native_source_never_produced_frames"
+        and kw.get("session_id") == session_id
+        and kw.get("source") == "microphone"
+    ]
+    assert len(never_prod_logs) == 0
+
+    last_after_b = mid_b_msgs[-1]
+    assert last_after_b.payload["sources"]["microphone"] == "healthy"
+    assert last_after_b.payload["physical_capture"] == "active"
+    assert last_after_b.payload.get("message") is None
