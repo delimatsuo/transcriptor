@@ -1,7 +1,5 @@
 "use client";
 
-import { useCallback, useState } from "react";
-
 import { buildJoinLink } from "@/lib/joinLink";
 
 interface Props {
@@ -10,20 +8,6 @@ interface Props {
 }
 
 export default function CompanionCommand({ sessionId, streamKey }: Props) {
-  const [copied, setCopied] = useState(false);
-  const command = `./tars-companion --session-id ${sessionId} --stream-key ${streamKey ?? ""} --sources system_audio`;
-
-  const handleCopy = useCallback(async () => {
-    try {
-      await navigator.clipboard.writeText(command);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    } catch {
-      // Clipboard API unavailable or permission denied; the command is
-      // still visible in the block for manual copy.
-    }
-  }, [command]);
-
   if (!streamKey) {
     return null;
   }
@@ -79,61 +63,6 @@ export default function CompanionCommand({ sessionId, streamKey }: Props) {
       <span style={{ fontSize: 11, color: "#515154" }}>
         Não tem o app? Veja o guia de onboarding.
       </span>
-      <details style={{ marginTop: 2 }}>
-        <summary
-          style={{
-            fontSize: 11,
-            color: "#515154",
-            cursor: "pointer",
-            userSelect: "none",
-          }}
-        >
-          Método alternativo (terminal)
-        </summary>
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 8,
-            flexWrap: "wrap",
-            marginTop: 6,
-          }}
-        >
-          <code
-            style={{
-              padding: "3px 8px",
-              borderRadius: 6,
-              backgroundColor: "rgba(142, 142, 147, 0.12)",
-              color: "#1d1d1f",
-              fontSize: 11,
-              fontFamily:
-                "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
-              wordBreak: "break-all",
-            }}
-          >
-            {command}
-          </code>
-          <button
-            type="button"
-            onClick={() => void handleCopy()}
-            aria-label="Copiar comando do companion"
-            style={{
-              padding: "3px 10px",
-              borderRadius: 6,
-              border: "1px solid #d2d2d7",
-              backgroundColor: copied ? "#34c759" : "white",
-              color: copied ? "white" : "#1d1d1f",
-              fontSize: 11,
-              fontWeight: 600,
-              cursor: "pointer",
-              transition: "all 0.2s ease",
-              flexShrink: 0,
-            }}
-          >
-            {copied ? "Copiado!" : "Copiar"}
-          </button>
-        </div>
-      </details>
     </div>
   );
 }

@@ -281,7 +281,7 @@ async def _probe_invalid_key(session_id: str) -> tuple[bool, str]:
     try:
         async with ws_connect(url, subprotocols=["tars-stream", "WRONG"], open_timeout=10) as ws:
             # Handshake aceito: o gateway ainda tem de fechar sem aceitar frames.
-            await ws.send(encode_frame("microphone", 0, 0, b"\x00" * FRAME_BYTES))
+            await ws.send(encode_frame(session_id, "microphone", 0, 0, b"\x00" * FRAME_BYTES))
             try:
                 await asyncio.wait_for(ws.recv(), timeout=5)
             except websockets.exceptions.ConnectionClosed as closed:
@@ -484,11 +484,11 @@ def phase_candidate_audio(ph: Phases, voice: str) -> None:
 # Fase 7 — Canal do entrevistador (injeção de PCM real de fala)
 # --------------------------------------------------------------------------
 
-def encode_frame(source: str, sequence: int, first_sample: int, pcm: bytes) -> bytes:
+def encode_frame(session_id: str, source: str, sequence: int, first_sample: int, pcm: bytes) -> bytes:
     """4 bytes big-endian (tamanho do cabeçalho) + cabeçalho JSON + PCM cru."""
     header = json.dumps(
         {
-            "session_id": "",
+            "session_id": session_id,
             "source": source,
             "sequence": sequence,
             "first_sample": first_sample,
@@ -526,6 +526,7 @@ class MicChannel:
     """
 
     def __init__(self, session_id: str, stream_key: str, pcm: bytes) -> None:
+        self._session_id = session_id
         self._url = f"{WS_BASE}/{session_id}"
         self._subprotocols = stream_subprotocols(stream_key)
         self._pcm = pcm
@@ -556,7 +557,7 @@ class MicChannel:
             # 1) fala real do entrevistador
             for offset in range(0, len(self._pcm) - FRAME_BYTES + 1, FRAME_BYTES):
                 await ws.send(
-                    encode_frame("microphone", self.frames_sent, sample, self._pcm[offset:offset + FRAME_BYTES])
+                    encode_frame(self._session_id, "microphone", self.frames_sent, sample, self._pcm[offset:offset + FRAME_BYTES])
                 )
                 self.frames_sent += 1
                 self.speech_frames += 1
@@ -564,7 +565,7 @@ class MicChannel:
                 await asyncio.sleep(FRAME_MS / 1000)  # ritmo de tempo real
             # 2) silêncio contínuo até a fase de parada
             while not self._stop.is_set():
-                await ws.send(encode_frame("microphone", self.frames_sent, sample, silence))
+                await ws.send(encode_frame(self._session_id, "microphone", self.frames_sent, sample, silence))
                 self.frames_sent += 1
                 sample += FRAME_BYTES // 2
                 await asyncio.sleep(FRAME_MS / 1000)
