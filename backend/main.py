@@ -12,7 +12,7 @@ from uuid import uuid4
 
 import structlog
 import uvicorn
-from fastapi import FastAPI, Header, WebSocket, WebSocketDisconnect, UploadFile, File, Form, HTTPException, Request
+from fastapi import FastAPI, Header, WebSocket, WebSocketDisconnect, UploadFile, File, Form, HTTPException, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse
 
@@ -30,7 +30,7 @@ from backend.auth import (
     set_current_auth,
     verify_bearer_token,
 )
-from backend.config import Settings, get_settings
+from backend.config import CorsSettings, Settings, get_settings, parse_cors_allowed_origins
 from backend.documents.parser import MAX_FILE_SIZE, DocumentParseError, parse_document
 from backend.llm.context_window import ContextWindowManager
 from backend.llm.gemini import GeminiClient
@@ -121,7 +121,7 @@ context_windows: dict[str, ContextWindowManager] = {}
 audio_captures: dict[str, list[AudioCapture]] = {}
 audio_buffers: dict[str, list[AudioBuffer]] = {}
 stream_managers: dict[str, list[StreamManager]] = {}
-# Per-session secret required as a WS query param on the native audio gateway.
+# Per-session secret offered as the second tars-stream WebSocket subprotocol entry.
 stream_keys: dict[str, str] = {}
 # Session-scoped StreamManagers for the native companion gateway (session_id ->
 # source_label -> StreamManager). Survives individual WebSocket reconnects; only
@@ -210,6 +210,7 @@ async def lifespan(app: FastAPI):
     """Application lifespan — initialize and cleanup."""
     global settings, session_mgr, firestore_storage, gcs_storage, gemini_client, context_window
 
+    app.state.ready = False
     settings = get_settings()
     await probe_application_default_credentials()
     initialize_firebase_admin(settings)
@@ -226,17 +227,22 @@ async def lifespan(app: FastAPI):
         logger.warning("orphaned_sessions_found", count=len(orphaned))
 
     logger.info("server_started", host=settings.fastapi_host, port=settings.fastapi_port)
-    yield
+    app.state.ready = True
+    try:
+        yield
+    finally:
+        app.state.ready = False
 
-    # Cleanup: stop all active pipelines
-    for session_id in list(pipeline_tasks.keys()):
-        await _stop_pipeline(session_id)
-    context_windows.clear()
+        # Cleanup: stop all active pipelines
+        for session_id in list(pipeline_tasks.keys()):
+            await _stop_pipeline(session_id)
+        context_windows.clear()
 
-    logger.info("server_stopped")
+        logger.info("server_stopped")
 
 
 app = FastAPI(title="T.A.R.S.", lifespan=lifespan)
+app.state.ready = False
 
 @app.middleware("http")
 async def authenticate_api_requests(request: Request, call_next):
@@ -289,15 +295,12 @@ async def authenticate_api_requests(request: Request, call_next):
 
 # Keep CORS outermost so even auth rejection responses carry browser-readable
 # CORS headers instead of surfacing as opaque network failures.
+_cors_settings = CorsSettings()
+_allowed_origins = parse_cors_allowed_origins(_cors_settings.cors_allowed_origins)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://localhost:3003",
-        "http://127.0.0.1:3000",
-        "http://127.0.0.1:3003",
-        "chrome-extension://fhnadcdkfgdlkomjpilmgehhpgmkjnga",
-    ],
+    allow_origins=_allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -308,6 +311,15 @@ app.add_middleware(
 async def healthz():
     """Unauthenticated process health; readiness still depends on lifespan."""
     return {"status": "ok"}
+
+
+@app.get("/readyz")
+async def readyz(request: Request, response: Response):
+    """Readiness probe checking full service initialization."""
+    if getattr(request.app.state, "ready", False):
+        return {"status": "ready"}
+    response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+    return {"status": "not_ready"}
 
 
 @app.get("/api/me")
@@ -2663,6 +2675,24 @@ async def native_stream_endpoint(websocket: WebSocket, session_id: str):
                     header = json.loads(header_json.decode("utf-8"))
                 except Exception:
                     continue
+
+                if not isinstance(header, dict) or not isinstance(header.get("session_id"), str):
+                    logger.warning(
+                        "native_stream_frame_rejected",
+                        session_id=session_id,
+                        reason="missing_session_id",
+                    )
+                    await websocket.close(code=1008)
+                    return
+
+                if header.get("session_id") != session_id:
+                    logger.warning(
+                        "native_stream_frame_rejected",
+                        session_id=session_id,
+                        reason="mismatched_session_id",
+                    )
+                    await websocket.close(code=1008)
+                    return
 
                 source = header.get("source", "microphone")
                 if source in ("microphone", "system_audio"):
