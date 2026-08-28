@@ -51,7 +51,8 @@ IAP_REJECTION_REASON_BY_MESSAGE: Mapping[str, str] = MappingProxyType(
         "malformed IAP subject": "malformed_iap_subject",
         "unverified IAP email": "unverified_iap_email",
         "malformed IAP auth time": "malformed_iap_auth_time",
-        "missing or non-string IAP gcip": "missing_or_non_string_iap_gcip",
+        "missing IAP gcip": "missing_iap_gcip",
+        "non-string IAP gcip": "non_string_iap_gcip",
         "blank IAP gcip": "blank_iap_gcip",
         "oversized IAP gcip": "oversized_iap_gcip",
         "duplicate IAP gcip key": "duplicate_iap_gcip_key",
@@ -276,8 +277,10 @@ def canonicalize_email(value: Any) -> str:
 
 
 def _parse_gcip(raw: Any) -> Mapping[str, Any]:
+    if raw is None:
+        raise AuthenticationError("missing IAP gcip") from None
     if type(raw) is not str:
-        raise AuthenticationError("missing or non-string IAP gcip") from None
+        raise AuthenticationError("non-string IAP gcip") from None
     if not raw.strip():
         raise AuthenticationError("blank IAP gcip") from None
     try:

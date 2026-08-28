@@ -91,7 +91,8 @@ def test_iap_rejection_telemetry_is_a_closed_content_free_allowlist():
         "malformed IAP subject": "malformed_iap_subject",
         "unverified IAP email": "unverified_iap_email",
         "malformed IAP auth time": "malformed_iap_auth_time",
-        "missing or non-string IAP gcip": "missing_or_non_string_iap_gcip",
+        "missing IAP gcip": "missing_iap_gcip",
+        "non-string IAP gcip": "non_string_iap_gcip",
         "blank IAP gcip": "blank_iap_gcip",
         "oversized IAP gcip": "oversized_iap_gcip",
         "duplicate IAP gcip key": "duplicate_iap_gcip_key",
@@ -119,7 +120,8 @@ def test_iap_rejection_telemetry_is_a_closed_content_free_allowlist():
         "malformed_iap_subject",
         "unverified_iap_email",
         "malformed_iap_auth_time",
-        "missing_or_non_string_iap_gcip",
+        "missing_iap_gcip",
+        "non_string_iap_gcip",
         "blank_iap_gcip",
         "oversized_iap_gcip",
         "duplicate_iap_gcip_key",
@@ -293,9 +295,9 @@ def test_gcip_semantics_are_bounded_duplicate_safe_and_google_only(gcip, expecte
 @pytest.mark.parametrize(
     "gcip, expected_message",
     [
-        (None, "missing or non-string IAP gcip"),
-        (123, "missing or non-string IAP gcip"),
-        (b"{}", "missing or non-string IAP gcip"),
+        (None, "missing IAP gcip"),
+        (123, "non-string IAP gcip"),
+        (b"{}", "non-string IAP gcip"),
         (" \t\n", "blank IAP gcip"),
         ("x" * (iap_auth.IAP_MAX_GCIP_BYTES + 1), "oversized IAP gcip"),
         ("é" * (iap_auth.IAP_MAX_GCIP_BYTES // 2 + 1), "oversized IAP gcip"),
@@ -412,7 +414,7 @@ def test_gcip_rejects_hostile_str_subclasses_before_overridable_methods(hostile_
     with pytest.raises(IAPAuthenticationError) as exc_info:
         admitted(settings, claims, now)
     assert type(exc_info.value) is IAPAuthenticationError
-    assert str(exc_info.value) == "missing or non-string IAP gcip"
+    assert str(exc_info.value) == "non-string IAP gcip"
     assert sentinel not in str(exc_info.value)
     assert exc_info.value.__cause__ is None
     assert exc_info.value.__context__ is None
