@@ -30,7 +30,7 @@ const firebaseConfig = {
 };
 
 const validLoginUrl =
-  "https://tars.ellaexecutivesearch.com/iap-login?mode=login&apiKey=public-test-key-1234567890&redirect_uri=https%3A%2F%2Fapi.tars.ellaexecutivesearch.com%2Fapi%2Fauth%2Fbootstrap&state=opaque-state";
+  "https://tars.ellaexecutivesearch.com/iap-login?mode=login&apiKey=public-test-key-1234567890&redirect_uri=https%3A%2F%2Fiap.googleapis.com%2Fv1beta1%2Fgcip%2Fresources%2FA1B2C3D4E5F60718%3AhandleRedirect&state=opaque-state";
 
 test("Firebase web configuration fails closed when incomplete or placeholder-valued", () => {
   assert.equal(readFirebaseWebConfig({}), null);
@@ -63,7 +63,8 @@ test("IAP login request requires exact mode, project key, redirect URI, and stat
   assert.deepEqual(parsed, {
     mode: "login",
     apiKey: firebaseEnvironment.NEXT_PUBLIC_FIREBASE_API_KEY,
-    redirectUri: "https://api.tars.ellaexecutivesearch.com/api/auth/bootstrap",
+    redirectUri:
+      "https://iap.googleapis.com/v1beta1/gcip/resources/A1B2C3D4E5F60718:handleRedirect",
     state: "opaque-state",
     tenantId: null,
   });
@@ -72,9 +73,11 @@ test("IAP login request requires exact mode, project key, redirect URI, and stat
     "https://tars.ellaexecutivesearch.com/iap-login",
     validLoginUrl.replace("mode=login", "mode=unknown"),
     validLoginUrl.replace("&state=opaque-state", ""),
-    validLoginUrl.replace("redirect_uri=https%3A%2F%2Fapi.tars.ellaexecutivesearch.com%2Fapi%2Fauth%2Fbootstrap", "redirect_uri=javascript%3Aalert(1)"),
+    validLoginUrl.replace("redirect_uri=https%3A%2F%2Fiap.googleapis.com%2Fv1beta1%2Fgcip%2Fresources%2FA1B2C3D4E5F60718%3AhandleRedirect", "redirect_uri=javascript%3Aalert(1)"),
     `${validLoginUrl}&mode=login`,
     `${validLoginUrl}&state=duplicate-state`,
+    `${validLoginUrl}&apiKey=conflicting-test-key`,
+    `${validLoginUrl}&redirect_uri=${encodeURIComponent("https://iap.googleapis.com/v1beta1/gcip/resources/A1B2C3D4E5F60718:handleRedirect")}`,
     `${validLoginUrl}&tid=tenant-a&tid=tenant-b`,
   ]) {
     assert.equal(parseIapLoginRequest(malformed), null, malformed);
@@ -83,26 +86,80 @@ test("IAP login request requires exact mode, project key, redirect URI, and stat
 
 test("IAP rejects a single attacker-controlled redirect host", () => {
   const evilRedirect = new URL(validLoginUrl);
-  evilRedirect.searchParams.set("redirect_uri", "https://evil.example/api/auth/bootstrap");
+  evilRedirect.searchParams.set(
+    "redirect_uri",
+    "https://evil.example/v1beta1/gcip/resources/A1B2C3D4E5F60718:handleRedirect",
+  );
   assert.equal(parseIapLoginRequest(evilRedirect), null);
 });
 
-test("IAP accepts opaque paths and queries on the approved API origin only", () => {
+test("IAP rejects raw terminal query and fragment delimiters", () => {
+  const validCallback =
+    "https://iap.googleapis.com/v1beta1/gcip/resources/A1B2C3D4E5F60718:handleRedirect";
+  for (const delimiter of ["?", "#"]) {
+    const request = new URL(validLoginUrl);
+    request.searchParams.set("redirect_uri", `${validCallback}${delimiter}`);
+    assert.equal(parseIapLoginRequest(request), null, delimiter);
+  }
+});
+
+test("IAP rejects conflicting valid redirect_uri values in either parameter order", () => {
+  const approvedCallback =
+    "https://iap.googleapis.com/v1beta1/gcip/resources/A1B2C3D4E5F60718:handleRedirect";
+  const alternateCallback =
+    "https://iap.googleapis.com/v1beta1/gcip/resources/B2C3D4E5F60718:handleRedirect";
+
+  const alternateAlone = new URL(validLoginUrl);
+  alternateAlone.searchParams.set("redirect_uri", alternateCallback);
+  assert.notEqual(parseIapLoginRequest(alternateAlone), null);
+
+  const approvedFirst = new URL(validLoginUrl);
+  approvedFirst.searchParams.append("redirect_uri", alternateCallback);
+  assert.equal(parseIapLoginRequest(approvedFirst), null);
+
+  const alternateFirst = new URL(validLoginUrl);
+  alternateFirst.searchParams.set("redirect_uri", alternateCallback);
+  alternateFirst.searchParams.append("redirect_uri", approvedCallback);
+  assert.equal(parseIapLoginRequest(alternateFirst), null);
+});
+
+test("IAP accepts only the exact Google callback origin and resource route", () => {
   for (const redirect of [
-    "https://api.tars.ellaexecutivesearch.com/",
-    "https://api.tars.ellaexecutivesearch.com/private",
-    "https://api.tars.ellaexecutivesearch.com/api/me?view=current",
-    "https://api.tars.ellaexecutivesearch.com/api/auth/bootstrap/",
-    "https://api.tars.ellaexecutivesearch.com/api/auth/logout?return=%2F",
+    "https://iap.googleapis.com/v1beta1/gcip/resources/A1B2C3D4E5F60718:handleRedirect",
+    "https://iap.googleapis.com/v1beta1/gcip/resources/opaque.segment~v2:handleRedirect",
   ]) {
     const sameOrigin = new URL(validLoginUrl);
     sameOrigin.searchParams.set("redirect_uri", redirect);
     assert.notEqual(parseIapLoginRequest(sameOrigin), null, redirect);
   }
 
+  const longResource = "a".repeat(3900);
+  const acceptedLongRedirect = new URL(validLoginUrl);
+  acceptedLongRedirect.searchParams.set(
+    "redirect_uri",
+    `https://iap.googleapis.com/v1beta1/gcip/resources/${longResource}:handleRedirect`,
+  );
+  assert.notEqual(parseIapLoginRequest(acceptedLongRedirect), null, "within total redirect bound");
+
+  const overlongResource = "a".repeat(4096);
   for (const redirect of [
+    "https://api.tars.ellaexecutivesearch.com/api/auth/bootstrap",
+    "http://iap.googleapis.com/v1beta1/gcip/resources/A1B2C3D4E5F60718:handleRedirect",
     "http://api.tars.ellaexecutivesearch.com/api/auth/bootstrap",
-    "http://localhost:8000/api/auth/bootstrap",
+    "http://localhost:8000/v1beta1/gcip/resources/A1B2C3D4E5F60718:handleRedirect",
+    "https://iap.googleapis.com/v1beta1/gcip/resources/:handleRedirect",
+    `https://iap.googleapis.com/v1beta1/gcip/resources/${overlongResource}:handleRedirect`,
+    "https://iap.googleapis.com/v1beta1/gcip/resources/./A1B2C3D4E5F60718:handleRedirect",
+    "https://iap.googleapis.com/v1beta1/gcip/resources/%2e%2E/A1B2C3D4E5F60718:handleRedirect",
+    "https://iap.googleapis.com\\v1beta1\\gcip\\resources\\A1B2C3D4E5F60718:handleRedirect",
+    "https://@iap.googleapis.com/v1beta1/gcip/resources/A1B2C3D4E5F60718:handleRedirect",
+    "https://iap%2Egoogleapis.com/v1beta1/gcip/resources/A1B2C3D4E5F60718:handleRedirect",
+    "https://IAP.GOOGLEAPIS.COM/v1beta1/gcip/resources/A1B2C3D4E5F60718:handleRedirect",
+    "https://iap.googleapis.com:443/v1beta1/gcip/resources/A1B2C3D4E5F60718:handleRedirect",
+    "https://iap.googleapis.com/v1beta1/gcip/resources/A1B2C3D4E5F60718%2Fextra:handleRedirect",
+    "https://iap.googleapis.com/v1beta1/gcip/resources/A1B2C3D4E5F60718:handleRedirect?return=%2F",
+    "https://iap.googleapis.com/v1beta1/gcip/resources/A1B2C3D4E5F60718:handleRedirect#fragment",
+    "https://iap.googleapis.com/v1beta1/gcip/resources/A1B2C3D4E5F60718",
   ]) {
     const nonProduction = new URL(validLoginUrl);
     nonProduction.searchParams.set("redirect_uri", redirect);

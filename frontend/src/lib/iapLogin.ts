@@ -16,7 +16,7 @@ import {
 } from "firebase/auth";
 
 export const GOOGLE_PROVIDER_ID = "google.com";
-export const IAP_API_ORIGIN = "https://api.tars.ellaexecutivesearch.com";
+const IAP_CALLBACK_ORIGIN = "https://iap.googleapis.com";
 
 const IAP_OPERATION_MODES = [
   "login",
@@ -90,6 +90,8 @@ export type GoogleSignIn = (auth: Auth) => Promise<UserCredential>;
 
 const MAX_REQUEST_VALUE_LENGTH = 4096;
 const MAX_TENANT_ID_LENGTH = 128;
+const IAP_CALLBACK_PATH_PREFIX = "/v1beta1/gcip/resources/";
+const IAP_CALLBACK_PATH_SUFFIX = ":handleRedirect";
 const INVALID_PUBLIC_VALUE = /^(?:\$\{|<|REPLACE_|YOUR_|TODO\b)/i;
 
 function hasSafeScalar(value: unknown, maxLength = MAX_REQUEST_VALUE_LENGTH): value is string {
@@ -182,19 +184,35 @@ function getOptionalExactlyOne(
 }
 
 function parseRedirectUri(value: string): string | null {
-  if (!hasSafeScalar(value)) return null;
+  if (!hasSafeScalar(value) || value.includes("?") || value.includes("#")) return null;
   try {
     const parsed = new URL(value);
+    if (value !== parsed.toString()) return null;
     if (
       parsed.username ||
       parsed.password ||
+      parsed.search ||
       parsed.hash
     ) {
       return null;
     }
-    // IAP supplies the opaque original resource path and query. Bind only to
-    // the approved HTTPS API origin; do not guess or constrain that path.
-    if (parsed.protocol !== "https:" || parsed.origin !== IAP_API_ORIGIN) return null;
+    // IAP supplies an opaque callback resource. Bind to the exact provider
+    // origin and route; reject encoded path components to avoid ambiguity.
+    const resourceSegment = parsed.pathname.slice(
+      IAP_CALLBACK_PATH_PREFIX.length,
+      -IAP_CALLBACK_PATH_SUFFIX.length,
+    );
+    if (
+      parsed.protocol !== "https:" ||
+      parsed.origin !== IAP_CALLBACK_ORIGIN ||
+      parsed.pathname.includes("%") ||
+      !parsed.pathname.startsWith(IAP_CALLBACK_PATH_PREFIX) ||
+      !parsed.pathname.endsWith(IAP_CALLBACK_PATH_SUFFIX) ||
+      resourceSegment.length === 0 ||
+      resourceSegment.includes("/")
+    ) {
+      return null;
+    }
     return parsed.toString();
   } catch {
     return null;
