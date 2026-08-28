@@ -1,0 +1,17 @@
+{
+  "name": "gcip-iap",
+  "version": "2.0.1",
+  "upstreamRepository": "https://github.com/GoogleCloudPlatform/iap-gcip-web-toolkit",
+  "npmTarballUrl": "https://registry.npmjs.org/gcip-iap/-/gcip-iap-2.0.1.tgz",
+  "npmTarballIntegrity": "sha512-/bTN8SNl0xm/On9olQrttVIEKMsLPcclHopZ2K0R9Z0pC3f10rsH4BAsePkdTz9f8sdXhaazaT898i3xznznLg==",
+  "sourceMember": "package/dist/index.esm.js",
+  "artifactSha256": "619d6959518fb09feb9127fca70ace4714bd443b4515fafa3786b1203ce04048",
+  "licenseMember": "package/LICENSE",
+  "licenseSha256": "accc36c817ac5ede473d05732e14afc11cb6e55ef5919bc826b653f631165043",
+  "artifact_modified": false,
+  "permittedBareImports": [
+    "whatwg-fetch",
+    "url-polyfill",
+    "promise-polyfill"
+  ]
+}

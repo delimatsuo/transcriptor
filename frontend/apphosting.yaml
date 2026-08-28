@@ -1,0 +1,62 @@
+# Public browser configuration for the IAP custom sign-in page and app.
+# Firebase's public API key is supplied by Secret Manager at build/runtime;
+# the value is intentionally never checked into this repository.
+runConfig:
+  minInstances: 0
+  maxInstances: 1
+env:
+  - variable: NEXT_PUBLIC_AUTH_MODE
+    value: iap
+    availability:
+      - BUILD
+      - RUNTIME
+  - variable: NEXT_PUBLIC_API_URL
+    value: https://api.tars.ellaexecutivesearch.com
+    availability:
+      - BUILD
+      - RUNTIME
+  - variable: NEXT_PUBLIC_WS_URL
+    value: wss://api.tars.ellaexecutivesearch.com/ws
+    availability:
+      - BUILD
+      - RUNTIME
+  - variable: NEXT_PUBLIC_WS_STREAM_URL
+    value: wss://api.tars.ellaexecutivesearch.com/api/stream/native
+    availability:
+      - BUILD
+      - RUNTIME
+  - variable: NEXT_PUBLIC_FRONTEND_ORIGIN
+    value: https://tars.ellaexecutivesearch.com
+    availability:
+      - BUILD
+      - RUNTIME
+  - variable: NEXT_PUBLIC_FIREBASE_API_KEY
+    secret: tars-firebase-web-api-key@1
+    availability:
+      - BUILD
+      - RUNTIME
+  - variable: NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN
+    value: transcriptor-490222.firebaseapp.com
+    availability:
+      - BUILD
+      - RUNTIME
+  - variable: NEXT_PUBLIC_FIREBASE_PROJECT_ID
+    value: transcriptor-490222
+    availability:
+      - BUILD
+      - RUNTIME
+  - variable: NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET
+    value: transcriptor-490222.firebasestorage.app
+    availability:
+      - BUILD
+      - RUNTIME
+  - variable: NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID
+    value: "33726443105"
+    availability:
+      - BUILD
+      - RUNTIME
+  - variable: NEXT_PUBLIC_FIREBASE_APP_ID
+    value: 1:33726443105:web:3089b7d56549e143130420
+    availability:
+      - BUILD
+      - RUNTIME
