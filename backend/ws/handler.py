@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import deque
+from collections.abc import Callable
 
 import structlog
 from fastapi import WebSocket, WebSocketDisconnect
@@ -21,6 +22,10 @@ logger = structlog.get_logger()
 # Ring buffer size for reconnection replay
 REPLAY_BUFFER_SIZE = 1000
 WS_SEND_TIMEOUT_SECONDS = 2.0
+
+
+class ConnectionAdmissionLost(RuntimeError):
+    """The auth/session fence closed while a socket was being connected."""
 
 
 class WSConnectionManager:
@@ -49,25 +54,65 @@ class WSConnectionManager:
         last_seq: int = 0,
         *,
         subprotocol: str | None = None,
+        admission_check: Callable[[], bool] | None = None,
     ) -> None:
         """Accept a WebSocket connection and replay missed messages."""
-        await websocket.accept(subprotocol=subprotocol)
-        self._ensure_session(session_id)
-        self._connections[session_id].append(websocket)
+        accepted = False
+        registered = False
+        try:
+            if admission_check is not None and not admission_check():
+                raise ConnectionAdmissionLost("WebSocket admission lost")
+            await websocket.accept(subprotocol=subprotocol)
+            accepted = True
+            if admission_check is not None and not admission_check():
+                raise ConnectionAdmissionLost("WebSocket admission lost")
+            self._ensure_session(session_id)
+            self._connections[session_id].append(websocket)
+            registered = True
 
-        logger.info(
-            "ws_client_connected",
-            session_id=session_id,
-            last_seq=last_seq,
-            active_connections=len(self._connections[session_id]),
-        )
+            logger.info(
+                "ws_client_connected",
+                session_id=session_id,
+                last_seq=last_seq,
+                active_connections=len(self._connections[session_id]),
+            )
 
-        # Replay missed messages
-        if last_seq > 0:
-            await self._replay_messages(websocket, session_id, last_seq)
+            if admission_check is not None and not admission_check():
+                raise ConnectionAdmissionLost("WebSocket admission lost")
+            # Replay missed messages under the same admission fence. A
+            # terminal event during a slow send removes the registration and
+            # prevents the endpoint from entering its receive loop.
+            if last_seq > 0:
+                await self._replay_messages(
+                    websocket,
+                    session_id,
+                    last_seq,
+                    admission_check=admission_check,
+                )
+            if admission_check is not None and not admission_check():
+                raise ConnectionAdmissionLost("WebSocket admission lost")
+        except BaseException:
+            if registered:
+                self.disconnect(websocket, session_id)
+            if accepted:
+                try:
+                    await websocket.close(code=4003, reason="auth_revoked")
+                except TypeError:
+                    try:
+                        await websocket.close(code=4003)
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+            raise
 
     async def _replay_messages(
-        self, websocket: WebSocket, session_id: str, last_seq: int
+        self,
+        websocket: WebSocket,
+        session_id: str,
+        last_seq: int,
+        *,
+        admission_check: Callable[[], bool] | None = None,
     ) -> None:
         """Replay messages missed during disconnection."""
         buffer = self._message_buffer.get(session_id, deque())
@@ -98,14 +143,20 @@ class WSConnectionManager:
         )
 
         for msg in missed:
+            if admission_check is not None and not admission_check():
+                raise ConnectionAdmissionLost("WebSocket admission lost")
             try:
                 await asyncio.wait_for(
                     websocket.send_json(msg.model_dump()),
                     timeout=WS_SEND_TIMEOUT_SECONDS,
                 )
             except Exception:
+                if admission_check is not None and not admission_check():
+                    raise ConnectionAdmissionLost("WebSocket admission lost")
                 logger.exception("ws_replay_error")
                 break
+            if admission_check is not None and not admission_check():
+                raise ConnectionAdmissionLost("WebSocket admission lost")
 
     def disconnect(self, websocket: WebSocket, session_id: str) -> None:
         """Remove a WebSocket connection."""

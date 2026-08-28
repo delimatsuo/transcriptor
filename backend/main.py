@@ -8,13 +8,14 @@ import secrets
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
+from typing import Awaitable, Callable
 from uuid import uuid4
 
 import structlog
 import uvicorn
 from fastapi import FastAPI, Header, WebSocket, WebSocketDisconnect, UploadFile, File, Form, HTTPException, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, PlainTextResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse
 
 from backend.audio.buffer import AudioBuffer
 from backend.audio.capture import AudioCapture
@@ -29,8 +30,15 @@ from backend.auth import (
     set_auth_enforced,
     set_current_auth,
     verify_bearer_token,
+    verify_iap_token,
 )
-from backend.config import CorsSettings, Settings, get_settings, parse_cors_allowed_origins
+from backend.auth_runtime import AuthRuntimeGate, ConnectionLease
+from backend.config import (
+    CorsSettings,
+    Settings,
+    get_settings,
+    select_cors_allowed_origins,
+)
 from backend.documents.parser import MAX_FILE_SIZE, DocumentParseError, parse_document
 from backend.llm.context_window import ContextWindowManager
 from backend.llm.gemini import GeminiClient
@@ -123,6 +131,7 @@ audio_buffers: dict[str, list[AudioBuffer]] = {}
 stream_managers: dict[str, list[StreamManager]] = {}
 # Per-session secret offered as the second tars-stream WebSocket subprotocol entry.
 stream_keys: dict[str, str] = {}
+stream_key_owners: dict[str, str] = {}
 # Session-scoped StreamManagers for the native companion gateway (session_id ->
 # source_label -> StreamManager). Survives individual WebSocket reconnects; only
 # _stop_pipeline tears these down.
@@ -162,6 +171,16 @@ pipeline_tasks: dict[str, list[asyncio.Task]] = {}
 session_stop_locks: dict[str, asyncio.Lock] = {}
 final_summary_scheduled: set[str] = set()
 final_summary_tasks: dict[str, asyncio.Task] = {}
+# The auth generation that admitted each process-local session.  Session
+# records intentionally do not expose this provider-control value; it fences
+# late work after logout while allowing a newer re-authentication to create a
+# new session and schedule its own work.
+session_auth_generations: dict[str, tuple[str, int]] = {}
+# Provider calls are registered before their first await.  The registry is
+# deliberately count-oriented: terminal auth can cancel and await every task
+# without exposing operation identifiers through readiness or HTTP responses.
+active_provider_operations: dict[str, dict[str, object]] = {}
+PROVIDER_CANCEL_SETTLE_TIMEOUT_SECONDS = 0.25
 # A final child write failure means process memory may be the only copy until
 # an owner-approved retry/recovery path runs. Never release that transcript on
 # the strength of a later parent-session write alone.
@@ -176,6 +195,7 @@ deleted_sessions: set[str] = set()
 rolling_summary_tasks: dict[str, asyncio.Task] = {}
 rolling_summary_followups: set[str] = set()
 single_source_check_tasks: dict[str, asyncio.Task] = {}
+emergency_sessions: set[str] = set()
 
 # Interview context
 interview_documents: dict[str, dict[str, str]] = {}  # session_id -> {resume, jd}
@@ -192,13 +212,324 @@ speaker_correlators: dict[str, SpeakerCorrelator] = {}
 extension_tokens: dict[str, str] = {}  # session_id -> token
 extension_capability_expiry: dict[str, datetime] = {}
 ws_tickets: dict[str, tuple[AuthContext, str, datetime]] = {}
+stream_tickets: dict[str, tuple[AuthContext, str, datetime]] = {}
 stop_capabilities: dict[str, tuple[AuthContext, str, datetime]] = {}
+auth_runtime = AuthRuntimeGate()
 _clock_sync_timestamps: dict[str, float] = {}  # session_id -> last sync time (rate limit)
 
 
 def _context_window_for(session_id: str) -> ContextWindowManager | None:
     """Return isolated rolling-summary state for one session."""
     return context_windows.get(session_id) or context_window
+
+
+def _sync_provider_operation_count() -> None:
+    auth_runtime.set_active_provider_operations(len(active_provider_operations))
+
+
+def _provider_uid_current(uid: str | None) -> bool:
+    return uid is None or auth_runtime.is_uid_current(uid)
+
+
+def _provider_operation_admitted(operation: dict[str, object]) -> bool:
+    if auth_runtime.kill_latched:
+        return False
+    lease = operation.get("lease")
+    if isinstance(lease, ConnectionLease):
+        if lease.closed:
+            return False
+        uid = operation.get("uid")
+        auth_time = operation.get("auth_time")
+        if not isinstance(uid, str) or not isinstance(auth_time, int):
+            return False
+        if not auth_runtime.is_principal_admissible(uid, auth_time):
+            return False
+    elif not _provider_uid_current(operation.get("uid")):
+        return False
+    session_id = operation.get("session_id")
+    if isinstance(session_id, str):
+        if session_id in session_deletion_fences:
+            return False
+        session = _local_session(session_id)
+        owner = operation.get("uid")
+        if session is not None and isinstance(owner, str) and session.owner_id != owner:
+            return False
+        if (
+            settings is not None
+            and settings.auth_mode == "iap"
+            and session is not None
+            and session.owner_id is not None
+        ):
+            generation = session_auth_generations.get(session_id)
+            if (
+                generation is None
+                or generation[0] != session.owner_id
+                or operation.get("auth_time") != generation[1]
+            ):
+                return False
+            if session.status == SessionStatus.INCOMPLETE:
+                return False
+    return True
+
+
+def _session_provider_principal(session) -> AuthContext | None:
+    """Return the exact auth generation that admitted a session's provider work."""
+    owner_id = getattr(session, "owner_id", None)
+    if not isinstance(owner_id, str) or not owner_id:
+        return None
+    generation = session_auth_generations.get(getattr(session, "id", ""))
+    if generation is None:
+        current = current_auth()
+        if (
+            settings is not None
+            and settings.auth_mode == "iap"
+            and current is not None
+            and current.uid == owner_id
+            and isinstance(current.auth_time, int)
+        ):
+            generation = (owner_id, current.auth_time)
+            session_auth_generations[getattr(session, "id", "")] = generation
+    if generation is None:
+        if settings is not None and settings.auth_mode == "iap":
+            return None
+        return AuthContext(
+            uid=owner_id,
+            email="",
+            org_id=getattr(session, "org_id", None) or "",
+            auth_time=None,
+        )
+    return AuthContext(
+        uid=generation[0],
+        email="",
+        org_id=getattr(session, "org_id", None) or "",
+        auth_time=generation[1],
+    )
+
+
+def _session_runtime_admitted(session_id: str, *, require_active: bool = True) -> bool:
+    """Fence callbacks before and after awaits at the session boundary."""
+    if session_id in emergency_sessions or session_id in session_deletion_fences:
+        return False
+    session = _local_session(session_id)
+    if session is None:
+        # Legacy direct-call tests and local compatibility callers may not have
+        # a session object.  Real authenticated sessions always do.
+        return True
+    if require_active and getattr(session, "status", SessionStatus.ACTIVE) != SessionStatus.ACTIVE:
+        return False
+    if settings is not None and settings.auth_mode == "iap" and session.owner_id is not None:
+        generation = session_auth_generations.get(session_id)
+        if generation is None or generation[0] != session.owner_id:
+            return False
+        return auth_runtime.is_principal_admissible(generation[0], generation[1])
+    return True
+
+
+def _register_provider_operation(
+    *,
+    user: AuthContext | None = None,
+    session_id: str | None = None,
+) -> str | None:
+    """Reserve provider work before entering a cancellable provider await."""
+    if auth_runtime.kill_latched:
+        return None
+    task = asyncio.current_task()
+    if task is None:
+        return None
+    uid = user.uid if user is not None else None
+    auth_time = user.auth_time if user is not None else None
+    if (
+        settings is not None
+        and settings.auth_mode == "iap"
+        and (
+            user is None
+            or not isinstance(uid, str)
+            or not uid
+            or type(auth_time) is not int
+        )
+    ):
+        # Every IAP operation is bound to a nonempty uid and exact provider
+        # generation; never let an unbound/malformed operation spend provider
+        # work without a revocable lease.
+        return None
+    lease: ConnectionLease | None = None
+    if uid is not None and auth_time is not None:
+        lease = auth_runtime.register_operation(uid, auth_time)
+        if lease is None:
+            return None
+    operation_id = f"provider-{id(task)}-{len(active_provider_operations) + 1}"
+    active_provider_operations[operation_id] = {
+        "task": task,
+        "uid": uid,
+        "auth_time": auth_time,
+        "session_id": session_id,
+        "lease": lease,
+    }
+    task.add_done_callback(
+        lambda completed, operation_id=operation_id: _provider_task_done(
+            operation_id, completed
+        )
+    )
+    _sync_provider_operation_count()
+    return operation_id
+
+
+def _release_provider_operation(operation_id: str | None) -> None:
+    if operation_id is None:
+        return
+    operation = active_provider_operations.pop(operation_id, None)
+    if operation is None:
+        return
+    lease = operation.get("lease")
+    if isinstance(lease, ConnectionLease):
+        auth_runtime.release_operation(lease)
+    _sync_provider_operation_count()
+
+
+def _provider_task_done(operation_id: str, task: asyncio.Task) -> None:
+    """Release operation accounting only once the worker is actually done."""
+    try:
+        task.exception()
+    except (asyncio.CancelledError, Exception):
+        pass
+    operation = active_provider_operations.get(operation_id)
+    if operation is not None and operation.get("task") is task:
+        _release_provider_operation(operation_id)
+
+
+def _register_stt_task(
+    task: asyncio.Task,
+    *,
+    session_id: str | None = None,
+) -> str | None:
+    """Keep live STT/capture workers in the count-only operation registry.
+
+    Emergency abort is intentionally bounded.  A worker that resists Python
+    cancellation must therefore stay visible in readiness until its own task
+    actually finishes.  The task identity check makes repeated registration
+    (for example, a response worker also seen by pipeline cleanup) harmless.
+    """
+    if task.done():
+        return None
+    session = _local_session(session_id) if session_id is not None else None
+    uid = getattr(session, "owner_id", None)
+    auth_time = None
+    generation = None
+    if session_id is not None:
+        generation = session_auth_generations.get(session_id)
+        if generation is not None:
+            uid, auth_time = generation
+    if settings is not None and settings.auth_mode == "iap":
+        valid_generation = (
+            session_id is not None
+            and session is not None
+            and isinstance(uid, str)
+            and bool(uid)
+            and uid == getattr(session, "owner_id", None)
+            and isinstance(generation, tuple)
+            and len(generation) == 2
+            and generation[0] == uid
+            and type(auth_time) is int
+            and auth_runtime.is_principal_admissible(uid, auth_time)
+            and getattr(session, "status", SessionStatus.ACTIVE)
+            == SessionStatus.ACTIVE
+        )
+        if not valid_generation:
+            # This task was created before its session generation was proven.
+            # Cancel it before it can enter a provider/STT side effect and do
+            # not publish count-only accounting for an invalid worker.
+            task.cancel()
+            return None
+    for operation_id, operation in active_provider_operations.items():
+        if operation.get("task") is task:
+            return operation_id
+    operation_id = f"stt-{id(task)}"
+    active_provider_operations[operation_id] = {
+        "task": task,
+        "uid": uid,
+        "auth_time": auth_time,
+        "session_id": session_id,
+        "lease": None,
+        "kind": "stt",
+    }
+    task.add_done_callback(
+        lambda completed, operation_id=operation_id: _provider_task_done(
+            operation_id, completed
+        )
+    )
+    _sync_provider_operation_count()
+    return operation_id
+
+
+async def _cancel_tasks_bounded(
+    tasks: list[asyncio.Task],
+    *,
+    timeout: float = PROVIDER_CANCEL_SETTLE_TIMEOUT_SECONDS,
+) -> set[asyncio.Task]:
+    """Cancel workers without waiting forever or releasing live accounting."""
+    pending = {
+        task
+        for task in tasks
+        if isinstance(task, asyncio.Task)
+        and task is not asyncio.current_task()
+        and not task.done()
+    }
+    for task in pending:
+        task.cancel()
+    if pending:
+        _done, pending = await asyncio.wait(pending, timeout=max(0.0, timeout))
+        for task in _done:
+            try:
+                task.exception()
+            except (asyncio.CancelledError, Exception):
+                pass
+    return pending
+
+
+async def _cancel_provider_operations(uid: str | None = None) -> None:
+    """Fence, cancel, and fully settle provider calls before terminal return."""
+    selected = [
+        operation
+        for operation in list(active_provider_operations.values())
+        if uid is None or operation.get("uid") == uid
+    ]
+    tasks = [
+        task for operation in selected
+        if isinstance(task := operation.get("task"), asyncio.Task)
+        and task is not asyncio.current_task()
+        and not task.done()
+    ]
+    # A task can be scheduled but not yet have reached its registration line.
+    # Include those detached provider workers by their session owner so logout
+    # cannot return while a completed-session report is about to start.
+    for registry in (final_summary_tasks, rolling_summary_tasks, interview_suggestion_tasks):
+        for session_id, task in list(registry.items()):
+            session = _local_session(session_id)
+            owner = getattr(session, "owner_id", None)
+            if (
+                (uid is None or owner == uid)
+                and task is not asyncio.current_task()
+                and not task.done()
+                and task not in tasks
+            ):
+                tasks.append(task)
+    # Cancellation-resistant workers remain in active_provider_operations; the
+    # task done callback releases their count only when they truly settle.
+    await _cancel_tasks_bounded(tasks)
+    # A cancellation-resistant task is expected to finish cooperatively.  If
+    # a test double only exposes a registry entry, still release its lease once
+    # its task is done; never leave readiness accounting stale.
+    for operation_id, operation in list(active_provider_operations.items()):
+        if operation in selected:
+            task = operation.get("task")
+            if not isinstance(task, asyncio.Task) or task.done():
+                _release_provider_operation(operation_id)
+    for registry in (final_summary_tasks, rolling_summary_tasks, interview_suggestion_tasks):
+        for session_id, task in list(registry.items()):
+            if task.done():
+                registry.pop(session_id, None)
+                if registry is final_summary_tasks:
+                    final_summary_scheduled.discard(session_id)
 
 
 # Concurrency guard for pre-interview analysis
@@ -212,8 +543,11 @@ async def lifespan(app: FastAPI):
 
     app.state.ready = False
     settings = get_settings()
+    # ADC readiness is an infrastructure precondition for every hosted mode;
+    # IAP changes inbound authentication only and must not skip this gate.
     await probe_application_default_credentials()
-    initialize_firebase_admin(settings)
+    if settings.auth_mode == "firebase":
+        initialize_firebase_admin(settings)
     session_mgr = SessionManager(settings)
     firestore_storage = FirestoreStorage(settings)
     gcs_storage = GCSStorage(settings)
@@ -236,6 +570,7 @@ async def lifespan(app: FastAPI):
         # Cleanup: stop all active pipelines
         for session_id in list(pipeline_tasks.keys()):
             await _stop_pipeline(session_id)
+        await _cancel_provider_operations()
         context_windows.clear()
 
         logger.info("server_stopped")
@@ -247,10 +582,50 @@ app.state.ready = False
 @app.middleware("http")
 async def authenticate_api_requests(request: Request, call_next):
     """Authenticate every API request before route code can touch data."""
-    if request.method == "OPTIONS" or not request.url.path.startswith("/api/"):
+    is_preflight = (
+        request.method == "OPTIONS"
+        and bool(request.headers.get("origin"))
+        and bool(request.headers.get("access-control-request-method"))
+    )
+    if is_preflight or not request.url.path.startswith("/api/"):
         return await call_next(request)
     request_settings = settings or get_settings()
-    if request_settings.auth_bypass:
+    if request_settings.auth_mode == "iap":
+        operator_control = (
+            (request.method, request.url.path)
+            in {
+                ("GET", "/api/admin/task08/transition-readiness"),
+                ("POST", "/api/admin/task08/kill-switch"),
+            }
+        )
+        if request_settings.auth_kill_switch:
+            auth_runtime.kill()
+        try:
+            assertion_values = request.headers.getlist("x-goog-iap-jwt-assertion")
+            user = verify_iap_token(assertion_values, request_settings)
+            if user.auth_time is None:
+                raise AuthenticationError("principal is revoked")
+            admitted = auth_runtime.admit_principal(user.uid, user.auth_time)
+            # The two count-only operator controls remain reachable after the
+            # monotonic global kill latch so an operator can observe readiness
+            # and repeat the idempotent kill.  A principal revoked by logout
+            # cannot use this exception unless that global latch is already
+            # active; ordinary API/business paths never receive it.
+            operator_after_kill = (
+                operator_control
+                and auth_runtime.kill_latched
+                and user.email.casefold() in request_settings.task08_operator_email_set
+                and auth_runtime.is_principal_current(user.uid, user.auth_time)
+            )
+            if not admitted and not operator_after_kill:
+                raise AuthenticationError("principal is revoked")
+        except (AuthenticationError, ValueError):
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "Authentication required"},
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+    elif request_settings.auth_bypass:
         user = AuthContext(
             uid="local-recruiter-dev",
             email="recruiter-pilot@example.com",
@@ -296,7 +671,10 @@ async def authenticate_api_requests(request: Request, call_next):
 # Keep CORS outermost so even auth rejection responses carry browser-readable
 # CORS headers instead of surfacing as opaque network failures.
 _cors_settings = CorsSettings()
-_allowed_origins = parse_cors_allowed_origins(_cors_settings.cors_allowed_origins)
+_allowed_origins = select_cors_allowed_origins(
+    _cors_settings.auth_mode,
+    _cors_settings.cors_allowed_origins,
+)
 
 app.add_middleware(
     CORSMiddleware,
@@ -329,14 +707,315 @@ async def current_user_profile():
     return {"uid": user.uid, "email": user.email, "org_id": user.org_id}
 
 
-async def _close_ws_at_expiry(websocket: WebSocket, expires_at: datetime) -> None:
-    """Bound a socket's authorization lifetime; reconnect mints a fresh ticket."""
-    delay = max(0.0, (expires_at - datetime.now(timezone.utc)).total_seconds())
-    await asyncio.sleep(delay)
+@app.get("/api/auth/bootstrap")
+async def auth_bootstrap():
+    """Start provider-managed IAP sign-in at the fixed frontend origin."""
+    assert settings
+    if settings.auth_mode != "iap":
+        raise HTTPException(status_code=404, detail="IAP bootstrap is unavailable")
+    return RedirectResponse(settings.auth_iap_frontend_origin, status_code=307)
+
+
+def _revoke_browser_tickets_for_user(user: AuthContext) -> None:
+    for store in (ws_tickets, stream_tickets):
+        for token, (ticket_user, _session_id, _expires_at) in list(store.items()):
+            if ticket_user.uid == user.uid:
+                store.pop(token, None)
+    auth_runtime.revoke_tickets(user.uid)
+
+
+def _revoke_stream_keys_for_user(user: AuthContext) -> None:
+    for session_id, owner_uid in list(stream_key_owners.items()):
+        if owner_uid == user.uid:
+            stream_key_owners.pop(session_id, None)
+            stream_keys.pop(session_id, None)
+    auth_runtime.revoke_stream_keys(user.uid)
+
+
+async def _cancel_session_heartbeat(session_id: str) -> None:
+    """Cancel a heartbeat even when the normal stop path itself fails."""
+    if session_mgr is None:
+        return
+    tasks = getattr(session_mgr, "_heartbeat_tasks", {})
+    task = tasks.pop(session_id, None)
+    if task is None:
+        return
+    if await _cancel_tasks_bounded([task]):
+        logger.error("session_heartbeat_cancel_stuck", session_id=session_id)
+
+
+async def _force_clear_session_runtime(session_id: str) -> None:
+    """Best-effort local fence when the normal pipeline stop raises."""
+    emergency_sessions.add(session_id)
+    tasks = pipeline_tasks.pop(session_id, None) or []
+    for task in tasks:
+        _register_stt_task(task, session_id=session_id)
+    await _cancel_tasks_bounded(tasks)
+    async with native_sm_lock:
+        stream_keys.pop(session_id, None)
+        stream_key_owners.pop(session_id, None)
+        auth_runtime.consume_stream_key(session_id)
+        native_sms = native_stream_managers.pop(session_id, {})
+        native_session_health.pop(session_id, None)
+        native_frame_last_seq.pop(session_id, None)
+    all_sms = list(native_sms.values()) + list(stream_managers.pop(session_id, []))
+    seen_managers: set[int] = set()
+    for stream_manager in all_sms:
+        if id(stream_manager) in seen_managers:
+            continue
+        seen_managers.add(id(stream_manager))
+        try:
+            abort = getattr(stream_manager, "abort_emergency", None)
+            if callable(abort):
+                await abort()
+            else:
+                await stream_manager.stop()
+        except Exception:
+            logger.exception("forced_native_sm_stop_error", session_id=session_id)
+    emergency_sessions.discard(session_id)
+
+
+@app.post("/api/auth/logout", status_code=204)
+async def auth_logout() -> Response:
+    """Synchronously revoke the signed principal before returning."""
+    assert settings
+    if settings.auth_mode != "iap":
+        return Response(status_code=204)
+    user = _principal()
+    if user is None or user.auth_time is None:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    auth_runtime.revoke_principal(user.uid, user.auth_time)
+    _revoke_browser_tickets_for_user(user)
+    _revoke_stream_keys_for_user(user)
+
+    # Revoking the principal closes browser leases, but it does not by itself
+    # terminalize a business session. Do that synchronously before returning so
+    # logout cannot strand capture, heartbeat, provider work, or capabilities.
+    owned_active = []
+    if session_mgr is not None:
+        owned_active = [
+            session.id
+            for session in list(getattr(session_mgr, "_sessions", {}).values())
+            if session.status == SessionStatus.ACTIVE and session.owner_id == user.uid
+        ]
+    for session_id in owned_active:
+        try:
+            await _stop_pipeline(session_id, emergency=True)
+        except Exception:
+            logger.exception("logout_pipeline_stop_unproven", session_id=session_id)
+            await _force_clear_session_runtime(session_id)
+        session = _local_session(session_id)
+        if session is not None and session.status == SessionStatus.ACTIVE:
+            try:
+                await session_mgr.stop_session(
+                    session_id,
+                    transcription_complete=False,
+                )
+            except Exception:
+                logger.exception("logout_session_stop_error", session_id=session_id)
+                session.status = SessionStatus.INCOMPLETE
+                session.ended_at = datetime.now(timezone.utc)
+                await _cancel_session_heartbeat(session_id)
+        await _cleanup_session_context_async(session_id)
+        if session is not None and firestore_storage is not None:
+            try:
+                await firestore_storage.save_session(session)
+            except Exception:
+                # 204 is intentionally content-free and makes no durability
+                # claim. Local admission is already terminal; this log marks
+                # the persistence ceiling for an owner-authorized retry path.
+                logger.exception(
+                    "logout_terminal_session_persistence_unproven",
+                    session_id=session_id,
+                )
+    # Emergency-abort active capture before waiting on unrelated provider
+    # cancellation, minimizing the post-logout provider window.
+    await _cancel_provider_operations(user.uid)
+    return Response(status_code=204)
+
+
+def _task08_operator() -> AuthContext:
+    assert settings
+    user = _principal()
+    if settings.auth_mode != "iap" or user is None:
+        raise HTTPException(status_code=403, detail="Operator authorization required")
+    if user.email.casefold() not in settings.task08_operator_email_set:
+        raise HTTPException(status_code=403, detail="Operator authorization required")
+    return user
+
+
+def _active_business_session_count() -> int:
+    if session_mgr is None:
+        return 0
+    count_active = getattr(session_mgr, "count_active_sessions", None)
+    if callable(count_active):
+        return int(count_active())
+    sessions = getattr(session_mgr, "_sessions", {})
+    return sum(
+        1 for session in sessions.values() if session.status == SessionStatus.ACTIVE
+    )
+
+
+def _local_session(session_id: str):
+    if session_mgr is None:
+        return None
+    getter = getattr(session_mgr, "get_session", None)
+    if callable(getter):
+        return getter(session_id)
+    return getattr(session_mgr, "_sessions", {}).get(session_id)
+
+
+def _active_business_session_ids() -> list[str]:
+    if session_mgr is None:
+        return []
+    sessions = getattr(session_mgr, "_sessions", {})
+    return [
+        getattr(session, "id", session_id)
+        for session_id, session in list(sessions.items())
+        if session.status == SessionStatus.ACTIVE
+    ]
+
+
+async def _terminalize_active_sessions_for_kill() -> None:
+    """Stop every locally active business session after the kill latch."""
+    for session_id in _active_business_session_ids():
+        try:
+            await _terminalize_incomplete_session(session_id)
+        except BaseException:
+            # The kill route remains content-free and fail-closed even if a
+            # test double or provider persistence boundary raises unexpectedly.
+            logger.exception("kill_session_terminalization_unproven", session_id=session_id)
+            session = _local_session(session_id)
+            if session is not None and session.status == SessionStatus.ACTIVE:
+                session.status = SessionStatus.INCOMPLETE
+                session.ended_at = datetime.now(timezone.utc)
+                await _cancel_session_heartbeat(session_id)
+            try:
+                await _force_clear_session_runtime(session_id)
+            except BaseException:
+                logger.exception("kill_session_runtime_cleanup_unproven", session_id=session_id)
+
+
+def _task08_readiness_counts() -> dict[str, int]:
+    if settings is not None and settings.auth_kill_switch:
+        auth_runtime.kill()
+    _prune_expired_iap_tickets()
+    active = _active_business_session_count()
+    auth_runtime.set_active_business_sessions(active)
+    auth_runtime.set_active_provider_operations(len(active_provider_operations))
+    return {
+        "active_business_sessions": active,
+        "registered_browser_sockets": auth_runtime.live_connection_count,
+        "outstanding_browser_tickets": len(ws_tickets) + len(stream_tickets),
+        "active_stream_keys": len(stream_keys),
+        "active_provider_operations": len(active_provider_operations),
+    }
+
+
+@app.get("/api/admin/task08/transition-readiness")
+async def task08_transition_readiness():
+    """Return count-only, read-only transition readiness."""
+    _task08_operator()
+    counts = _task08_readiness_counts()
+    return {
+        **counts,
+        "ready": all(value == 0 for value in counts.values())
+        and not auth_runtime.kill_latched,
+        "kill_switch_active": auth_runtime.kill_latched,
+    }
+
+
+@app.post("/api/admin/task08/kill-switch")
+async def task08_kill_switch():
+    """Latch application admission closed before revoking capabilities."""
+    _task08_operator()
+    # The latch is deliberately first and idempotent.  A concurrent request
+    # therefore cannot mint a new capability after this point.
+    auth_runtime.kill()
+    await _terminalize_active_sessions_for_kill()
+    # Active STT pipelines are emergency-aborted before waiting on unrelated
+    # provider operations, so no capture work remains while cancellation drains.
+    await _cancel_provider_operations()
+    ws_tickets.clear()
+    stream_tickets.clear()
+    stream_keys.clear()
+    stream_key_owners.clear()
+    counts = _task08_readiness_counts()
+    return {**counts, "ready": False, "kill_switch_active": True}
+
+
+async def _close_ws_at_expiry(
+    websocket: WebSocket,
+    expires_at: datetime,
+    lease: ConnectionLease | None = None,
+    *,
+    sleep: Callable[[float], Awaitable[object]] | None = None,
+    clock: Callable[[], datetime] | None = None,
+) -> None:
+    """Close at absolute expiry or immediately when the runtime lease signals."""
+    sleep_fn = sleep or asyncio.sleep
+    clock_fn = clock or (lambda: datetime.now(timezone.utc))
+    delay = max(0.0, (expires_at - clock_fn()).total_seconds())
+    expiry_task = asyncio.create_task(sleep_fn(delay))
+    lease_task = asyncio.create_task(lease.event.wait()) if lease is not None else None
     try:
-        await websocket.close(code=4001, reason="auth_expired")
-    except Exception:
-        pass
+        if lease_task is None:
+            await expiry_task
+            code, reason = 4001, "auth_expired"
+        else:
+            done, _pending = await asyncio.wait(
+                {expiry_task, lease_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            code, reason = (
+                (4003, "auth_revoked") if lease_task in done else (4001, "auth_expired")
+            )
+        try:
+            await websocket.close(code=code, reason=reason)
+        except TypeError:
+            await websocket.close(code=code)
+        except Exception:
+            pass
+    finally:
+        pending_tasks = []
+        for task in (expiry_task, lease_task):
+            if task is not None and not task.done():
+                task.cancel()
+                pending_tasks.append(task)
+        if pending_tasks:
+            await asyncio.gather(*pending_tasks, return_exceptions=True)
+
+
+def _iap_websocket_user(websocket: WebSocket) -> AuthContext | None:
+    """Verify the browser's signed IAP assertion before any socket side effect."""
+    # Direct legacy unit callers do not initialize application settings.  Keep
+    # those calls on the existing Firebase-compatible path; the live lifespan
+    # always sets ``settings`` before serving a request.
+    request_settings = settings
+    if request_settings is None:
+        return None
+    if request_settings.auth_mode != "iap":
+        return None
+    if request_settings.auth_kill_switch:
+        auth_runtime.kill()
+    headers = websocket.headers
+    getlist = getattr(headers, "getlist", None)
+    values = getlist("x-goog-iap-jwt-assertion") if callable(getlist) else []
+    if not values:
+        value = headers.get("x-goog-iap-jwt-assertion")
+        values = [value] if value is not None else []
+    try:
+        user = verify_iap_token(values, request_settings)
+    except (AuthenticationError, ValueError):
+        return None
+    try:
+        if user.auth_time is None or not auth_runtime.admit_principal(
+            user.uid, user.auth_time
+        ):
+            return None
+    except (TypeError, ValueError):
+        return None
+    return user
 
 
 def _principal() -> AuthContext | None:
@@ -398,13 +1077,38 @@ def _mint_capability(
     session_id: str,
     ttl_seconds: int,
 ) -> str:
+    now = datetime.now(timezone.utc)
+    # A reconnect must replace its previous unconsumed ticket.  This bounds
+    # both in-memory storage and AuthRuntimeGate accounting even when a client
+    # repeatedly asks for tickets without opening a socket.
+    is_ticket_store = store is ws_tickets or store is stream_tickets
+    for old_token, (old_user, old_session_id, expires_at) in list(store.items()):
+        if expires_at <= now or (
+            old_user.uid == user.uid and old_session_id == session_id
+        ):
+            store.pop(old_token, None)
+            if is_ticket_store:
+                auth_runtime.consume_ticket(old_token)
     token = secrets.token_urlsafe(32)
     store[token] = (
         user,
         session_id,
-        datetime.now(timezone.utc) + timedelta(seconds=ttl_seconds),
+        now + timedelta(seconds=ttl_seconds),
     )
     return token
+
+
+def _prune_expired_iap_tickets(now: datetime | None = None) -> int:
+    """Bound ticket-store growth and keep runtime accounting in sync."""
+    current = now or datetime.now(timezone.utc)
+    pruned = 0
+    for store in (ws_tickets, stream_tickets):
+        for token, (_user, _session_id, expires_at) in list(store.items()):
+            if expires_at <= current:
+                store.pop(token, None)
+                auth_runtime.consume_ticket(token)
+                pruned += 1
+    return pruned
 
 
 async def _save_report_generation_state(
@@ -518,6 +1222,8 @@ async def _run_single_audio_stream(
         settings=settings,
         on_transcript=lambda seg: _on_transcript(session_id, seg),
         source_label=source_label,
+        admission_check=lambda: _session_runtime_admitted(session_id),
+        task_tracker=lambda task: _register_stt_task(task, session_id=session_id),
     )
 
     capture_list.append(capture)
@@ -549,22 +1255,32 @@ async def _run_single_audio_stream(
         try:
             # Stop capture first so no callback can enqueue behind the drain.
             await capture.stop()
-            # A PortAudio callback may already have queued _enqueue onto this
-            # event loop. Give that callback one turn before emptying the tail.
-            await asyncio.sleep(0)
-            pending_chunks = buffer.drain_pending_chunks()
-            if pending_chunks:
-                logger.info(
-                    "audio_pipeline_draining_pending_chunks",
-                    session_id=session_id,
-                    source=source_label,
-                    count=len(pending_chunks),
-                )
-            for chunk in pending_chunks:
-                await sm.send_audio(buffer.float32_to_int16(chunk))
+            if session_id in emergency_sessions:
+                abort = getattr(sm, "abort_emergency", None)
+                if callable(abort):
+                    await abort()
+                else:
+                    await sm.stop()
+            else:
+                # A PortAudio callback may already have queued _enqueue onto
+                # this event loop. Give that callback one turn before
+                # emptying the tail. Emergency termination intentionally
+                # skips this graceful-drain branch.
+                await asyncio.sleep(0)
+                pending_chunks = buffer.drain_pending_chunks()
+                if pending_chunks:
+                    logger.info(
+                        "audio_pipeline_draining_pending_chunks",
+                        session_id=session_id,
+                        source=source_label,
+                        count=len(pending_chunks),
+                    )
+                for chunk in pending_chunks:
+                    await sm.send_audio(buffer.float32_to_int16(chunk))
         finally:
             try:
-                await sm.stop()
+                if session_id not in emergency_sessions:
+                    await sm.stop()
             finally:
                 await buffer.stop()
 
@@ -611,9 +1327,9 @@ async def _run_audio_pipeline(session_id: str) -> None:
 
 async def _on_transcript(session_id: str, segment: TranscriptSegment) -> None:
     """Handle a new transcript segment."""
-    if session_id in session_deletion_fences:
+    if not _session_runtime_admitted(session_id):
         logger.warning(
-            "transcript_callback_after_delete_ignored",
+            "transcript_callback_after_terminal_ignored",
             session_id=session_id,
         )
         return
@@ -637,14 +1353,20 @@ async def _on_transcript(session_id: str, segment: TranscriptSegment) -> None:
 
     # Deletion can fence the session while the broadcast is in flight. Never
     # recreate a child record after that terminal fence wins.
-    if session_id in session_deletion_fences:
+    if not _session_runtime_admitted(session_id):
         return
 
     # 4. Persist to Firestore (WITH override, after correlation)
     if segment.is_final:
         try:
+            if not _session_runtime_admitted(session_id):
+                return
             await _save_transcript_segment(session_id, segment)
+            if not _session_runtime_admitted(session_id):
+                return
         except Exception:
+            if not _session_runtime_admitted(session_id):
+                return
             transcript_persistence_failures.add(session_id)
             session = session_mgr.get_session(session_id)
             if session is not None:
@@ -727,6 +1449,18 @@ async def _generate_rolling_summary(session_id: str) -> None:
         return
     context = _context_window_for(session_id)
     assert session_mgr and context and gemini_client
+    session_for_op = _local_session(session_id)
+    owner_context = (
+        _session_provider_principal(session_for_op)
+        if session_for_op is not None
+        else None
+    )
+    provider_operation_id = _register_provider_operation(
+        user=owner_context,
+        session_id=session_id,
+    )
+    if session_for_op is not None and session_for_op.owner_id is not None and provider_operation_id is None:
+        return
 
     try:
         current_seq = len(session_mgr.get_transcript(session_id))
@@ -766,7 +1500,8 @@ async def _generate_rolling_summary(session_id: str) -> None:
 
         summary = await context.update_summary(transcript_text, batch_end)
 
-        if session_id in session_deletion_fences:
+        operation = active_provider_operations.get(provider_operation_id or "")
+        if session_id in session_deletion_fences or operation is None or not _provider_operation_admitted(operation):
             return
 
         # A failed provider call intentionally leaves the source watermark
@@ -786,9 +1521,10 @@ async def _generate_rolling_summary(session_id: str) -> None:
         await ws_manager.broadcast(session_id, msg)
 
         # Save to Firestore
+        operation = active_provider_operations.get(provider_operation_id or "")
+        if operation is None or not _provider_operation_admitted(operation):
+            return
         if firestore_storage:
-            if session_id in session_deletion_fences:
-                return
             session = session_mgr.get_session(session_id)
             await firestore_storage.save_summary(
                 session_id, summary,
@@ -797,6 +1533,9 @@ async def _generate_rolling_summary(session_id: str) -> None:
                 owner_id=session.owner_id if session else None,
                 org_id=session.org_id if session else None,
             )
+            operation = active_provider_operations.get(provider_operation_id or "")
+            if operation is None or not _provider_operation_admitted(operation):
+                return
 
         if batch_end < current_seq:
             # The task completion callback starts the next contiguous batch
@@ -805,6 +1544,8 @@ async def _generate_rolling_summary(session_id: str) -> None:
 
     except Exception:
         logger.exception("rolling_summary_error", session_id=session_id)
+    finally:
+        _release_provider_operation(provider_operation_id)
 
 
 def _schedule_rolling_summary(session_id: str) -> None:
@@ -878,6 +1619,18 @@ async def _generate_interview_suggestions(session_id: str) -> None:
     if session_id in session_deletion_fences:
         return
     assert session_mgr and gemini_client
+    session_for_op = _local_session(session_id)
+    owner_context = (
+        _session_provider_principal(session_for_op)
+        if session_for_op is not None
+        else None
+    )
+    provider_operation_id = _register_provider_operation(
+        user=owner_context,
+        session_id=session_id,
+    )
+    if session_for_op is not None and session_for_op.owner_id is not None and provider_operation_id is None:
+        return
 
     docs = interview_documents.get(session_id, {})
 
@@ -906,7 +1659,8 @@ async def _generate_interview_suggestions(session_id: str) -> None:
             ),
         )
 
-        if session_id in session_deletion_fences:
+        operation = active_provider_operations.get(provider_operation_id or "")
+        if session_id in session_deletion_fences or operation is None or not _provider_operation_admitted(operation):
             return
 
         if response.strip():
@@ -925,9 +1679,14 @@ async def _generate_interview_suggestions(session_id: str) -> None:
             )
             msg = WSMessage.suggestion_msg(session_id, seq, suggestion)
             await ws_manager.broadcast(session_id, msg)
+            operation = active_provider_operations.get(provider_operation_id or "")
+            if operation is None or not _provider_operation_admitted(operation):
+                return
 
     except Exception:
         logger.exception("interview_suggestion_error", session_id=session_id)
+    finally:
+        _release_provider_operation(provider_operation_id)
 
 
 def _schedule_interview_suggestions(session_id: str) -> None:
@@ -959,13 +1718,44 @@ async def _generate_final_summary(session_id: str) -> None:
         return
     is_interview = session and session.mode == SessionMode.INTERVIEW
     summary_covering_from = 0
+    provider_operation_id = _register_provider_operation(
+        user=_session_provider_principal(session),
+        session_id=session_id,
+    )
+    if session.owner_id is not None and provider_operation_id is None:
+        _cleanup_session_context(session_id)
+        return
+
+    def operation_admitted() -> bool:
+        operation = active_provider_operations.get(provider_operation_id or "")
+        return operation is not None and _provider_operation_admitted(operation)
+
+    async def persist_generation_state(
+        state: str,
+        *,
+        reason_code: str | None = None,
+    ) -> bool:
+        """Fence report-state writes before and after their awaited boundary."""
+        if not operation_admitted():
+            return False
+        await _save_report_generation_state(
+            session_id,
+            state,
+            reason_code=reason_code,
+            session=session,
+        )
+        return operation_admitted()
 
     try:
         if is_interview:
             existing = await firestore_storage.get_interview_report(session_id)
+            if not operation_admitted():
+                return
             generation_state = await firestore_storage.get_report_generation_state(
                 session_id
             )
+            if not operation_admitted():
+                return
             if existing is not None:
                 report = existing.model_copy(
                     update={
@@ -973,11 +1763,8 @@ async def _generate_final_summary(session_id: str) -> None:
                         "org_id": session.org_id,
                     }
                 )
-                await _save_report_generation_state(
-                    session_id,
-                    "ready",
-                    session=session,
-                )
+                if not await persist_generation_state("ready"):
+                    return
             elif generation_state and generation_state.get("status") == "failed":
                 logger.warning(
                     "interview_report_generation_previously_failed",
@@ -985,36 +1772,31 @@ async def _generate_final_summary(session_id: str) -> None:
                 )
                 return
             elif generation_state and generation_state.get("status") == "generating":
-                await _save_report_generation_state(
-                    session_id,
-                    "failed",
-                    reason_code="generation_interrupted",
-                    session=session,
-                )
+                if not await persist_generation_state(
+                    "failed", reason_code="generation_interrupted"
+                ):
+                    return
                 logger.error(
                     "interview_report_generation_interrupted",
                     session_id=session_id,
                 )
                 return
             elif generation_state and generation_state.get("status") == "ready":
-                await _save_report_generation_state(
-                    session_id,
-                    "failed",
-                    reason_code="ready_without_report",
-                    session=session,
-                )
+                if not await persist_generation_state(
+                    "failed", reason_code="ready_without_report"
+                ):
+                    return
                 logger.error(
                     "interview_report_ready_without_report",
                     session_id=session_id,
                 )
                 return
             else:
-                await _save_report_generation_state(
-                    session_id,
-                    "generating",
-                    session=session,
-                )
+                if not await persist_generation_state("generating"):
+                    return
                 transcript_records = await firestore_storage.get_session_transcript(session_id)
+                if not operation_admitted():
+                    return
                 if session.owner_id is not None:
                     for record in transcript_records:
                         if record.get("ownerId") != session.owner_id or record.get("orgId") != session.org_id:
@@ -1025,6 +1807,8 @@ async def _generate_final_summary(session_id: str) -> None:
                         "durable transcript is required for report generation"
                     )
                 note_records = await firestore_storage.get_session_notes(session_id)
+                if not operation_admitted():
+                    return
                 if session.owner_id is not None:
                     for record in note_records:
                         if record.get("ownerId") != session.owner_id or record.get("orgId") != session.org_id:
@@ -1034,6 +1818,8 @@ async def _generate_final_summary(session_id: str) -> None:
                     note_records,
                 )
                 context_records = await firestore_storage.get_interview_context(session_id)
+                if not operation_admitted():
+                    return
                 if session.owner_id is not None:
                     for record in context_records:
                         if record.get("ownerId") != session.owner_id or record.get("orgId") != session.org_id:
@@ -1094,12 +1880,10 @@ async def _generate_final_summary(session_id: str) -> None:
                     # describe the complete durable source set. Fail visibly
                     # before any provider call so an oversized request cannot
                     # create an unbounded model bill.
-                    await _save_report_generation_state(
-                        session_id,
-                        "failed",
-                        reason_code="report_input_too_large",
-                        session=session,
-                    )
+                    if not await persist_generation_state(
+                        "failed", reason_code="report_input_too_large"
+                    ):
+                        return
                     return
 
                 raw_report = await asyncio.wait_for(
@@ -1116,6 +1900,9 @@ async def _generate_final_summary(session_id: str) -> None:
                     ),
                     timeout=60,
                 )
+                operation = active_provider_operations.get(provider_operation_id or "")
+                if operation is None or not _provider_operation_admitted(operation):
+                    return
                 report = parse_generated_report(
                     session_id,
                     raw_report,
@@ -1126,11 +1913,11 @@ async def _generate_final_summary(session_id: str) -> None:
                     org_id=session.org_id,
                 )
                 report = await firestore_storage.save_generated_report(report)
-                await _save_report_generation_state(
-                    session_id,
-                    "ready",
-                    session=session,
-                )
+                operation = active_provider_operations.get(provider_operation_id or "")
+                if operation is None or not _provider_operation_admitted(operation):
+                    return
+                if not await persist_generation_state("ready"):
+                    return
             summary = render_internal_summary(report)
             transcript = session_mgr.get_transcript(session_id)
         else:
@@ -1175,6 +1962,13 @@ async def _generate_final_summary(session_id: str) -> None:
                 ),
             )
 
+            operation = active_provider_operations.get(provider_operation_id or "")
+            if operation is None or not _provider_operation_admitted(operation):
+                return
+
+        operation = active_provider_operations.get(provider_operation_id or "")
+        if operation is None or not _provider_operation_admitted(operation):
+            return
         session_mgr.set_summary(session_id, summary)
 
         # Broadcast
@@ -1189,9 +1983,15 @@ async def _generate_final_summary(session_id: str) -> None:
         await ws_manager.broadcast(session_id, msg)
 
         # Save
+        operation = active_provider_operations.get(provider_operation_id or "")
+        if operation is None or not _provider_operation_admitted(operation):
+            return
         session = session_mgr.get_session(session_id)
         if session:
             await firestore_storage.save_session(session)
+            operation = active_provider_operations.get(provider_operation_id or "")
+            if operation is None or not _provider_operation_admitted(operation):
+                return
             await firestore_storage.save_summary(
                 session_id, summary,
                 covering_from=summary_covering_from,
@@ -1200,23 +2000,35 @@ async def _generate_final_summary(session_id: str) -> None:
                 owner_id=session.owner_id,
                 org_id=session.org_id,
             )
+            operation = active_provider_operations.get(provider_operation_id or "")
+            if operation is None or not _provider_operation_admitted(operation):
+                return
 
     except Exception:
         logger.exception("final_summary_error", session_id=session_id)
-        if is_interview:
+        if is_interview and not (
+            settings is not None and settings.auth_mode == "iap"
+        ):
             try:
-                await _save_report_generation_state(
-                    session_id,
-                    "failed",
-                    reason_code="provider_or_validation_failure",
-                    session=session,
-                )
+                # Preserve the legacy non-IAP retry marker.  IAP deliberately
+                # leaves a durable "generating" marker untouched: a fresh,
+                # newly authorized run reconciles interrupted generation.  A
+                # cancellation-resistant provider failure must not perform a
+                # late state write after terminal logout/kill.
+                if operation_admitted():
+                    await _save_report_generation_state(
+                        session_id,
+                        "failed",
+                        reason_code="provider_or_validation_failure",
+                        session=session,
+                    )
             except Exception:
                 logger.exception(
                     "report_generation_state_save_error",
                     session_id=session_id,
                 )
     finally:
+        _release_provider_operation(provider_operation_id)
         _cleanup_session_context(session_id)
 
 
@@ -1238,34 +2050,53 @@ def _release_terminal_transcript_memory(session_id: str) -> None:
         release(session_id)
 
 
+def _collect_session_background_tasks(session_id: str) -> list[asyncio.Task]:
+    """Detach all cancellable per-session tasks for sync or async cleanup."""
+    tasks: list[asyncio.Task] = []
+    for registry in (
+        rolling_summary_tasks,
+        interview_suggestion_tasks,
+        single_source_check_tasks,
+    ):
+        task = registry.pop(session_id, None)
+        if task is not None and not task.done() and task not in tasks:
+            tasks.append(task)
+    return tasks
+
+
+async def _settle_session_background_tasks(tasks: list[asyncio.Task]) -> None:
+    """Cancel detached work with the same bounded, fail-closed policy."""
+    await _cancel_tasks_bounded(tasks)
+
+
 def _cleanup_session_context(
     session_id: str,
     *,
     release_transcript_memory: bool = True,
     preserve_stop_capability: bool = False,
-) -> None:
+) -> list[asyncio.Task]:
     """Remove sensitive per-interview context after terminal handling."""
     interview_documents.pop(session_id, None)
     interview_final_segment_counts.pop(session_id, None)
     interview_suggestion_counters.pop(session_id, None)
     single_source_warned.discard(session_id)
     context_windows.pop(session_id, None)
-    rolling_task = rolling_summary_tasks.pop(session_id, None)
-    if rolling_task is not None and not rolling_task.done():
-        rolling_task.cancel()
+    session_auth_generations.pop(session_id, None)
+    background_tasks = _collect_session_background_tasks(session_id)
+    for task in background_tasks:
+        task.cancel()
     rolling_summary_followups.discard(session_id)
-    suggestion_task = interview_suggestion_tasks.pop(session_id, None)
-    if suggestion_task is not None and not suggestion_task.done():
-        suggestion_task.cancel()
-    single_source_task = single_source_check_tasks.pop(session_id, None)
-    if single_source_task is not None and not single_source_task.done():
-        single_source_task.cancel()
     speaker_correlators.pop(session_id, None)
     extension_tokens.pop(session_id, None)
     extension_capability_expiry.pop(session_id, None)
     for token, (_, token_session_id, _) in list(ws_tickets.items()):
         if token_session_id == session_id:
             ws_tickets.pop(token, None)
+            auth_runtime.consume_ticket(token)
+    for token, (_, token_session_id, _) in list(stream_tickets.items()):
+        if token_session_id == session_id:
+            stream_tickets.pop(token, None)
+            auth_runtime.consume_ticket(token)
     if not preserve_stop_capability:
         _revoke_stop_capabilities(session_id)
     _clock_sync_timestamps.pop(session_id, None)
@@ -1281,6 +2112,22 @@ def _cleanup_session_context(
         # with all other terminal interview context once durability is known.
         ws_manager.cleanup_session(session_id)
     final_summary_scheduled.discard(session_id)
+    return background_tasks
+
+
+async def _cleanup_session_context_async(
+    session_id: str,
+    *,
+    release_transcript_memory: bool = True,
+    preserve_stop_capability: bool = False,
+) -> None:
+    """Terminal cleanup that waits for every detached session task to settle."""
+    tasks = _cleanup_session_context(
+        session_id,
+        release_transcript_memory=release_transcript_memory,
+        preserve_stop_capability=preserve_stop_capability,
+    )
+    await _settle_session_background_tasks(tasks)
 
 
 def _revoke_stop_capabilities(session_id: str) -> None:
@@ -1296,17 +2143,37 @@ async def _cancel_final_summary_task(session_id: str) -> None:
     final_summary_scheduled.discard(session_id)
     if task is None or task.done():
         return
-    task.cancel()
-    try:
-        await task
-    except asyncio.CancelledError:
-        pass
-    except Exception:
-        logger.exception("final_summary_cancel_error", session_id=session_id)
+    pending = await _cancel_tasks_bounded([task])
+    if pending:
+        logger.error("final_summary_cancel_stuck", session_id=session_id)
 
 
 def _schedule_final_summary_once(session_id: str) -> None:
     """Schedule at most one final report for a session in this process."""
+    session = _local_session(session_id)
+    if auth_runtime.kill_latched:
+        return
+    if (
+        settings is not None
+        and settings.auth_mode == "iap"
+        and session is not None
+        and session.owner_id is not None
+    ):
+        principal = _session_provider_principal(session)
+        if (
+            principal is None
+            or principal.auth_time is None
+            or not auth_runtime.is_principal_admissible(
+                principal.uid, principal.auth_time
+            )
+        ):
+            return
+    elif (
+        session is not None
+        and session.owner_id is not None
+        and not auth_runtime.is_uid_current(session.owner_id)
+    ):
+        return
     if (
         session_id in final_summary_scheduled
         or session_id in session_deletion_fences
@@ -1328,8 +2195,8 @@ def _schedule_final_summary_once(session_id: str) -> None:
     task.add_done_callback(clear_task)
 
 
-async def _stop_pipeline(session_id: str) -> bool:
-    """Stop the audio pipeline and report whether every STT stream drained."""
+async def _stop_pipeline(session_id: str, *, emergency: bool = False) -> bool:
+    """Stop the audio pipeline, optionally aborting without a final drain."""
     # Captured before any cancellation/pop below. This is a list of object
     # references, not a snapshot of their state: drain_completed is read from
     # these same StreamManager instances at the very end of this function,
@@ -1337,16 +2204,18 @@ async def _stop_pipeline(session_id: str) -> bool:
     # happen first because a legacy _run_audio_pipeline task (host capture
     # path), when cancelled just below, pops stream_managers[session_id] out
     # from under a later read as part of its own finally block.
+    if emergency:
+        # Set the fence before cancelling capture tasks. Their finally blocks
+        # must skip the normal pending-buffer flush during kill/logout.
+        emergency_sessions.add(session_id)
     managers = list(stream_managers.get(session_id, []))
     tasks = pipeline_tasks.pop(session_id, None)
     if tasks:
         for task in tasks:
-            task.cancel()
-        for task in tasks:
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
+            _register_stt_task(task, session_id=session_id)
+        # A cancellation-resistant capture worker must not block terminal auth.
+        # Its STT operation remains counted until the task's done callback runs.
+        await _cancel_tasks_bounded(tasks)
 
     # Close the native gateway to this session atomically under native_sm_lock:
     # pop the stream key first so both a fresh connection's accept-time guard
@@ -1355,29 +2224,38 @@ async def _stop_pipeline(session_id: str) -> bool:
     # lock so a slow drain doesn't block unrelated sessions' connections.
     async with native_sm_lock:
         stream_keys.pop(session_id, None)
+        stream_key_owners.pop(session_id, None)
+        auth_runtime.consume_stream_key(session_id)
         native_sms = native_stream_managers.pop(session_id, {})
         native_session_health.pop(session_id, None)
         native_frame_last_seq.pop(session_id, None)
-    for sm in native_sms.values():
+    all_managers = list(native_sms.values()) + managers
+    seen_managers: set[int] = set()
+    for sm in all_managers:
+        if id(sm) in seen_managers:
+            continue
+        seen_managers.add(id(sm))
         try:
-            await sm.stop()
+            if emergency:
+                abort = getattr(sm, "abort_emergency", None)
+                if callable(abort):
+                    await abort()
+                else:
+                    await sm.stop()
+            else:
+                await sm.stop()
         except Exception:
             logger.exception("native_sm_stop_error", session_id=session_id)
 
     # Clean up interview runtime state (documents cleaned after final summary)
     interview_final_segment_counts.pop(session_id, None)
     interview_suggestion_counters.pop(session_id, None)
-    rolling_task = rolling_summary_tasks.pop(session_id, None)
-    if rolling_task is not None and not rolling_task.done():
-        rolling_task.cancel()
-    suggestion_task = interview_suggestion_tasks.pop(session_id, None)
-    if suggestion_task is not None and not suggestion_task.done():
-        suggestion_task.cancel()
+    await _settle_session_background_tasks(
+        _collect_session_background_tasks(session_id)
+    )
     single_source_warned.discard(session_id)
-    single_source_task = single_source_check_tasks.pop(session_id, None)
-    if single_source_task is not None and not single_source_task.done():
-        single_source_task.cancel()
     if not managers:
+        emergency_sessions.discard(session_id)
         if tasks:
             logger.error(
                 "audio_pipeline_missing_stream_manager",
@@ -1385,7 +2263,50 @@ async def _stop_pipeline(session_id: str) -> bool:
             )
             return False
         return True
-    return all(manager.drain_completed is True for manager in managers)
+    result = all(manager.drain_completed is True for manager in managers)
+    emergency_sessions.discard(session_id)
+    return result
+
+
+async def _terminalize_incomplete_session(
+    session_id: str,
+    *,
+    persist: bool = True,
+    emergency: bool = True,
+) -> None:
+    """Fence a session that lost admission while an operation was awaiting.
+
+    This helper is deliberately best-effort at the durable boundary: local
+    state is terminalized first, while a failed Firestore write is logged as an
+    evidence limitation rather than leaving an ACTIVE in-memory session alive.
+    """
+    try:
+        await _stop_pipeline(session_id, emergency=emergency)
+    except Exception:
+        logger.exception("incomplete_session_pipeline_stop_error", session_id=session_id)
+        await _force_clear_session_runtime(session_id)
+
+    session = _local_session(session_id)
+    if session is not None and session.status == SessionStatus.ACTIVE:
+        try:
+            await session_mgr.stop_session(session_id, transcription_complete=False)
+        except Exception:
+            logger.exception("incomplete_session_stop_error", session_id=session_id)
+            # The local safety invariant is stronger than a persistence error:
+            # never leave a business session ACTIVE after admission is lost.
+            session.status = SessionStatus.INCOMPLETE
+            session.ended_at = datetime.now(timezone.utc)
+            await _cancel_session_heartbeat(session_id)
+
+    await _cleanup_session_context_async(session_id)
+    if persist and session is not None and firestore_storage is not None:
+        try:
+            await firestore_storage.save_session(session)
+        except Exception:
+            logger.exception(
+                "incomplete_session_persistence_unproven",
+                session_id=session_id,
+            )
 
 
 # --- REST Endpoints ---
@@ -1399,63 +2320,118 @@ async def create_session(
     """Create a new session and start the audio pipeline."""
     assert settings and session_mgr and firestore_storage
     user = _principal()
+    if settings.auth_mode == "iap" and (
+        user is None
+        or user.auth_time is None
+        or not auth_runtime.admit_principal(user.uid, user.auth_time)
+    ):
+        raise HTTPException(status_code=401, detail="Authentication required")
 
-    session_mode = SessionMode(mode)
-    # Launch Week 4 is interview-only; meeting remains a backend compatibility
-    # mode for older direct callers but is not admitted by the web UI.
-    session = session_mgr.create_session(
-        mode=session_mode,
-        title=title,
-        owner_id=user.uid if user else None,
-        org_id=user.org_id if user else None,
-    )
-    session.notice_given = notice_given
+    operation_lease: ConnectionLease | None = None
+    if user is not None and user.auth_time is not None:
+        operation_lease = auth_runtime.register_operation(user.uid, user.auth_time)
+        if operation_lease is None:
+            raise HTTPException(status_code=401, detail="Authentication required")
 
-    # Save to Firestore
-    await firestore_storage.save_session(session)
-
-    # Per-session secret the native companion must present on the audio
-    # gateway WebSocket; without it any client could stream audio into any
-    # session_id it guessed.
-    stream_key = secrets.token_urlsafe(32)
-    stream_keys[session.id] = stream_key
-
-    # Rolling summaries carry prior model context and counters; never share
-    # that state between authenticated sessions or organizations.
-    assert gemini_client
-    context_windows[session.id] = ContextWindowManager(settings, gemini_client)
-
-    # Mint the stop-only recovery capability before capture starts. Its TTL is
-    # configured above the maximum session duration plus the bounded drain.
-    stop_capability = (
-        _mint_capability(
-            stop_capabilities,
-            user,
-            session.id,
-            settings.auth_stop_capability_ttl_seconds,
+    session = None
+    try:
+        session_mode = SessionMode(mode)
+        # Launch Week 4 is interview-only; meeting remains a backend
+        # compatibility mode for older direct callers but is not admitted by
+        # the web UI.
+        session = session_mgr.create_session(
+            mode=session_mode,
+            title=title,
+            owner_id=user.uid if user else None,
+            org_id=user.org_id if user else None,
         )
-        if user is not None
-        else None
-    )
+        session.notice_given = notice_given
+        if user is not None and user.auth_time is not None:
+            session_auth_generations[session.id] = (user.uid, user.auth_time)
 
-    # Start heartbeat
-    await session_mgr.start_heartbeat(session.id)
+        # The operation lease spans this awaited write. A kill/revocation may
+        # signal it while Firestore is suspended; no capability is published
+        # until the lease is checked again.
+        await firestore_storage.save_session(session)
+        if operation_lease is not None and (
+            operation_lease.closed
+            or not auth_runtime.admit_principal(user.uid, user.auth_time)
+        ):
+            await _terminalize_incomplete_session(session.id)
+            raise HTTPException(status_code=401, detail="Authentication required")
 
-    # Start audio pipeline only if legacy host audio capture is explicitly enabled
-    if settings.host_audio_capture_enabled:
-        task = asyncio.create_task(_run_audio_pipeline(session.id))
-        pipeline_tasks[session.id] = [task]
-    else:
-        pipeline_tasks[session.id] = []
+        # Per-session secret the native companion must present on the audio
+        # gateway WebSocket; without it any client could stream audio into any
+        # session_id it guessed.
+        stream_key = secrets.token_urlsafe(32)
+        stream_keys[session.id] = stream_key
+        if user is not None and user.auth_time is not None:
+            stream_key_owners[session.id] = user.uid
+            if not auth_runtime.register_stream_key(session.id, user.uid):
+                await _terminalize_incomplete_session(session.id)
+                raise HTTPException(status_code=401, detail="Authentication required")
 
-    return {
-        "session_id": session.id,
-        "status": "active",
-        "mode": mode,
-        "stop_capability": stop_capability,
-        "stop_capability_expires_in": settings.auth_stop_capability_ttl_seconds,
-        "stream_key": stream_key,
-    }
+        # Rolling summaries carry prior model context and counters; never share
+        # that state between authenticated sessions or organizations.
+        assert gemini_client
+        context_windows[session.id] = ContextWindowManager(settings, gemini_client)
+
+        # Mint the stop-only recovery capability before capture starts. Its TTL
+        # is configured above the maximum session duration plus the bounded
+        # drain.
+        stop_capability = (
+            _mint_capability(
+                stop_capabilities,
+                user,
+                session.id,
+                settings.auth_stop_capability_ttl_seconds,
+            )
+            if user is not None
+            else None
+        )
+        if operation_lease is not None and operation_lease.closed:
+            await _terminalize_incomplete_session(session.id)
+            raise HTTPException(status_code=401, detail="Authentication required")
+
+        # Start heartbeat
+        await session_mgr.start_heartbeat(session.id)
+        if operation_lease is not None and operation_lease.closed:
+            await _terminalize_incomplete_session(session.id)
+            raise HTTPException(status_code=401, detail="Authentication required")
+
+        # Start audio pipeline only if legacy host audio capture is explicitly
+        # enabled.
+        if settings.host_audio_capture_enabled:
+            task = asyncio.create_task(_run_audio_pipeline(session.id))
+            pipeline_tasks[session.id] = [task]
+            _register_stt_task(task, session_id=session.id)
+        else:
+            pipeline_tasks[session.id] = []
+
+        if operation_lease is not None and operation_lease.closed:
+            await _terminalize_incomplete_session(session.id)
+            raise HTTPException(status_code=401, detail="Authentication required")
+
+        return {
+            "session_id": session.id,
+            "status": "active",
+            "mode": mode,
+            "stop_capability": stop_capability,
+            "stop_capability_expires_in": settings.auth_stop_capability_ttl_seconds,
+            # IAP browsers obtain fresh HTTP stream tickets.  Keep the native
+            # key server-side for lifecycle/readiness compatibility, but never
+            # expose that deep-link capability to the browser.
+            "stream_key": None if settings.auth_mode == "iap" else stream_key,
+        }
+    except HTTPException:
+        raise
+    except BaseException:
+        if session is not None:
+            await _terminalize_incomplete_session(session.id)
+        raise
+    finally:
+        if operation_lease is not None:
+            auth_runtime.release_operation(operation_lease)
 
 
 @app.post("/api/sessions/{session_id}/stop")
@@ -1759,25 +2735,37 @@ async def analyze_candidate(
     user_message = "\n\n".join(parts)
 
     # Call Gemini with timeout and semaphore
-    async with _analyze_semaphore:
-        try:
-            briefing = await asyncio.wait_for(
-                gemini_client.generate(
-                    system_instruction=PRE_INTERVIEW_ANALYSIS_PROMPT,
-                    user_message=user_message,
-                    temperature=0.3,
-                    max_output_tokens=min(
-                        2048,
-                        getattr(settings, "llm_max_output_tokens", 2048),
+    provider_operation_id = _register_provider_operation(user=current_auth())
+    if provider_operation_id is None:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    try:
+        async with _analyze_semaphore:
+            operation = active_provider_operations.get(provider_operation_id)
+            if operation is None or not _provider_operation_admitted(operation):
+                raise HTTPException(status_code=401, detail="Authentication required")
+            try:
+                briefing = await asyncio.wait_for(
+                    gemini_client.generate(
+                        system_instruction=PRE_INTERVIEW_ANALYSIS_PROMPT,
+                        user_message=user_message,
+                        temperature=0.3,
+                        max_output_tokens=min(
+                            2048,
+                            getattr(settings, "llm_max_output_tokens", 2048),
+                        ),
                     ),
-                ),
-                timeout=30,
-            )
-        except asyncio.TimeoutError:
-            raise HTTPException(status_code=504, detail="Analysis timed out")
-        except Exception:
-            logger.exception("analyze_candidate_error")
-            raise HTTPException(status_code=500, detail="Analysis failed")
+                    timeout=30,
+                )
+            except asyncio.TimeoutError:
+                raise HTTPException(status_code=504, detail="Analysis timed out")
+            except Exception:
+                logger.exception("analyze_candidate_error")
+                raise HTTPException(status_code=500, detail="Analysis failed")
+            operation = active_provider_operations.get(provider_operation_id)
+            if operation is None or not _provider_operation_admitted(operation):
+                raise HTTPException(status_code=401, detail="Authentication required")
+    finally:
+        _release_provider_operation(provider_operation_id)
 
     return {
         "briefing_markdown": briefing,
@@ -2044,9 +3032,42 @@ async def get_approved_client_report(session_id: str):
 async def create_ws_ticket(session_id: str):
     """Mint a single-use ticket for the browser WebSocket handshake."""
     assert settings
+    _prune_expired_iap_tickets()
     session = await _read_session(session_id)
     user = _assert_session_access(session)
     ticket = _mint_capability(ws_tickets, user, session_id, settings.auth_ws_ticket_ttl_seconds)
+    if user is not None and user.auth_time is not None and not auth_runtime.register_ticket(
+        ticket, user.uid, user.auth_time
+    ):
+        ws_tickets.pop(ticket, None)
+        raise HTTPException(status_code=401, detail="Authentication required")
+    return {"ticket": ticket, "expires_in": settings.auth_ws_ticket_ttl_seconds}
+
+
+@app.post("/api/sessions/{session_id}/stream-ticket")
+async def create_stream_ticket(session_id: str):
+    """Mint a single-use browser audio ticket in IAP mode.
+
+    Firebase/native compatibility continues to use the session stream key;
+    only the browser IAP path needs a fresh HTTP ticket on reconnect.
+    """
+    assert settings
+    if settings.auth_mode != "iap":
+        raise HTTPException(status_code=404, detail="IAP stream ticket is unavailable")
+    _prune_expired_iap_tickets()
+    session = await _read_session(session_id)
+    user = _assert_session_access(session)
+    if user is None or user.auth_time is None:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    ticket = _mint_capability(
+        stream_tickets,
+        user,
+        session_id,
+        settings.auth_ws_ticket_ttl_seconds,
+    )
+    if not auth_runtime.register_ticket(ticket, user.uid, user.auth_time):
+        stream_tickets.pop(ticket, None)
+        raise HTTPException(status_code=401, detail="Authentication required")
     return {"ticket": ticket, "expires_in": settings.auth_ws_ticket_ttl_seconds}
 
 
@@ -2358,42 +3379,135 @@ async def extension_heartbeat(
 @app.websocket("/ws/{session_id}")
 async def websocket_endpoint(websocket: WebSocket, session_id: str):
     """WebSocket endpoint for real-time transcript and suggestion streaming."""
+    # Bind the absolute lifetime to connection admission, not to replay
+    # completion. The revocation watcher is started before accept/replay below.
+    connection_started = datetime.now(timezone.utc)
     # Browser WebSocket cannot set Authorization headers. It receives a
     # short-lived, single-use ticket from the authenticated HTTP API instead.
+    iap_user = _iap_websocket_user(websocket)
+    if settings is not None and settings.auth_mode == "iap" and iap_user is None:
+        await websocket.close(code=1008)
+        return
     offered = [item.strip() for item in websocket.headers.get("sec-websocket-protocol", "").split(",") if item.strip()]
     if len(offered) != 2 or offered[0] != "tars-ticket":
         await websocket.close(code=1008)
         return
     ticket = offered[1]
-    entry = ws_tickets.pop(ticket, None)
+    _prune_expired_iap_tickets()
+    entry = ws_tickets.get(ticket)
     now = datetime.now(timezone.utc)
     if entry is None or entry[1] != session_id or entry[2] <= now:
         await websocket.close(code=1008)
         return
     user = entry[0]
-    token = set_current_auth(user)
-    try:
-        session = await _read_session(session_id)
-        if session.owner_id != user.uid or session.org_id != user.org_id:
+    if iap_user is not None:
+        if (
+            user.uid != iap_user.uid
+            or user.email != iap_user.email
+            or user.org_id != iap_user.org_id
+            or user.auth_time != iap_user.auth_time
+            or user.auth_time is None
+        ):
             await websocket.close(code=1008)
             return
-    except HTTPException:
-        await websocket.close(code=1008)
-        return
+        if not auth_runtime.admit_principal(user.uid, user.auth_time):
+            await websocket.close(code=1008)
+            return
 
-    # Check for last_seq query param for reconnection
-    last_seq = 0
-    query_params = websocket.query_params
-    if "last_seq" in query_params:
-        try:
-            last_seq = int(query_params["last_seq"])
-        except ValueError:
-            pass
-
-    await ws_manager.connect(websocket, session_id, last_seq=last_seq, subprotocol="tars-ticket")
-    expiry_task = asyncio.create_task(_close_ws_at_expiry(websocket, entry[2]))
-
+    # Ticket commitment is the side-effect boundary. Every operation after it
+    # is covered by one outer finally so read/accept/replay/cancellation errors
+    # cannot strand auth context, leases, deadline tasks, or manager state.
+    ws_tickets.pop(ticket, None)
+    auth_runtime.consume_ticket(ticket)
+    token = set_current_auth(user)
+    lease: ConnectionLease | None = None
+    expiry_task: asyncio.Task | None = None
+    socket_expiry: datetime | None = None
+    manager_connect_attempted = False
     try:
+        # Legacy ticket callers do not need to construct Settings here.  The
+        # absolute IAP deadline is only relevant when an IAP principal was
+        # committed, and avoiding a settings fallback preserves offline/local
+        # WebSocket compatibility when no hosted configuration is present.
+        app_settings = settings
+        if iap_user is not None:
+            app_settings = settings or get_settings()
+            lease = auth_runtime.register_connection(user.uid, user.auth_time or 0)
+            if lease is None:
+                await websocket.close(code=1008)
+                return
+            socket_expiry = connection_started + timedelta(
+                seconds=app_settings.auth_iap_ws_max_lifetime_seconds
+            )
+            # Start the absolute deadline/revocation watcher before the
+            # potentially slow session read. A terminal event during that read
+            # must close and fence the socket before replay/accept can begin.
+            expiry_task = asyncio.create_task(
+                _close_ws_at_expiry(websocket, socket_expiry, lease)
+            )
+
+        session = await _read_session(session_id)
+        def connection_admitted() -> bool:
+            if iap_user is None:
+                return True
+            live_session = _local_session(session_id) or session
+            return bool(
+                lease is not None
+                and not lease.closed
+                and socket_expiry is not None
+                and datetime.now(timezone.utc) < socket_expiry
+                and auth_runtime.is_principal_admissible(
+                    user.uid, user.auth_time or 0
+                )
+                and live_session.owner_id == user.uid
+                and live_session.org_id == user.org_id
+                and getattr(live_session, "status", SessionStatus.ACTIVE)
+                in (SessionStatus.ACTIVE, SessionStatus.COMPLETED)
+            )
+
+        session_status = getattr(session, "status", SessionStatus.ACTIVE)
+        admission_current = connection_admitted()
+        if (
+            session.owner_id != user.uid
+            or session.org_id != user.org_id
+            or session_status not in (SessionStatus.ACTIVE, SessionStatus.COMPLETED)
+            or not admission_current
+        ):
+            await websocket.close(code=1008)
+            return
+
+        # Check for last_seq query param for reconnection
+        last_seq = 0
+        query_params = websocket.query_params
+        if "last_seq" in query_params:
+            try:
+                last_seq = int(query_params["last_seq"])
+            except ValueError:
+                pass
+
+        # Repeat every admission check at the replay side-effect boundary.
+        admission_current = connection_admitted()
+        session_status = getattr(session, "status", SessionStatus.ACTIVE)
+        if (
+            not admission_current
+            or session.owner_id != user.uid
+            or session.org_id != user.org_id
+            or session_status not in (SessionStatus.ACTIVE, SessionStatus.COMPLETED)
+        ):
+            await websocket.close(code=1008)
+            return
+        manager_connect_attempted = True
+        await ws_manager.connect(
+            websocket,
+            session_id,
+            last_seq=last_seq,
+            subprotocol="tars-ticket",
+            admission_check=connection_admitted,
+        )
+        if not connection_admitted():
+            await websocket.close(code=4003, reason="auth_revoked")
+            return
+
         while True:
             # Keep connection alive; handle client messages if any
             data = await websocket.receive_json()
@@ -2404,48 +3518,185 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                 await websocket.send_json({"type": "pong"})
 
     except WebSocketDisconnect:
-        ws_manager.disconnect(websocket, session_id)
+        pass
+    except HTTPException:
+        try:
+            await websocket.close(code=1008)
+        except Exception:
+            pass
+    except asyncio.CancelledError:
+        raise
     except Exception:
         logger.exception("ws_error", session_id=session_id)
-        ws_manager.disconnect(websocket, session_id)
     finally:
-        expiry_task.cancel()
-        reset_current_auth(token)
+        try:
+            if expiry_task is not None:
+                expiry_task.cancel()
+                await asyncio.gather(expiry_task, return_exceptions=True)
+        finally:
+            try:
+                if manager_connect_attempted:
+                    ws_manager.disconnect(websocket, session_id)
+            finally:
+                try:
+                    if lease is not None:
+                        auth_runtime.release_connection(lease)
+                finally:
+                    reset_current_auth(token)
 
 
 @app.websocket("/api/stream/native/{session_id}")
 async def native_stream_endpoint(websocket: WebSocket, session_id: str):
     """Ingest dual-channel audio from the native macOS companion over WebSocket."""
+    connection_started = datetime.now(timezone.utc)
+    iap_user = _iap_websocket_user(websocket)
+    if settings is not None and settings.auth_mode == "iap" and iap_user is None:
+        # Native desktop companions have no approved IAP session flow.  A
+        # stream key alone is never an application-level bypass in IAP mode.
+        await websocket.close(code=1008)
+        return
     raw_subprotocol = websocket.headers.get("sec-websocket-protocol")
     offered = [item.strip() for item in raw_subprotocol.split(",")] if raw_subprotocol is not None else []
     presented = ""
     if len(offered) == 2 and offered[0] == "tars-stream" and offered[1]:
         presented = offered[1]
+    _prune_expired_iap_tickets()
+    stream_entry = stream_tickets.get(presented) if iap_user is not None else None
     expected = stream_keys.get(session_id)
-    session = session_mgr.get_session(session_id) if session_mgr else None
+    session = None
     # secrets.compare_digest(str, str) raises TypeError on non-ASCII input
     # (an attacker-controlled input) before reaching the clean 1008
     # close below. Comparing UTF-8 bytes instead accepts arbitrary str
     # content without that restriction; the try/except is defense in depth
     # in case anything still slips through as non-str/non-encodable.
-    try:
-        key_matches = bool(expected) and bool(presented) and secrets.compare_digest(
-            presented.encode("utf-8", "surrogatepass"),
-            expected.encode("utf-8", "surrogatepass"),
-        )
-    except TypeError:
-        key_matches = False
+    if iap_user is not None:
+        key_matches = bool(stream_entry) and stream_entry[1] == session_id
+        if key_matches and stream_entry is not None:
+            key_matches = stream_entry[2] > datetime.now(timezone.utc)
+            key_matches = key_matches and (
+                stream_entry[0].uid == iap_user.uid
+                and stream_entry[0].email == iap_user.email
+                and stream_entry[0].org_id == iap_user.org_id
+                and stream_entry[0].auth_time == iap_user.auth_time
+            )
+        if not key_matches or not auth_runtime.admit_principal(
+            iap_user.uid, iap_user.auth_time or 0
+        ):
+            await websocket.close(code=1008)
+            return
+        session = session_mgr.get_session(session_id) if session_mgr else None
+    else:
+        session = session_mgr.get_session(session_id) if session_mgr else None
+        try:
+            key_matches = bool(expected) and bool(presented) and secrets.compare_digest(
+                presented.encode("utf-8", "surrogatepass"),
+                expected.encode("utf-8", "surrogatepass"),
+            )
+        except TypeError:
+            key_matches = False
     if (
         not key_matches
         or session is None
         or session.status != SessionStatus.ACTIVE
+        or (
+            iap_user is not None
+            and (
+                session.owner_id != iap_user.uid
+                or session.org_id != iap_user.org_id
+            )
+        )
     ):
         logger.warning("native_stream_rejected", session_id=session_id)
         await websocket.close(code=1008)
         return
-    await websocket.accept(subprotocol="tars-stream")
-    logger.info("native_companion_connected", session_id=session_id)
-    app_settings = settings or get_settings()
+    if iap_user is not None:
+        stream_tickets.pop(presented, None)
+        auth_runtime.consume_ticket(presented)
+    lease: ConnectionLease | None = None
+    lease_released = False
+    if iap_user is not None:
+        lease = auth_runtime.register_connection(iap_user.uid, iap_user.auth_time or 0)
+        if lease is None:
+            await websocket.close(code=1008)
+            return
+    expiry_task: asyncio.Task | None = None
+    stall_task: asyncio.Task | None = None
+    accept_task: asyncio.Task | None = None
+    health_registered = False
+
+    async def cancel_expiry_task() -> None:
+        nonlocal expiry_task
+        if expiry_task is not None:
+            expiry_task.cancel()
+            await asyncio.gather(expiry_task, return_exceptions=True)
+            expiry_task = None
+
+    def release_lease() -> None:
+        nonlocal lease_released
+        if lease is not None and not lease_released:
+            auth_runtime.release_connection(lease)
+            lease_released = True
+
+    def admission_is_current() -> bool:
+        if lease is None or iap_user is None:
+            return True
+        session_now = _local_session(session_id)
+        return (
+            not lease.closed
+            and auth_runtime.is_principal_admissible(
+                iap_user.uid, iap_user.auth_time or 0
+            )
+            and session_now is not None
+            and session_now.status == SessionStatus.ACTIVE
+            and session_now.owner_id == iap_user.uid
+            and session_now.org_id == iap_user.org_id
+            and session_id in stream_keys
+        )
+
+    async def cancel_accept_task() -> None:
+        if accept_task is not None:
+            if not accept_task.done():
+                accept_task.cancel()
+            await asyncio.gather(accept_task, return_exceptions=True)
+
+    admission_cleanup_needed = True
+    try:
+        app_settings = settings or get_settings()
+        if lease is not None:
+            expiry_task = asyncio.create_task(
+                _close_ws_at_expiry(
+                    websocket,
+                    connection_started
+                    + timedelta(seconds=app_settings.auth_iap_ws_max_lifetime_seconds),
+                    lease,
+                )
+            )
+            accept_task = asyncio.create_task(
+                websocket.accept(subprotocol="tars-stream")
+            )
+            done, _pending = await asyncio.wait(
+                {accept_task, expiry_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if expiry_task in done or lease.closed:
+                await websocket.close(code=1008)
+                return
+            await accept_task
+        else:
+            await websocket.accept(subprotocol="tars-stream")
+        logger.info("native_companion_connected", session_id=session_id)
+        if not admission_is_current():
+            await websocket.close(code=1008)
+            return
+        # From this point the common native lifecycle fence below owns every
+        # task/health/lease cleanup. The pre-accept fence above remains active
+        # for all failures and cancellation before health registration.
+        admission_cleanup_needed = False
+    finally:
+        if admission_cleanup_needed:
+            await cancel_accept_task()
+            await cancel_expiry_task()
+            release_lease()
 
     # --- companion_health / coverage_gap emission -------------------------
     # Session-scoped (not connection-scoped): native_stream_endpoint serves
@@ -2459,22 +3710,37 @@ async def native_stream_endpoint(websocket: WebSocket, session_id: str):
     # session: physical_capture is "active" while it is >0, "unknown" while
     # connections == 0 but >=1 source is "reconnecting", and "stopped"
     # otherwise.
-    session_health = native_session_health.setdefault(
-        session_id,
-        {
-            "sources": {"microphone": "unknown", "system_audio": "unknown"},
-            "source_connections": {"microphone": 0, "system_audio": 0},
-            "alerts": {},
-            "connections": 0,
-        },
-    )
-    session_health.setdefault("source_connections", {"microphone": 0, "system_audio": 0})
-    session_health.setdefault("alerts", {})
-    session_health["connections"] += 1
+    session_health: dict | None = None
     owned_sources: set[str] = set()
     intended_since: dict[str, float] = {}
     last_emitted_health: dict | None = None
     last_frame_at: dict[str, float] = {}
+    try:
+        session_health = native_session_health.setdefault(
+            session_id,
+            {
+                "sources": {"microphone": "unknown", "system_audio": "unknown"},
+                "source_connections": {"microphone": 0, "system_audio": 0},
+                "alerts": {},
+                "connections": 0,
+            },
+        )
+        session_health.setdefault("source_connections", {"microphone": 0, "system_audio": 0})
+        session_health.setdefault("alerts", {})
+        session_health["connections"] += 1
+        health_registered = True
+    except BaseException:
+        if session_health is not None and health_registered:
+            session_health["connections"] = max(0, session_health["connections"] - 1)
+        if session_health is not None and not health_registered:
+            # A failure during the initial setdefault/source-counter setup
+            # must not leave an empty health record that looks connected to a
+            # later readiness or cleanup pass.
+            if session_health.get("connections", 0) == 0:
+                native_session_health.pop(session_id, None)
+        await cancel_expiry_task()
+        release_lease()
+        raise
 
     def _mark_owned(source_name: str) -> None:
         if source_name in ("microphone", "system_audio"):
@@ -2536,6 +3802,40 @@ async def native_stream_endpoint(websocket: WebSocket, session_id: str):
                 session_id=session_id,
                 error=str(e),
             )
+
+    async def cleanup_native_lifecycle() -> None:
+        """Settle every task/lease/health count, including setup failures."""
+        nonlocal health_registered, expiry_task, stall_task
+        await cancel_accept_task()
+        await cancel_expiry_task()
+        if stall_task is not None:
+            stall_task.cancel()
+            await asyncio.gather(stall_task, return_exceptions=True)
+            stall_task = None
+
+        if health_registered:
+            session_health["connections"] = max(0, session_health["connections"] - 1)
+            session_obj = session_mgr.get_session(session_id) if session_mgr else None
+            session_is_active = (
+                session_id in stream_keys
+                and session_obj is not None
+                and session_obj.status == SessionStatus.ACTIVE
+            )
+            for source_name in owned_sources:
+                current_count = session_health["source_connections"].get(source_name, 1) - 1
+                session_health["source_connections"][source_name] = max(0, current_count)
+                if session_health["source_connections"][source_name] == 0:
+                    session_health["alerts"].pop(source_name, None)
+                    session_health["sources"][source_name] = (
+                        "reconnecting" if session_is_active else "unknown"
+                    )
+            health_registered = False
+            try:
+                await emit_health()
+            except Exception:
+                logger.debug("native_companion_health_cleanup_emit_error", session_id=session_id)
+
+        release_lease()
 
     async def emit_gap(gap: CoverageGapSegment) -> None:
         try:
@@ -2600,8 +3900,12 @@ async def native_stream_endpoint(websocket: WebSocket, session_id: str):
                     error=str(e),
                 )
 
-    await emit_health()
-    stall_task = asyncio.create_task(stall_watchdog())
+    try:
+        await emit_health()
+        stall_task = asyncio.create_task(stall_watchdog())
+    except BaseException:
+        await cleanup_native_lifecycle()
+        raise
 
     def _is_duplicate_frame(source_name: str, sequence: object) -> bool:
         """True iff `sequence` is a replay of an already-accepted frame for
@@ -2636,25 +3940,96 @@ async def native_stream_endpoint(websocket: WebSocket, session_id: str):
         return False
 
     async def get_or_create_sm(source_label: str) -> StreamManager:
+        # Reserve the registry slot under the lock, but do not await provider
+        # startup while holding it.  Kill/logout cleanup needs this same lock
+        # to detach managers and signal the admission fence.
         async with native_sm_lock:
+            if not admission_is_current():
+                raise RuntimeError("native stream admission lost")
             per_session = native_stream_managers.setdefault(session_id, {})
-            if source_label not in per_session:
-                # _stop_pipeline pops stream_keys[session_id] under this same
-                # lock before tearing down the SM registry. If it's already
-                # gone, the session is stopping/stopped: refuse to spin up a
-                # StreamManager nothing will ever stop. Returning an existing,
-                # already-created SM below needs no such check.
-                if session_id not in stream_keys:
-                    raise RuntimeError("session stopping — native stream refused")
-                sm = StreamManager(
-                    settings=app_settings,
-                    on_transcript=lambda seg: _on_transcript(session_id, seg),
-                    source_label=source_label,
+            existing = per_session.get(source_label)
+            if existing is not None:
+                return existing
+            # _stop_pipeline pops stream_keys[session_id] under this same
+            # lock before tearing down the SM registry. If it's already gone,
+            # the session is stopping/stopped: refuse to spin up a manager
+            # nothing will ever stop.
+            if session_id not in stream_keys:
+                raise RuntimeError("session stopping — native stream refused")
+            sm = StreamManager(
+                settings=app_settings,
+                on_transcript=lambda seg: _on_transcript(session_id, seg),
+                source_label=source_label,
+            )
+            # Keep compatibility with injected StreamManager test doubles that
+            # predate the admission callback constructor argument.
+            setattr(sm, "_admission_check", admission_is_current)
+            setattr(
+                sm,
+                "_task_tracker",
+                lambda task: _register_stt_task(task, session_id=session_id),
+            )
+
+        try:
+            await sm.start()
+        except BaseException:
+            abort = getattr(sm, "abort_emergency", None)
+            try:
+                if callable(abort):
+                    await abort()
+                else:
+                    await sm.stop()
+            except Exception:
+                logger.exception(
+                    "native_stream_start_failure_cleanup_error",
+                    session_id=session_id,
                 )
-                await sm.start()
-                per_session[source_label] = sm
-                stream_managers.setdefault(session_id, []).append(sm)
-            return per_session[source_label]
+            raise
+
+        if not admission_is_current():
+            try:
+                abort = getattr(sm, "abort_emergency", None)
+                if callable(abort):
+                    await abort()
+                else:
+                    await sm.stop()
+            except Exception:
+                logger.exception(
+                    "native_stream_admission_lost_stop_error",
+                    session_id=session_id,
+                )
+            raise RuntimeError("native stream admission lost")
+
+        async with native_sm_lock:
+            if not admission_is_current():
+                publish = False
+                existing = None
+            else:
+                per_session = native_stream_managers.setdefault(session_id, {})
+                existing = per_session.get(source_label)
+                publish = existing is None
+                if publish:
+                    per_session[source_label] = sm
+                    stream_managers.setdefault(session_id, []).append(sm)
+        if not publish:
+            try:
+                abort = getattr(sm, "abort_emergency", None)
+                if callable(abort):
+                    await abort()
+                else:
+                    await sm.stop()
+            except Exception:
+                logger.exception(
+                    "native_stream_duplicate_start_cleanup_error",
+                    session_id=session_id,
+                )
+            if existing is None:
+                raise RuntimeError("native stream admission lost")
+            # Another request won publication while this manager was starting.
+            # Reuse the published manager; only the unpublishable loser is
+            # emergency-aborted above.
+            return existing
+        return sm
 
     try:
         while True:
@@ -2720,6 +4095,8 @@ async def native_stream_endpoint(websocket: WebSocket, session_id: str):
 
                 try:
                     sm = await get_or_create_sm(source_label)
+                    if not admission_is_current():
+                        raise RuntimeError("native stream admission lost")
                     if pcm_payload:
                         await sm.send_audio(pcm_payload)
                 except Exception as e:
@@ -2793,32 +4170,7 @@ async def native_stream_endpoint(websocket: WebSocket, session_id: str):
     except Exception:
         logger.exception("native_stream_error", session_id=session_id)
     finally:
-        stall_task.cancel()
-        try:
-            await stall_task
-        except asyncio.CancelledError:
-            pass
-
-        session_health["connections"] -= 1
-
-        session_obj = session_mgr.get_session(session_id) if session_mgr else None
-        session_is_active = (
-            session_id in stream_keys
-            and session_obj is not None
-            and session_obj.status == SessionStatus.ACTIVE
-        )
-
-        for source_name in owned_sources:
-            current_count = session_health["source_connections"].get(source_name, 1) - 1
-            session_health["source_connections"][source_name] = max(0, current_count)
-            if session_health["source_connections"][source_name] == 0:
-                session_health["alerts"].pop(source_name, None)
-                if session_is_active:
-                    session_health["sources"][source_name] = "reconnecting"
-                else:
-                    session_health["sources"][source_name] = "unknown"
-
-        await emit_health()
+        await cleanup_native_lifecycle()
         logger.info("native_companion_disconnected", session_id=session_id)
 
 

@@ -11,6 +11,7 @@ from firebase_admin import auth as firebase_auth
 from fastapi import HTTPException
 
 from backend.config import Settings
+from backend.iap_auth import AuthenticationError, verify_iap_assertion
 
 
 @dataclass(frozen=True)
@@ -18,10 +19,9 @@ class AuthContext:
     uid: str
     email: str
     org_id: str
-
-
-class AuthenticationError(ValueError):
-    """Raised when a bearer token cannot be admitted."""
+    # Firebase contexts retain the default ``None``; IAP contexts carry the
+    # signed external-identity authentication time for local revocation.
+    auth_time: int | None = None
 
 
 _current_auth: ContextVar[AuthContext | None] = ContextVar(
@@ -89,10 +89,16 @@ def verify_bearer_token(authorization: str | None, settings: Settings) -> AuthCo
     if not token:
         raise AuthenticationError("missing bearer token")
 
+    verification_failed = False
     try:
         claims = firebase_auth.verify_id_token(token, check_revoked=True)
-    except Exception as exc:  # Firebase exposes several provider-specific errors.
-        raise AuthenticationError("invalid bearer token") from exc
+    except Exception:  # Firebase exposes several provider-specific errors.
+        # Drop provider exception context before constructing the content-free
+        # application error.
+        verification_failed = True
+        claims = None
+    if verification_failed:
+        raise AuthenticationError("invalid bearer token")
 
     uid = str(claims.get("uid") or claims.get("sub") or "").strip()
     email = str(claims.get("email") or "").strip().lower()
@@ -112,6 +118,28 @@ def verify_bearer_token(authorization: str | None, settings: Settings) -> AuthCo
 
     # org_id is deliberately configured server-side for this internal phase.
     return AuthContext(uid=uid, email=email, org_id=settings.auth_org_id)
+
+
+def verify_iap_token(
+    assertion: str | list[str] | tuple[str, ...] | None,
+    settings: Settings,
+    *,
+    verifier=None,
+    now=None,
+) -> AuthContext:
+    """Verify one signed IAP assertion and derive the local auth context."""
+    identity = verify_iap_assertion(
+        assertion,
+        settings,
+        verifier=verifier,
+        now=now,
+    )
+    return AuthContext(
+        uid=identity.uid,
+        email=identity.email,
+        org_id=identity.org_id,
+        auth_time=identity.auth_time,
+    )
 
 
 def require_current_auth() -> AuthContext:

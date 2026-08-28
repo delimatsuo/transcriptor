@@ -64,6 +64,12 @@ class SessionManager:
     def get_session(self, session_id: str) -> Session | None:
         return self._sessions.get(session_id)
 
+    def count_active_sessions(self) -> int:
+        """Count live business sessions for the Task 08 transition gate."""
+        return sum(
+            1 for session in self._sessions.values() if session.status == SessionStatus.ACTIVE
+        )
+
     def get_transcript(self, session_id: str) -> list[TranscriptSegment]:
         return self._transcripts.get(session_id, [])
 

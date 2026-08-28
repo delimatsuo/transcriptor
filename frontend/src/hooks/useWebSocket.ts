@@ -2,7 +2,22 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { mergeTranscriptSegment } from "@/lib/transcript";
-import { apiFetch, authBypassEnabled } from "@/lib/auth";
+import { apiFetch } from "@/lib/auth";
+import { getRuntimeConfig } from "@/lib/runtimeConfig";
+import {
+  IAP_AUTH_TERMINAL_EVENT,
+  emitIapTerminalAuthEvent,
+  isIapTerminalClose,
+} from "@/lib/iapSession";
+import {
+  boundedRetryDelay,
+  cancelLifecycleRetry,
+  commitIfCurrent,
+  createLifecycleGenerationController,
+  isIapTerminalHttpStatus,
+  lifecycleAttemptIsCurrent,
+  scheduleLifecycleRetry,
+} from "@/lib/iapLifecycle";
 import type {
   CompanionHealthPayload,
   ConnectionHealth,
@@ -16,8 +31,9 @@ import type {
   WSMessage,
 } from "@/types/ws";
 
-const WS_BASE_URL = process.env.NEXT_PUBLIC_WS_URL || "ws://127.0.0.1:8000/ws";
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
+const runtimeConfig = getRuntimeConfig();
+const WS_BASE_URL = runtimeConfig.wsUrl;
+const API_BASE_URL = runtimeConfig.apiOrigin;
 
 // Exponential backoff: 1s, 2s, 4s, 8s, max 30s
 const INITIAL_RETRY_DELAY = 1000;
@@ -69,6 +85,9 @@ export function useWebSocket(): UseWebSocketReturn {
   const retryDelayRef = useRef(INITIAL_RETRY_DELAY);
   const retryTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const intentionalCloseRef = useRef(false);
+  const generationRef = useRef(0);
+  const lifecycleControllerRef = useRef(createLifecycleGenerationController());
+  const connectAbortRef = useRef<AbortController | null>(null);
 
   const handleMessage = useCallback((event: MessageEvent) => {
     const msg: WSMessage = JSON.parse(event.data);
@@ -188,8 +207,28 @@ export function useWebSocket(): UseWebSocketReturn {
 
   const connectWs = useCallback(
     (sessionId: string) => {
+      if (retryTimeoutRef.current) {
+        cancelLifecycleRetry(retryTimeoutRef.current);
+        retryTimeoutRef.current = null;
+      }
+      const previousSocket = wsRef.current;
+      wsRef.current = null;
+      previousSocket?.close();
+      const generation = lifecycleControllerRef.current.begin();
+      generationRef.current = generation;
       intentionalCloseRef.current = false;
       sessionIdRef.current = sessionId;
+      connectAbortRef.current?.abort();
+      const controller = new AbortController();
+      connectAbortRef.current = controller;
+
+      const attemptIsCurrent = () =>
+        lifecycleAttemptIsCurrent(
+          generation,
+          generationRef.current,
+          sessionId,
+          sessionIdRef.current || null,
+        );
 
       // Clear previous state
       setTranscript([]);
@@ -208,54 +247,82 @@ export function useWebSocket(): UseWebSocketReturn {
         try {
           const ticketResponse = await apiFetch(
             `${API_BASE_URL}/api/sessions/${encodeURIComponent(sessionId)}/ws-ticket`,
-            { method: "POST" },
+            { method: "POST", signal: controller.signal },
           );
+          if (!attemptIsCurrent() || controller.signal.aborted) return;
           if (!ticketResponse.ok) {
+            if (runtimeConfig.iap && isIapTerminalHttpStatus(ticketResponse.status)) {
+              intentionalCloseRef.current = true;
+              emitIapTerminalAuthEvent();
+              return;
+            }
             throw new Error("A sessão autenticada do áudio expirou.");
           }
           const ticketPayload = (await ticketResponse.json()) as { ticket?: string };
-          if (!ticketPayload.ticket || intentionalCloseRef.current || sessionIdRef.current !== sessionId) {
+          if (!ticketPayload.ticket || !attemptIsCurrent() || intentionalCloseRef.current) {
             return;
           }
           const url = `${WS_BASE_URL}/${sessionId}?last_seq=${lastSeqRef.current}`;
-          const ws = new WebSocket(url, ["tars-ticket", ticketPayload.ticket]);
+          let ws = new WebSocket(url, ["tars-ticket", ticketPayload.ticket]);
 
           ws.onopen = () => {
+            if (!attemptIsCurrent() || wsRef.current !== ws) {
+              ws.close();
+              return;
+            }
             setConnectionHealth("healthy");
             retryDelayRef.current = INITIAL_RETRY_DELAY;
           };
 
-          ws.onmessage = handleMessage;
+          ws.onmessage = (event) => {
+            if (attemptIsCurrent() && wsRef.current === ws) handleMessage(event);
+          };
 
-          ws.onclose = () => {
+          ws.onclose = (event) => {
+            if (!attemptIsCurrent() || wsRef.current !== ws) return;
             setConnectionHealth("disconnected");
             wsRef.current = null;
 
-            if (!intentionalCloseRef.current) {
-              retryTimeoutRef.current = setTimeout(() => {
-                void doConnect();
-              }, retryDelayRef.current);
+            if (runtimeConfig.iap && isIapTerminalClose(event.code, event.reason)) {
+              intentionalCloseRef.current = true;
+              generationRef.current = lifecycleControllerRef.current.invalidate();
+              controller.abort();
+              emitIapTerminalAuthEvent();
+              return;
+            }
+            if (!intentionalCloseRef.current && attemptIsCurrent()) {
+              const delay = retryDelayRef.current;
+              retryTimeoutRef.current = scheduleLifecycleRetry(attemptIsCurrent, delay, () => {
+                retryTimeoutRef.current = null;
+                if (!intentionalCloseRef.current) void doConnect();
+              });
 
-              retryDelayRef.current = Math.min(
-                retryDelayRef.current * 2,
-                MAX_RETRY_DELAY,
-              );
+              retryDelayRef.current = boundedRetryDelay(delay, MAX_RETRY_DELAY);
             }
           };
 
           ws.onerror = () => {
-            setConnectionHealth("degraded");
+            if (attemptIsCurrent() && wsRef.current === ws) setConnectionHealth("degraded");
           };
 
+          if (!attemptIsCurrent() || intentionalCloseRef.current) {
+            ws.close();
+            return;
+          }
+          const committedSocket = commitIfCurrent(ws, attemptIsCurrent, (stale) => stale.close());
+          if (!committedSocket) return;
+          ws = committedSocket;
           wsRef.current = ws;
         } catch (error) {
-          if (intentionalCloseRef.current) return;
+          if (controller.signal.aborted || !attemptIsCurrent() || intentionalCloseRef.current) return;
           setConnectionHealth("degraded");
           setLastError(error instanceof Error ? error.message : "Falha na conexão autenticada.");
-          retryTimeoutRef.current = setTimeout(() => {
-            void doConnect();
-          }, retryDelayRef.current);
-          retryDelayRef.current = Math.min(retryDelayRef.current * 2, MAX_RETRY_DELAY);
+          const delay = retryDelayRef.current;
+          retryTimeoutRef.current = scheduleLifecycleRetry(attemptIsCurrent, delay, () => {
+            retryTimeoutRef.current = null;
+            if (!intentionalCloseRef.current) void doConnect();
+          });
+          retryDelayRef.current = boundedRetryDelay(delay, MAX_RETRY_DELAY);
         }
       };
 
@@ -265,11 +332,13 @@ export function useWebSocket(): UseWebSocketReturn {
   );
 
   const disconnect = useCallback(() => {
+    generationRef.current = lifecycleControllerRef.current.invalidate();
     intentionalCloseRef.current = true;
-    if (retryTimeoutRef.current) {
-      clearTimeout(retryTimeoutRef.current);
-      retryTimeoutRef.current = null;
-    }
+    sessionIdRef.current = "";
+    connectAbortRef.current?.abort();
+    connectAbortRef.current = null;
+    cancelLifecycleRetry(retryTimeoutRef.current);
+    retryTimeoutRef.current = null;
     if (wsRef.current) {
       wsRef.current.close();
       wsRef.current = null;
@@ -298,9 +367,29 @@ export function useWebSocket(): UseWebSocketReturn {
 
   // Cleanup on unmount
   useEffect(() => {
-    return () => {
+    const onTerminalAuth = () => {
+              generationRef.current = lifecycleControllerRef.current.invalidate();
       intentionalCloseRef.current = true;
-      if (retryTimeoutRef.current) clearTimeout(retryTimeoutRef.current);
+      sessionIdRef.current = "";
+      connectAbortRef.current?.abort();
+      connectAbortRef.current = null;
+      cancelLifecycleRetry(retryTimeoutRef.current);
+      retryTimeoutRef.current = null;
+      if (wsRef.current) {
+        wsRef.current.close();
+        wsRef.current = null;
+      }
+      setConnectionHealth("disconnected");
+    };
+    window.addEventListener(IAP_AUTH_TERMINAL_EVENT, onTerminalAuth);
+    return () => {
+      window.removeEventListener(IAP_AUTH_TERMINAL_EVENT, onTerminalAuth);
+      generationRef.current = lifecycleControllerRef.current.invalidate();
+      intentionalCloseRef.current = true;
+      sessionIdRef.current = "";
+      connectAbortRef.current?.abort();
+      cancelLifecycleRetry(retryTimeoutRef.current);
+      retryTimeoutRef.current = null;
       if (wsRef.current) wsRef.current.close();
     };
   }, []);

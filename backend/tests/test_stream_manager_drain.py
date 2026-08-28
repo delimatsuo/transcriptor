@@ -859,3 +859,129 @@ def test_stop_pipeline_without_initialized_stream_is_incomplete(monkeypatch):
         return await backend_main._stop_pipeline(session_id)
 
     assert asyncio.run(run()) is False
+
+
+def test_emergency_abort_drops_pending_audio_and_settles_response_task():
+    release = asyncio.Event()
+
+    async def cancellation_resistant_response_task():
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            await release.wait()
+            raise
+
+    async def run():
+        manager = stream_manager.StreamManager(
+            Settings(google_cloud_project="test-project")
+        )
+        manager._running = True
+        manager._start_requested = True
+        manager._pending_audio.extend([b"queued-1", b"queued-2"])
+        task = asyncio.create_task(cancellation_resistant_response_task())
+        manager._response_task = task
+        await asyncio.sleep(0)
+        abort_task = asyncio.create_task(manager.abort_emergency())
+        await asyncio.sleep(0)
+        assert not abort_task.done()
+        release.set()
+        await abort_task
+        return manager, task
+
+    manager, task = asyncio.run(run())
+    assert task.done()
+    assert not manager._pending_audio
+    assert manager.drain_completed is False
+    assert manager.drain_failure_reason == "emergency_abort"
+
+
+def test_emergency_abort_fences_late_provider_response_before_callback(monkeypatch):
+    release = asyncio.Event()
+    received = []
+
+    class LateResponseStream(FinalOnCloseStream):
+        instances: list["LateResponseStream"] = []
+
+        async def start(self):
+            self._accepting_audio = True
+            self.request_opened = True
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                await release.wait()
+                alternative = SimpleNamespace(transcript="late", confidence=0.9)
+                result = SimpleNamespace(alternatives=[alternative], is_final=True)
+                yield SimpleNamespace(results=[result])
+
+        async def stop(self):
+            self._accepting_audio = False
+
+    monkeypatch.setattr(stream_manager, "GoogleSTTStream", LateResponseStream)
+
+    async def callback(segment):
+        received.append(segment)
+
+    async def run():
+        manager = stream_manager.StreamManager(
+            Settings(
+                google_cloud_project="test-project",
+                stt_graceful_drain_timeout_seconds=0.02,
+            ),
+            on_transcript=callback,
+        )
+        await manager.start()
+        await _wait_until_active(manager)
+        abort_task = asyncio.create_task(manager.abort_emergency())
+        await asyncio.sleep(0.1)
+        assert abort_task.done()
+        release.set()
+        if manager._response_task is not None:
+            await manager._response_task
+        return manager
+
+    manager = asyncio.run(run())
+    assert received == []
+    assert manager.drain_completed is False
+
+
+def test_emergency_abort_retains_live_stt_accounting_until_worker_finishes():
+    release = asyncio.Event()
+    backend_main.active_provider_operations.clear()
+    backend_main.auth_runtime.reset_for_tests()
+
+    async def resistant_response_task():
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            await release.wait()
+            raise
+
+    async def run():
+        manager = stream_manager.StreamManager(
+            Settings(
+                google_cloud_project="test-project",
+                stt_graceful_drain_timeout_seconds=0.02,
+            ),
+            task_tracker=lambda task: backend_main._register_stt_task(task),
+        )
+        task = asyncio.create_task(resistant_response_task())
+        manager._response_task = task
+        manager._track_task(task)
+        await asyncio.sleep(0)
+        started = time.monotonic()
+        await manager.abort_emergency()
+        elapsed = time.monotonic() - started
+        assert elapsed < 0.5
+        assert task in manager.unsettled_tasks
+        assert backend_main.auth_runtime.counts()["active_provider_operations"] == 1
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await asyncio.sleep(0)
+        return manager, elapsed
+
+    manager, _elapsed = asyncio.run(run())
+    assert not manager.unsettled_tasks
+    assert backend_main.active_provider_operations == {}
+    assert backend_main.auth_runtime.counts()["active_provider_operations"] == 0
+    backend_main.auth_runtime.reset_for_tests()
