@@ -407,6 +407,18 @@ test("the vendored gcip-iap artifact and provenance are exact and browser-only",
   for (const forbidden of ["require(", "node-forge", "vm2", "@types/node"]) {
     assert.doesNotMatch(source, new RegExp(forbidden.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   }
+  const gitignoreLines = readFileSync(new URL("../../../.gitignore", import.meta.url), "utf8")
+    .split(/\r?\n/);
+  const jsonIgnoreIndex = gitignoreLines.indexOf("*.json");
+  const provenanceAllowIndex = gitignoreLines.indexOf(
+    "!frontend/vendor/gcip-iap/2.0.1/PROVENANCE.json",
+  );
+  assert.ok(jsonIgnoreIndex >= 0, "the broad JSON ignore rule must remain present");
+  assert.equal(
+    provenanceAllowIndex,
+    jsonIgnoreIndex + 1,
+    "vendor provenance must be unignored immediately after the broad JSON rule",
+  );
 });
 
 test("App Hosting commits exact public Firebase identifiers and keeps the API key secret-only", () => {

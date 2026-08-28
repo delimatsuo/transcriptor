@@ -25,6 +25,7 @@ recordings/
 
 # GCP keys (should use ADC instead)
 *.json
+!frontend/vendor/gcip-iap/2.0.1/PROVENANCE.json
 !package.json
 !package-lock.json
 !tsconfig.json
