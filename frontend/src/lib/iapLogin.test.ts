@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { test } from "node:test";
+import { isMap, isScalar, isSeq, parseDocument, visit } from "yaml";
 import {
   GOOGLE_PROVIDER_ID,
   assertGoogleOnlyProviderSelection,
@@ -31,6 +32,14 @@ const firebaseConfig = {
 
 const validLoginUrl =
   "https://tars.ellaexecutivesearch.com/iap-login?mode=login&apiKey=public-test-key-1234567890&redirect_uri=https%3A%2F%2Fiap.googleapis.com%2Fv1beta1%2Fgcip%2Fresources%2FA1B2C3D4E5F60718%3AhandleRedirect&state=opaque-state";
+
+const expectedPublicFirebaseValues = {
+  NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN: "transcriptor-490222.firebaseapp.com",
+  NEXT_PUBLIC_FIREBASE_PROJECT_ID: "transcriptor-490222",
+  NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET: "transcriptor-490222.firebasestorage.app",
+  NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID: "33726443105",
+  NEXT_PUBLIC_FIREBASE_APP_ID: "1:33726443105:web:3089b7d56549e143130420",
+};
 
 test("Firebase web configuration fails closed when incomplete or placeholder-valued", () => {
   assert.equal(readFirebaseWebConfig({}), null);
@@ -421,22 +430,303 @@ test("the vendored gcip-iap artifact and provenance are exact and browser-only",
   );
 });
 
+function hasExactFirebaseApiKeySecret(source: string): boolean {
+  let document;
+  try {
+    document = parseDocument(source, { uniqueKeys: true });
+  } catch {
+    return false;
+  }
+  if (document.errors.length > 0 || document.warnings.length > 0 || !isMap(document.contents)) {
+    return false;
+  }
+
+  let hasUnsafeNode = false;
+  visit(document.contents, {
+    Alias() {
+      hasUnsafeNode = true;
+    },
+    Node(_key, node) {
+      if (node.tag !== undefined) hasUnsafeNode = true;
+    },
+    Pair(_key, pair) {
+      if (isScalar(pair.key) && pair.key.value === "<<") hasUnsafeNode = true;
+    },
+  });
+  if (hasUnsafeNode) return false;
+
+  const directMapPairs = (
+    map: { items: Array<{ key: unknown; value: unknown }> },
+    key: string,
+  ) => map.items.filter((pair) => isScalar(pair.key) && pair.key.value === key);
+
+  const root = document.contents;
+  const runConfigPairs = directMapPairs(root, "runConfig");
+  if (runConfigPairs.length !== 1 || !isMap(runConfigPairs[0]?.value)) return false;
+  const runConfig = runConfigPairs[0].value;
+  const minInstancesPairs = directMapPairs(runConfig, "minInstances");
+  const maxInstancesPairs = directMapPairs(runConfig, "maxInstances");
+  const minInstances = minInstancesPairs[0]?.value;
+  const maxInstances = maxInstancesPairs[0]?.value;
+  if (
+    minInstancesPairs.length !== 1 ||
+    maxInstancesPairs.length !== 1 ||
+    !isScalar(minInstances) ||
+    typeof minInstances.value !== "number" ||
+    minInstances.value !== 0 ||
+    !isScalar(maxInstances) ||
+    typeof maxInstances.value !== "number" ||
+    maxInstances.value !== 1
+  ) {
+    return false;
+  }
+
+  const envPairs = directMapPairs(root, "env");
+  if (envPairs.length !== 1 || !isSeq(envPairs[0]?.value)) return false;
+  const env = envPairs[0].value;
+  if (!isSeq(env)) return false;
+  const variables = env.items.map((entry) => {
+    if (!isMap(entry)) return null;
+    const variablePairs = directMapPairs(entry, "variable");
+    if (variablePairs.length !== 1) return null;
+    const variable = variablePairs[0]?.value;
+    return isScalar(variable) && typeof variable.value === "string" ? variable.value : null;
+  });
+  if (variables.some((variable) => variable === null)) return false;
+  const matchingIndexes = variables.reduce<number[]>((indexes, variable, index) => {
+    if (variable === "NEXT_PUBLIC_FIREBASE_API_KEY") indexes.push(index);
+    return indexes;
+  }, []);
+  if (matchingIndexes.length !== 1) return false;
+  const matchingIndex = matchingIndexes[0];
+  if (matchingIndex === undefined) return false;
+
+  for (const [variableName, expectedValue] of Object.entries(expectedPublicFirebaseValues)) {
+    const publicIndexes = variables.reduce<number[]>((indexes, variable, index) => {
+      if (variable === variableName) indexes.push(index);
+      return indexes;
+    }, []);
+    if (publicIndexes.length !== 1) return false;
+    const publicEntry = env.items[publicIndexes[0]];
+    if (!isMap(publicEntry)) return false;
+    const valuePairs = directMapPairs(publicEntry, "value");
+    const secretPairs = directMapPairs(publicEntry, "secret");
+    const value = valuePairs[0]?.value;
+    if (
+      valuePairs.length !== 1 ||
+      secretPairs.length !== 0 ||
+      !isScalar(value) ||
+      value.value !== expectedValue
+    ) {
+      return false;
+    }
+  }
+
+  const entry = env.items[matchingIndex];
+  if (!isMap(entry)) return false;
+  const secretPairs = directMapPairs(entry, "secret");
+  const secret = secretPairs[0]?.value;
+  const valuePairs = directMapPairs(entry, "value");
+  return (
+    secretPairs.length === 1 &&
+    isScalar(secret) &&
+    secret.value === "tars-firebase-web-api-key@2" &&
+    valuePairs.length === 0
+  );
+}
+
 test("App Hosting commits exact public Firebase identifiers and keeps the API key secret-only", () => {
   const source = readFileSync(new URL("../../apphosting.yaml", import.meta.url), "utf8");
-  const expectedPublicValues = {
-    NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN: "transcriptor-490222.firebaseapp.com",
-    NEXT_PUBLIC_FIREBASE_PROJECT_ID: "transcriptor-490222",
-    NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET: "transcriptor-490222.firebasestorage.app",
-    NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID: "33726443105",
-    NEXT_PUBLIC_FIREBASE_APP_ID: "1:33726443105:web:3089b7d56549e143130420",
-  };
-  for (const [variable, value] of Object.entries(expectedPublicValues)) {
-    const escapedValue = value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    assert.match(source, new RegExp(`variable: ${variable}\\s+value: [\"]?${escapedValue}[\"]?`));
-  }
   assert.doesNotMatch(source, /REPLACE_WITH_FIREBASE_/);
-  assert.match(source, /runConfig:\s+minInstances: 0\s+maxInstances: 1/);
-  assert.match(source, /variable: NEXT_PUBLIC_FIREBASE_API_KEY\s+secret: tars-firebase-web-api-key@1/);
+  assert.equal(hasExactFirebaseApiKeySecret(source), true);
+  for (const staleOrMalformed of [
+    "tars-firebase-web-api-key@1",
+    "tars-firebase-web-api-key@20",
+    "tars-firebase-web-api-key@2-bad",
+  ]) {
+    assert.equal(
+      hasExactFirebaseApiKeySecret(
+        source.replace("tars-firebase-web-api-key@2", staleOrMalformed),
+      ),
+      false,
+      staleOrMalformed,
+    );
+  }
+  assert.equal(
+    hasExactFirebaseApiKeySecret(
+      `${source}\n  - variable: NEXT_PUBLIC_FIREBASE_API_KEY\n    secret: tars-firebase-web-api-key@3`,
+    ),
+    false,
+    "duplicate competing secret entry",
+  );
+  assert.equal(
+    hasExactFirebaseApiKeySecret(
+      `${source.replace("tars-firebase-web-api-key@2", "tars-firebase-web-api-key@3")}\n# - variable: NEXT_PUBLIC_FIREBASE_API_KEY\n#   secret: tars-firebase-web-api-key@2`,
+    ),
+    false,
+    "comment-spoofed @2 must not satisfy a live @3 entry",
+  );
+  assert.equal(
+    hasExactFirebaseApiKeySecret(
+      source.replace(
+        "    secret: tars-firebase-web-api-key@2",
+        "    secret: tars-firebase-web-api-key@2\n    value: accidentally-inline-secret",
+      ),
+    ),
+    false,
+    "API key entry must not also contain a value field",
+  );
+  assert.equal(
+    hasExactFirebaseApiKeySecret(
+      source.replace(
+        "    secret: tars-firebase-web-api-key@2",
+        '    "variable": NEXT_PUBLIC_FIREBASE_API_KEY\n    secret: tars-firebase-web-api-key@2',
+      ),
+    ),
+    false,
+    "quoted duplicate variable key",
+  );
+  assert.equal(
+    hasExactFirebaseApiKeySecret(
+      `${source}\n  - { variable: NEXT_PUBLIC_FIREBASE_API_KEY, secret: tars-firebase-web-api-key@3 }`,
+    ),
+    false,
+    "flow-style duplicate entry",
+  );
+  assert.equal(
+    hasExactFirebaseApiKeySecret(
+      `${source}\n  - { variable: NEXT_PUBLIC_FIREBASE_API_KEY, "variable": NEXT_PUBLIC_FIREBASE_API_KEY, secret: tars-firebase-web-api-key@3 }`,
+    ),
+    false,
+    "flow-style duplicate variable key",
+  );
+  assert.equal(
+    hasExactFirebaseApiKeySecret(
+      source.replace(
+        "    secret: tars-firebase-web-api-key@2",
+        "    secret:\n      value: tars-firebase-web-api-key@2",
+      ),
+    ),
+    false,
+    "nested secret must not satisfy the direct secret contract",
+  );
+  assert.equal(
+    hasExactFirebaseApiKeySecret(
+      source.replace(
+        "    secret: tars-firebase-web-api-key@2",
+        '    secret: tars-firebase-web-api-key@2\n    "value": accidentally-inline-secret',
+      ),
+    ),
+    false,
+    "quoted value key must be rejected",
+  );
+  assert.equal(
+    hasExactFirebaseApiKeySecret(
+      source.replace(
+        "    secret: tars-firebase-web-api-key@2",
+        "    secret: tars-firebase-web-api-key@2\n    value:",
+      ),
+    ),
+    false,
+    "empty value key must be rejected",
+  );
+  assert.equal(
+    hasExactFirebaseApiKeySecret(
+      `${source.replace(
+        "env:\n",
+        "competingSecret: &competing tars-firebase-web-api-key@3\nenv:\n",
+      )}\n  - variable: NEXT_PUBLIC_FIREBASE_API_KEY\n    secret: *competing`,
+    ),
+    false,
+    "alias-competing @3 must be rejected",
+  );
+  assert.equal(
+    hasExactFirebaseApiKeySecret(
+      `${source}\n  - <<: { variable: NEXT_PUBLIC_FIREBASE_API_KEY, secret: tars-firebase-web-api-key@3 }`,
+    ),
+    false,
+    "merge-competing entry must be rejected",
+  );
+  assert.equal(
+    hasExactFirebaseApiKeySecret(
+      `${source.replace(
+        "env:\n",
+        "sharedFields: &sharedFields\n  value: accidentally-inline-secret\nenv:\n",
+      )}\n  - variable: NEXT_PUBLIC_FIREBASE_API_KEY\n    secret: tars-firebase-web-api-key@2\n    <<: *sharedFields`,
+    ),
+    false,
+    "merged/inherited value field must be rejected",
+  );
+  assert.equal(
+    hasExactFirebaseApiKeySecret(
+      source.replace(
+        "  - variable: NEXT_PUBLIC_FIREBASE_API_KEY",
+        "  - variable: !custom NEXT_PUBLIC_FIREBASE_API_KEY",
+      ),
+    ),
+    false,
+    "custom-tagged variable must be rejected",
+  );
+  assert.equal(
+    hasExactFirebaseApiKeySecret(
+      source.replace(
+        "    secret: tars-firebase-web-api-key@2",
+        "    secret: !custom tars-firebase-web-api-key@2",
+      ),
+    ),
+    false,
+    "custom-tagged secret must be rejected",
+  );
+  const warningOnly = `%FOO\n---\n${source}`;
+  const warningDocument = parseDocument(warningOnly, { uniqueKeys: true });
+  assert.equal(warningDocument.errors.length, 0);
+  assert.ok(warningDocument.warnings.length > 0, "unknown directive must be warning-only");
+  assert.equal(hasExactFirebaseApiKeySecret(warningOnly), false, "warnings must fail closed");
+
+  const aliasOnly = source.replace(
+    "runConfig:\n",
+    "extraAnchor: &extra keep\nextraAlias: *extra\nrunConfig:\n",
+  );
+  const aliasDocument = parseDocument(aliasOnly, { uniqueKeys: true });
+  assert.equal(aliasDocument.errors.length, 0);
+  assert.equal(aliasDocument.warnings.length, 0);
+  assert.equal(hasExactFirebaseApiKeySecret(aliasOnly), false, "aliases must fail closed");
+
+  const inlineMerge = source.replace(
+    "    secret: tars-firebase-web-api-key@2",
+    "    secret: tars-firebase-web-api-key@2\n    <<: { value: accidentally-inline-secret }",
+  );
+  const mergeDocument = parseDocument(inlineMerge, { uniqueKeys: true });
+  assert.equal(mergeDocument.errors.length, 0);
+  assert.equal(mergeDocument.warnings.length, 0);
+  assert.equal(hasExactFirebaseApiKeySecret(inlineMerge), false, "merge keys must fail closed");
+
+  const explicitTag = source.replace(
+    "    secret: tars-firebase-web-api-key@2",
+    "    secret: !!str tars-firebase-web-api-key@2",
+  );
+  const explicitTagDocument = parseDocument(explicitTag, { uniqueKeys: true });
+  assert.equal(explicitTagDocument.errors.length, 0);
+  assert.equal(explicitTagDocument.warnings.length, 0);
+  assert.equal(hasExactFirebaseApiKeySecret(explicitTag), false, "explicit tags must fail closed");
+
+  assert.equal(
+    hasExactFirebaseApiKeySecret(
+      `${source.replace(
+        "value: transcriptor-490222.firebaseapp.com",
+        "value: attacker.example",
+      )}\n# variable: NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN\n#   value: transcriptor-490222.firebaseapp.com`,
+    ),
+    false,
+    "expected public value in a comment must not satisfy a wrong live value",
+  );
+  assert.equal(
+    hasExactFirebaseApiKeySecret(
+      `${source.replace("  minInstances: 0", "  minInstances: 1")}\n# runConfig:\n#   minInstances: 0\n#   maxInstances: 1`,
+    ),
+    false,
+    "expected runConfig in a comment must not satisfy a wrong live value",
+  );
   assert.doesNotMatch(source, /variable: NEXT_PUBLIC_FIREBASE_API_KEY\s+value:/);
   assert.doesNotMatch(source, /AIza[0-9A-Za-z_-]{20,}/);
 });
@@ -448,12 +738,14 @@ test("frontend auth dependencies use normal peer resolution without a suppressio
     dependencies?: Record<string, string>;
     overrides?: Record<string, string>;
     scripts?: Record<string, string>;
+    devDependencies?: Record<string, string>;
   };
   assert.equal(packageJson.dependencies?.firebase, "11.10.0");
   assert.equal(packageJson.dependencies?.["promise-polyfill"], "8.3.0");
   assert.equal(packageJson.dependencies?.["url-polyfill"], "1.1.14");
   assert.equal(packageJson.dependencies?.["whatwg-fetch"], "3.6.20");
   assert.equal(packageJson.dependencies?.["gcip-iap"], undefined);
+  assert.equal(packageJson.devDependencies?.yaml, "2.9.0");
   assert.equal(existsSync(new URL("../../.npmrc", import.meta.url)), false);
   assert.doesNotMatch(JSON.stringify(packageJson), /legacy-peer-deps/);
   assert.equal(packageJson.overrides?.nanoid, "3.3.18");

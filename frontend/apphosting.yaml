@@ -31,7 +31,7 @@ env:
       - BUILD
       - RUNTIME
   - variable: NEXT_PUBLIC_FIREBASE_API_KEY
-    secret: tars-firebase-web-api-key@1
+    secret: tars-firebase-web-api-key@2
     availability:
       - BUILD
       - RUNTIME
