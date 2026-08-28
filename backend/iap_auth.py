@@ -279,6 +279,35 @@ def canonicalize_email(value: Any) -> str:
 def _parse_gcip(raw: Any) -> Mapping[str, Any]:
     if raw is None:
         raise AuthenticationError("missing IAP gcip") from None
+    if type(raw) is dict:
+        decoded_structure_invalid = False
+        try:
+            decoded_structure_invalid = _decoded_gcip_has_invalid_utf8(raw)
+        except Exception:
+            decoded_structure_invalid = True
+        if decoded_structure_invalid:
+            raise AuthenticationError("invalid IAP gcip") from None
+        serialized: str | None = None
+        serialized_size: int | None = None
+        serialization_failed = False
+        try:
+            serialized = json.dumps(
+                raw,
+                ensure_ascii=False,
+                allow_nan=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+            serialized_size = len(serialized.encode("utf-8"))
+        except Exception:
+            serialization_failed = True
+            serialized = None
+        if serialization_failed or serialized_size is None:
+            raise AuthenticationError("invalid IAP gcip") from None
+        serialized = None
+        if serialized_size > IAP_MAX_GCIP_BYTES:
+            raise AuthenticationError("oversized IAP gcip") from None
+        return raw
     if type(raw) is not str:
         raise AuthenticationError("non-string IAP gcip") from None
     if not raw.strip():

@@ -1,13 +1,19 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import math
 import traceback
 from collections.abc import Mapping
 from datetime import datetime, timezone
+from types import SimpleNamespace
+from unittest.mock import Mock
 
+from fastapi import Request
+from fastapi.responses import PlainTextResponse
 import pytest
 
+from backend import main
 import backend.iap_auth as iap_auth
 from backend.config import Settings
 from backend.iap_auth import (
@@ -67,6 +73,22 @@ def admitted(settings: Settings, claims: dict, now: int):
         settings,
         verifier=lambda token, audience: claims,
         now=now,
+    )
+
+
+def _iap_http_request():
+    return Request(
+        {
+            "type": "http",
+            "method": "GET",
+            "path": "/api/me",
+            "raw_path": b"/api/me",
+            "query_string": b"",
+            "headers": [(b"x-goog-iap-jwt-assertion", b"synthetic-assertion")],
+            "client": ("testclient", 1234),
+            "server": ("testserver", 443),
+            "scheme": "https",
+        }
     )
 
 
@@ -316,6 +338,193 @@ def test_gcip_parse_failures_are_fixed_content_free_categories(gcip, expected_me
     assert str(exc_info.value) == expected_message
     assert exc_info.value.__cause__ is None
     assert exc_info.value.__context__ is None
+
+
+def test_gcip_accepts_exact_provider_decoded_dict_with_string_path_parity():
+    settings = iap_settings()
+    string_claims, now = claims_for(settings)
+    string_identity = admitted(settings, string_claims, now)
+
+    dict_claims = dict(string_claims)
+    dict_claims["gcip"] = json.loads(string_claims["gcip"])
+    dict_identity = admitted(settings, dict_claims, now)
+
+    assert dict_identity == string_identity
+
+
+def test_provider_decoded_gcip_dict_obeys_canonical_utf8_byte_limit():
+    settings = iap_settings()
+    claims, now = claims_for(settings)
+    gcip = {
+        "sub": "synthetic-user-1",
+        "email": "task08-recruiter@ellaexecutivesearch.com",
+        "email_verified": True,
+        "auth_time": now - 10,
+        "firebase": {"sign_in_provider": "google.com"},
+        "ignored": "",
+    }
+
+    def compact_size(value):
+        return len(
+            json.dumps(
+                value,
+                ensure_ascii=False,
+                allow_nan=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            ).encode("utf-8")
+        )
+
+    gcip["ignored"] = "x" * (iap_auth.IAP_MAX_GCIP_BYTES - compact_size(gcip))
+    assert compact_size(gcip) == iap_auth.IAP_MAX_GCIP_BYTES
+    claims["gcip"] = gcip
+    assert admitted(settings, claims, now).uid == "synthetic-user-1"
+
+    gcip["ignored"] += "x"
+    with pytest.raises(IAPAuthenticationError) as exc_info:
+        admitted(settings, claims, now)
+    assert str(exc_info.value) == "oversized IAP gcip"
+    assert exc_info.value.__cause__ is None
+    assert exc_info.value.__context__ is None
+
+
+def test_provider_decoded_dict_serialization_failure_is_content_free():
+    sentinel = "provider-payload-sentinel-for-sentinel@example.com"
+    settings = iap_settings()
+    claims, now = claims_for(settings)
+    gcip = json.loads(claims["gcip"])
+    gcip["ignored"] = sentinel + "\ud83d\ude00"
+    claims["gcip"] = gcip
+
+    with pytest.raises(IAPAuthenticationError) as exc_info:
+        admitted(settings, claims, now)
+    assert str(exc_info.value) == "invalid IAP gcip"
+    assert exc_info.value.__cause__ is None
+    assert exc_info.value.__context__ is None
+    rendered = "".join(traceback.format_exception(exc_info.value))
+    assert sentinel not in rendered
+    assert "surrogates not allowed" not in rendered
+
+
+def test_provider_decoded_dict_subclass_is_rejected_without_method_calls():
+    sentinel = "dict-subclass-sentinel-for-sentinel@example.com"
+
+    class HostileDict(dict):
+        def get(self, *_args, **_kwargs):
+            raise RuntimeError(sentinel)
+
+        def items(self):
+            raise RuntimeError(sentinel)
+
+    settings = iap_settings()
+    claims, now = claims_for(settings)
+    claims["gcip"] = HostileDict(json.loads(claims["gcip"]))
+
+    with pytest.raises(IAPAuthenticationError) as exc_info:
+        admitted(settings, claims, now)
+    assert str(exc_info.value) == "non-string IAP gcip"
+    assert exc_info.value.__cause__ is None
+    assert exc_info.value.__context__ is None
+    assert sentinel not in "".join(traceback.format_exception(exc_info.value))
+
+
+@pytest.mark.parametrize("kind", ["hostile", "cycle", "nonfinite", "surrogate"])
+def test_provider_decoded_dict_rejects_unsafe_nested_values(kind):
+    sentinel = "nested-container-sentinel-for-sentinel@example.com"
+    settings = iap_settings()
+    claims, now = claims_for(settings)
+    gcip = json.loads(claims["gcip"])
+    if kind == "hostile":
+        class HostileMapping(Mapping):
+            def __getitem__(self, _key):
+                raise RuntimeError(sentinel)
+
+            def __iter__(self):
+                raise RuntimeError(sentinel)
+
+            def __len__(self):
+                raise RuntimeError(sentinel)
+
+        gcip["ignored"] = HostileMapping()
+    elif kind == "cycle":
+        cycle = []
+        cycle.append(cycle)
+        gcip["ignored"] = cycle
+    elif kind == "nonfinite":
+        gcip["ignored"] = {"deep": [math.inf]}
+    else:
+        gcip["ignored"] = {"deep": ["\udc00"]}
+    claims["gcip"] = gcip
+
+    with pytest.raises(IAPAuthenticationError) as exc_info:
+        admitted(settings, claims, now)
+    assert str(exc_info.value) == "invalid IAP gcip"
+    assert exc_info.value.__cause__ is None
+    assert exc_info.value.__context__ is None
+    rendered = "".join(traceback.format_exception(exc_info.value))
+    assert sentinel not in rendered
+
+
+@pytest.mark.parametrize("value", [0, -1, 1.5, -3.25, True, None])
+def test_provider_decoded_dict_accepts_finite_json_scalars(value):
+    settings = iap_settings()
+    claims, now = claims_for(settings)
+    gcip = json.loads(claims["gcip"])
+    gcip["ignored"] = value
+    claims["gcip"] = gcip
+    assert admitted(settings, claims, now).uid == "synthetic-user-1"
+
+
+def test_provider_decoded_gcip_dict_rejection_preserves_http_401_and_ws_1008(
+    monkeypatch,
+):
+    request_settings = iap_settings()
+    claims, now = claims_for(request_settings)
+    gcip = json.loads(claims["gcip"])
+    gcip["ignored"] = {"deep": [math.inf]}
+    claims["gcip"] = gcip
+
+    def rejected_verifier(*_args, **_kwargs):
+        return iap_auth.verify_iap_assertion(
+            "synthetic-assertion",
+            request_settings,
+            verifier=lambda *_verifier_args: claims,
+            now=now,
+        )
+
+    monkeypatch.setattr(main, "settings", request_settings)
+    monkeypatch.setattr(main, "verify_iap_token", rejected_verifier)
+    warning = Mock()
+    monkeypatch.setattr(main, "logger", SimpleNamespace(warning=warning))
+
+    async def endpoint(_request):
+        raise AssertionError("route code must not run")
+
+    response = asyncio.run(
+        main.authenticate_api_requests(_iap_http_request(), endpoint)
+    )
+    assert response.status_code == 401
+    assert response.body == b'{"detail":"Authentication required"}'
+    assert response.headers["www-authenticate"] == "Bearer"
+
+    class RejectedWebSocket:
+        headers = {"x-goog-iap-jwt-assertion": "synthetic-assertion"}
+
+        def __init__(self):
+            self.closed = []
+
+        async def close(self, **kwargs):
+            self.closed.append(kwargs)
+
+    for endpoint_name in ["websocket_endpoint", "native_stream_endpoint"]:
+        websocket = RejectedWebSocket()
+        asyncio.run(getattr(main, endpoint_name)(websocket, "synthetic-session"))
+        assert websocket.closed == [{"code": 1008}]
+    assert warning.call_count == 3
+    assert all(
+        call == (("iap_auth_rejected",), {"reason_code": "invalid_iap_gcip"})
+        for call in warning.call_args_list
+    )
 
 
 def test_gcip_parser_discards_hostile_parser_exception_and_stringification(monkeypatch):
