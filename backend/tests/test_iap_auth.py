@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import math
 import traceback
+from collections.abc import Mapping
 from datetime import datetime, timezone
 
 import pytest
@@ -89,7 +91,12 @@ def test_iap_rejection_telemetry_is_a_closed_content_free_allowlist():
         "malformed IAP subject": "malformed_iap_subject",
         "unverified IAP email": "unverified_iap_email",
         "malformed IAP auth time": "malformed_iap_auth_time",
-        "malformed IAP gcip": "malformed_iap_gcip",
+        "missing or non-string IAP gcip": "missing_or_non_string_iap_gcip",
+        "blank IAP gcip": "blank_iap_gcip",
+        "oversized IAP gcip": "oversized_iap_gcip",
+        "duplicate IAP gcip key": "duplicate_iap_gcip_key",
+        "invalid IAP gcip": "invalid_iap_gcip",
+        "non-object IAP gcip": "non_object_iap_gcip",
         "wrong IAP issuer": "wrong_iap_issuer",
         "wrong IAP audience": "wrong_iap_audience",
         "malformed IAP lifetime": "malformed_iap_lifetime",
@@ -112,7 +119,12 @@ def test_iap_rejection_telemetry_is_a_closed_content_free_allowlist():
         "malformed_iap_subject",
         "unverified_iap_email",
         "malformed_iap_auth_time",
-        "malformed_iap_gcip",
+        "missing_or_non_string_iap_gcip",
+        "blank_iap_gcip",
+        "oversized_iap_gcip",
+        "duplicate_iap_gcip_key",
+        "invalid_iap_gcip",
+        "non_object_iap_gcip",
         "wrong_iap_issuer",
         "wrong_iap_audience",
         "malformed_iap_lifetime",
@@ -276,6 +288,297 @@ def test_gcip_semantics_are_bounded_duplicate_safe_and_google_only(gcip, expecte
     with pytest.raises(IAPAuthenticationError) as exc_info:
         admitted(settings, claims, now)
     assert expected in str(exc_info.value)
+
+
+@pytest.mark.parametrize(
+    "gcip, expected_message",
+    [
+        (None, "missing or non-string IAP gcip"),
+        (123, "missing or non-string IAP gcip"),
+        (b"{}", "missing or non-string IAP gcip"),
+        (" \t\n", "blank IAP gcip"),
+        ("x" * (iap_auth.IAP_MAX_GCIP_BYTES + 1), "oversized IAP gcip"),
+        ("é" * (iap_auth.IAP_MAX_GCIP_BYTES // 2 + 1), "oversized IAP gcip"),
+        ('{"sub":"first","sub":"second"}', "duplicate IAP gcip key"),
+        ('{"sub":NaN}', "invalid IAP gcip"),
+        ('{"sub":', "invalid IAP gcip"),
+        ("[]", "non-object IAP gcip"),
+    ],
+)
+def test_gcip_parse_failures_are_fixed_content_free_categories(gcip, expected_message):
+    settings = iap_settings()
+    claims, now = claims_for(settings)
+    claims["gcip"] = gcip
+    with pytest.raises(IAPAuthenticationError) as exc_info:
+        admitted(settings, claims, now)
+    assert str(exc_info.value) == expected_message
+    assert exc_info.value.__cause__ is None
+    assert exc_info.value.__context__ is None
+
+
+def test_gcip_parser_discards_hostile_parser_exception_and_stringification(monkeypatch):
+    sentinel = "provider-payload-sentinel-for-sentinel@example.com"
+
+    def hostile_json_loads(*_args, **_kwargs):
+        raise RuntimeError(sentinel)
+
+    monkeypatch.setattr(iap_auth.json, "loads", hostile_json_loads)
+    settings = iap_settings()
+    claims, now = claims_for(settings)
+    claims["gcip"] = '{"sentinel":"' + sentinel
+    with pytest.raises(IAPAuthenticationError) as exc_info:
+        admitted(settings, claims, now)
+    assert str(exc_info.value) == "invalid IAP gcip"
+    assert exc_info.value.__cause__ is None
+    assert exc_info.value.__context__ is None
+    rendered = "".join(traceback.format_exception(exc_info.value))
+    assert sentinel not in rendered
+
+
+@pytest.mark.parametrize("nested", [False, True])
+def test_gcip_rejects_hostile_mapping_results_without_invoking_mapping_methods(
+    monkeypatch, nested
+):
+    sentinel = "hostile-container-sentinel-for-sentinel@example.com"
+
+    class HostileMapping(Mapping):
+        def __getitem__(self, _key):
+            raise RuntimeError(sentinel)
+
+        def __iter__(self):
+            raise RuntimeError(sentinel)
+
+        def __len__(self):
+            raise RuntimeError(sentinel)
+
+        def items(self):
+            raise RuntimeError(sentinel)
+
+        def get(self, *_args, **_kwargs):
+            raise RuntimeError(sentinel)
+
+    hostile = HostileMapping()
+    decoded = {"nested": hostile} if nested else hostile
+    monkeypatch.setattr(iap_auth.json, "loads", lambda *_args, **_kwargs: decoded)
+    settings = iap_settings()
+    claims, now = claims_for(settings)
+    claims["gcip"] = "{}"
+
+    with pytest.raises(IAPAuthenticationError) as exc_info:
+        admitted(settings, claims, now)
+    expected_message = "invalid IAP gcip" if nested else "non-object IAP gcip"
+    assert str(exc_info.value) == expected_message
+    assert type(exc_info.value) is IAPAuthenticationError
+    assert exc_info.value.__cause__ is None
+    assert exc_info.value.__context__ is None
+    rendered = "".join(traceback.format_exception(exc_info.value))
+    assert sentinel not in rendered
+
+
+def test_gcip_rejects_cyclic_decoded_container_without_recursion_or_leak(monkeypatch):
+    cyclic: dict[str, object] = {}
+    cyclic["cycle"] = cyclic
+    monkeypatch.setattr(iap_auth.json, "loads", lambda *_args, **_kwargs: cyclic)
+    settings = iap_settings()
+    claims, now = claims_for(settings)
+    claims["gcip"] = "{}"
+
+    with pytest.raises(IAPAuthenticationError) as exc_info:
+        admitted(settings, claims, now)
+    assert str(exc_info.value) == "invalid IAP gcip"
+    assert type(exc_info.value) is IAPAuthenticationError
+    assert exc_info.value.__cause__ is None
+    assert exc_info.value.__context__ is None
+
+
+@pytest.mark.parametrize("hostile_method", ["strip", "encode"])
+def test_gcip_rejects_hostile_str_subclasses_before_overridable_methods(hostile_method):
+    sentinel = "hostile-gcip-str-sentinel-for-sentinel@example.com"
+
+    class HostileGcip(str):
+        def strip(self, *_args, **_kwargs):
+            if hostile_method == "strip":
+                raise RuntimeError(sentinel)
+            return super().strip(*_args, **_kwargs)
+
+        def encode(self, *_args, **_kwargs):
+            if hostile_method == "encode":
+                raise RuntimeError(sentinel)
+            return super().encode(*_args, **_kwargs)
+
+    settings = iap_settings()
+    claims, now = claims_for(settings)
+    claims["gcip"] = HostileGcip("{}")
+    with pytest.raises(IAPAuthenticationError) as exc_info:
+        admitted(settings, claims, now)
+    assert type(exc_info.value) is IAPAuthenticationError
+    assert str(exc_info.value) == "missing or non-string IAP gcip"
+    assert sentinel not in str(exc_info.value)
+    assert exc_info.value.__cause__ is None
+    assert exc_info.value.__context__ is None
+    rendered = "".join(traceback.format_exception(exc_info.value))
+    assert sentinel not in rendered
+
+
+@pytest.mark.parametrize(
+    ("location", "surrogate"),
+    [
+        (location, surrogate)
+        for surrogate in ["\ud800", "\udc00"]
+        for location in ["used_value", "ignored_value", "object_key", "nested"]
+    ],
+)
+def test_gcip_rejects_lone_surrogates_in_every_decoded_json_location(location, surrogate):
+    settings = iap_settings()
+    claims, now = claims_for(settings)
+    gcip = {
+        "sub": "synthetic-user-1",
+        "email": "task08-recruiter@ellaexecutivesearch.com",
+        "email_verified": True,
+        "auth_time": now - 10,
+        "firebase": {"sign_in_provider": "google.com"},
+    }
+    if location == "used_value":
+        gcip["sub"] = surrogate
+    elif location == "ignored_value":
+        gcip["ignored"] = surrogate
+    elif location == "object_key":
+        gcip[surrogate] = "ignored"
+    else:
+        gcip["nested"] = {"items": [surrogate], "map": {surrogate: "ignored"}}
+    claims["gcip"] = json.dumps(gcip, separators=(",", ":"), ensure_ascii=True)
+
+    with pytest.raises(IAPAuthenticationError) as exc_info:
+        admitted(settings, claims, now)
+    assert str(exc_info.value) == "invalid IAP gcip"
+    assert exc_info.value.__cause__ is None
+    assert exc_info.value.__context__ is None
+
+
+def test_gcip_accepts_valid_non_ascii_and_escaped_surrogate_pair_unicode():
+    settings = iap_settings()
+    claims, now = claims_for(settings)
+    gcip = {
+        "sub": "synthetic-user-1",
+        "email": "task08-recruiter@ellaexecutivesearch.com",
+        "email_verified": True,
+        "auth_time": now - 10,
+        "firebase": {"sign_in_provider": "google.com"},
+        "ignored": "Olá 😀",
+    }
+    claims["gcip"] = json.dumps(gcip, separators=(",", ":"), ensure_ascii=False)
+    assert admitted(settings, claims, now).uid == "synthetic-user-1"
+
+    claims["gcip"] = json.dumps(gcip, separators=(",", ":"), ensure_ascii=True)
+    assert admitted(settings, claims, now).uid == "synthetic-user-1"
+
+
+@pytest.mark.parametrize("contains_lone_surrogate", [False, True])
+def test_gcip_deep_nested_arrays_never_escape_recursion_error(contains_lone_surrogate):
+    settings = iap_settings()
+    claims, now = claims_for(settings)
+    nested: object = "\ud800" if contains_lone_surrogate else "safe"
+    for _ in range(500):
+        nested = [nested]
+    gcip = {
+        "sub": "synthetic-user-1",
+        "email": "task08-recruiter@ellaexecutivesearch.com",
+        "email_verified": True,
+        "auth_time": now - 10,
+        "firebase": {"sign_in_provider": "google.com"},
+        "ignored": nested,
+    }
+    claims["gcip"] = json.dumps(gcip, separators=(",", ":"), ensure_ascii=True)
+
+    if contains_lone_surrogate:
+        with pytest.raises(IAPAuthenticationError) as exc_info:
+            admitted(settings, claims, now)
+        assert str(exc_info.value) == "invalid IAP gcip"
+        assert exc_info.value.__cause__ is None
+        assert exc_info.value.__context__ is None
+    else:
+        assert admitted(settings, claims, now).uid == "synthetic-user-1"
+
+
+@pytest.mark.parametrize("numeric_literal", ["1e10000", "-1e10000"])
+def test_gcip_rejects_numeric_exponent_overflow_without_leak(numeric_literal):
+    settings = iap_settings()
+    claims, now = claims_for(settings)
+    claims["gcip"] = (
+        '{"sub":"synthetic-user-1","email":"task08-recruiter@ellaexecutivesearch.com",'
+        f'"email_verified":true,"auth_time":{now - 10},'
+        f'"firebase":{{"sign_in_provider":"google.com"}},"ignored":{numeric_literal}}}'
+    )
+
+    with pytest.raises(IAPAuthenticationError) as exc_info:
+        admitted(settings, claims, now)
+    assert str(exc_info.value) == "invalid IAP gcip"
+    assert exc_info.value.__cause__ is None
+    assert exc_info.value.__context__ is None
+    rendered = "".join(traceback.format_exception(exc_info.value))
+    assert numeric_literal not in rendered
+
+
+@pytest.mark.parametrize("numeric", [math.nan, math.inf, -math.inf])
+@pytest.mark.parametrize("nested", [False, True])
+def test_gcip_rejects_monkeypatched_nonfinite_numeric_values(numeric, nested, monkeypatch):
+    parsed = {
+        "sub": "synthetic-user-1",
+        "email": "task08-recruiter@ellaexecutivesearch.com",
+        "email_verified": True,
+        "auth_time": 1,
+        "firebase": {"sign_in_provider": "google.com"},
+    }
+    parsed["ignored"] = {"deep": [numeric]} if nested else numeric
+    monkeypatch.setattr(iap_auth.json, "loads", lambda *_args, **_kwargs: parsed)
+    settings = iap_settings()
+    claims, now = claims_for(settings)
+    claims["gcip"] = "{}"
+
+    with pytest.raises(IAPAuthenticationError) as exc_info:
+        admitted(settings, claims, now)
+    assert str(exc_info.value) == "invalid IAP gcip"
+    assert exc_info.value.__cause__ is None
+    assert exc_info.value.__context__ is None
+    rendered = "".join(traceback.format_exception(exc_info.value))
+    assert "inf" not in rendered.lower()
+
+
+@pytest.mark.parametrize("value", [0, -1, 1.5, -3.25, True, None])
+def test_gcip_accepts_finite_json_scalars_in_ignored_values(value):
+    settings = iap_settings()
+    claims, now = claims_for(settings)
+    gcip = {
+        "sub": "synthetic-user-1",
+        "email": "task08-recruiter@ellaexecutivesearch.com",
+        "email_verified": True,
+        "auth_time": now - 10,
+        "firebase": {"sign_in_provider": "google.com"},
+        "ignored": value,
+    }
+    claims["gcip"] = json.dumps(gcip, separators=(",", ":"))
+    assert admitted(settings, claims, now).uid == "synthetic-user-1"
+
+
+def test_gcip_utf8_byte_limit_accepts_4096_and_rejects_4097():
+    settings = iap_settings()
+    claims, now = claims_for(settings)
+    prefix = (
+        '{"sub":"synthetic-user-1","email":"task08-recruiter@ellaexecutivesearch.com",'
+        f'"email_verified":true,"auth_time":{now - 10},'
+        '"firebase":{"sign_in_provider":"google.com"},"ignored":"'
+    )
+    suffix = '"}'
+    filler_size = iap_auth.IAP_MAX_GCIP_BYTES - len((prefix + suffix).encode("utf-8"))
+    accepted = prefix + ("x" * filler_size) + suffix
+    assert len(accepted.encode("utf-8")) == iap_auth.IAP_MAX_GCIP_BYTES
+    claims["gcip"] = accepted
+    assert admitted(settings, claims, now).uid == "synthetic-user-1"
+
+    claims["gcip"] = prefix + ("x" * (filler_size + 1)) + suffix
+    with pytest.raises(IAPAuthenticationError) as exc_info:
+        admitted(settings, claims, now)
+    assert str(exc_info.value) == "oversized IAP gcip"
 
 
 @pytest.mark.parametrize(

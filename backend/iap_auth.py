@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import inspect
+import math
 import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -50,7 +51,12 @@ IAP_REJECTION_REASON_BY_MESSAGE: Mapping[str, str] = MappingProxyType(
         "malformed IAP subject": "malformed_iap_subject",
         "unverified IAP email": "unverified_iap_email",
         "malformed IAP auth time": "malformed_iap_auth_time",
-        "malformed IAP gcip": "malformed_iap_gcip",
+        "missing or non-string IAP gcip": "missing_or_non_string_iap_gcip",
+        "blank IAP gcip": "blank_iap_gcip",
+        "oversized IAP gcip": "oversized_iap_gcip",
+        "duplicate IAP gcip key": "duplicate_iap_gcip_key",
+        "invalid IAP gcip": "invalid_iap_gcip",
+        "non-object IAP gcip": "non_object_iap_gcip",
         "wrong IAP issuer": "wrong_iap_issuer",
         "wrong IAP audience": "wrong_iap_audience",
         "malformed IAP lifetime": "malformed_iap_lifetime",
@@ -116,6 +122,66 @@ def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
             raise _DuplicateKey
         result[key] = value
     return result
+
+
+def _text_is_utf8_safe(value: str) -> bool:
+    """Accept Unicode text, but reject lone UTF-16 surrogate code points."""
+    normalized: list[str] = []
+    index = 0
+    while index < len(value):
+        codepoint = ord(value[index])
+        if 0xD800 <= codepoint <= 0xDBFF:
+            if index + 1 >= len(value):
+                return False
+            next_codepoint = ord(value[index + 1])
+            if not 0xDC00 <= next_codepoint <= 0xDFFF:
+                return False
+            normalized.append(
+                chr(0x10000 + ((codepoint - 0xD800) << 10) + (next_codepoint - 0xDC00))
+            )
+            index += 2
+            continue
+        if 0xDC00 <= codepoint <= 0xDFFF:
+            return False
+        normalized.append(value[index])
+        index += 1
+    try:
+        "".join(normalized).encode("utf-8")
+    except UnicodeError:
+        return False
+    return True
+
+
+def _decoded_gcip_has_invalid_utf8(value: Any) -> bool:
+    """Walk every decoded JSON key/value without exposing its contents."""
+    pending: list[Any] = [value]
+    seen_containers: set[int] = set()
+    while pending:
+        current = pending.pop()
+        if type(current) is str:
+            if not _text_is_utf8_safe(current):
+                return True
+        elif type(current) is dict:
+            container_id = id(current)
+            if container_id in seen_containers:
+                return True
+            seen_containers.add(container_id)
+            for key, item in current.items():
+                pending.append(key)
+                pending.append(item)
+        elif type(current) is list:
+            container_id = id(current)
+            if container_id in seen_containers:
+                return True
+            seen_containers.add(container_id)
+            pending.extend(current)
+        elif current is None or type(current) in (bool, int, float):
+            if type(current) is float and not math.isfinite(current):
+                return True
+            continue
+        else:
+            return True
+    return False
 
 
 def _single_assertion(value: str | Sequence[str] | None) -> str:
@@ -210,23 +276,43 @@ def canonicalize_email(value: Any) -> str:
 
 
 def _parse_gcip(raw: Any) -> Mapping[str, Any]:
-    if not isinstance(raw, str) or not raw.strip():
-        _reject("malformed IAP gcip")
-    parsed: Any = None
+    if type(raw) is not str:
+        raise AuthenticationError("missing or non-string IAP gcip") from None
+    if not raw.strip():
+        raise AuthenticationError("blank IAP gcip") from None
     try:
-        if len(raw.encode("utf-8")) > IAP_MAX_GCIP_BYTES:
-            _reject("malformed IAP gcip")
-        parsed = json.loads(
+        raw_size = len(raw.encode("utf-8"))
+    except UnicodeError:
+        raw_size = None
+    if raw_size is None:
+        raise AuthenticationError("invalid IAP gcip")
+    if raw_size > IAP_MAX_GCIP_BYTES:
+        raise AuthenticationError("oversized IAP gcip")
+
+    parse_failure: str | None = None
+    try:
+        parsed: Any = json.loads(
             raw,
             object_pairs_hook=_reject_duplicate_keys,
             parse_constant=lambda _value: (_ for _ in ()).throw(ValueError()),
         )
-    except AuthenticationError:
-        raise
+    except _DuplicateKey:
+        parsed = None
+        parse_failure = "duplicate IAP gcip key"
     except Exception:
         parsed = None
-    if not isinstance(parsed, Mapping):
-        _reject("malformed IAP gcip")
+        parse_failure = "invalid IAP gcip"
+    if parse_failure is not None:
+        raise AuthenticationError(parse_failure)
+    if type(parsed) is not dict:
+        raise AuthenticationError("non-object IAP gcip")
+    decoded_text_invalid = False
+    try:
+        decoded_text_invalid = _decoded_gcip_has_invalid_utf8(parsed)
+    except Exception:
+        decoded_text_invalid = True
+    if decoded_text_invalid:
+        raise AuthenticationError("invalid IAP gcip")
     return parsed
 
 
