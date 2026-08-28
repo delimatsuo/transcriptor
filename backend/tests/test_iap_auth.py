@@ -78,6 +78,81 @@ def test_positive_signed_iap_admission_is_server_derived_and_injected():
     assert identity.auth_time == now - 10
 
 
+def test_iap_rejection_telemetry_is_a_closed_content_free_allowlist():
+    expected_mapping = {
+        "IAP authentication is disabled": "iap_authentication_disabled",
+        "invalid IAP assertion": "invalid_iap_assertion",
+        "missing IAP assertion": "missing_iap_assertion",
+        "malformed IAP assertion": "malformed_iap_assertion",
+        "invalid IAP signature": "invalid_iap_signature",
+        "malformed IAP email": "malformed_iap_email",
+        "malformed IAP subject": "malformed_iap_subject",
+        "unverified IAP email": "unverified_iap_email",
+        "malformed IAP auth time": "malformed_iap_auth_time",
+        "malformed IAP gcip": "malformed_iap_gcip",
+        "wrong IAP issuer": "wrong_iap_issuer",
+        "wrong IAP audience": "wrong_iap_audience",
+        "malformed IAP lifetime": "malformed_iap_lifetime",
+        "excessive IAP lifetime": "excessive_iap_lifetime",
+        "future IAP assertion": "future_iap_assertion",
+        "expired IAP assertion": "expired_iap_assertion",
+        "future IAP authentication": "future_iap_authentication",
+        "malformed IAP authentication": "malformed_iap_authentication",
+        "unsupported IAP provider": "unsupported_iap_provider",
+        "account is not provisioned": "account_not_provisioned",
+        "principal is revoked": "principal_revoked",
+    }
+    expected_codes = {
+        "iap_authentication_disabled",
+        "invalid_iap_assertion",
+        "missing_iap_assertion",
+        "malformed_iap_assertion",
+        "invalid_iap_signature",
+        "malformed_iap_email",
+        "malformed_iap_subject",
+        "unverified_iap_email",
+        "malformed_iap_auth_time",
+        "malformed_iap_gcip",
+        "wrong_iap_issuer",
+        "wrong_iap_audience",
+        "malformed_iap_lifetime",
+        "excessive_iap_lifetime",
+        "future_iap_assertion",
+        "expired_iap_assertion",
+        "future_iap_authentication",
+        "malformed_iap_authentication",
+        "unsupported_iap_provider",
+        "account_not_provisioned",
+        "principal_revoked",
+        "generic_iap_rejection",
+    }
+    assert dict(iap_auth.IAP_REJECTION_REASON_BY_MESSAGE) == expected_mapping
+    assert iap_auth.IAP_REJECTION_REASON_CODES == expected_codes
+    assert all(
+        code and all(character.isalnum() or character == "_" for character in code)
+        for code in expected_codes
+    )
+    for message, reason_code in expected_mapping.items():
+        assert iap_auth.iap_rejection_reason(message) == reason_code
+        assert iap_auth.iap_rejection_reason(IAPAuthenticationError(message)) == reason_code
+
+    assert (
+        iap_auth.iap_rejection_reason(IAPAuthenticationError("principal is revoked"))
+        == "principal_revoked"
+    )
+    for sensitive in [
+        "provider payload synthetic-token for sentinel@example.com",
+        "x-goog-iap-jwt-assertion: eyJ-sentinel-token",
+        "unknown rejection with claims email=sentinel@example.com",
+    ]:
+        assert iap_auth.iap_rejection_reason(sensitive) == iap_auth.IAP_REJECTION_REASON_GENERIC
+        assert (
+            iap_auth.iap_rejection_reason(RuntimeError(sensitive))
+            == iap_auth.IAP_REJECTION_REASON_GENERIC
+        )
+    assert iap_auth.iap_rejection_reason(None) == iap_auth.IAP_REJECTION_REASON_GENERIC
+
+
 @pytest.mark.parametrize(
     "assertion",
     [None, "", "  ", ["first", "second"], ["  "], "a,b"],

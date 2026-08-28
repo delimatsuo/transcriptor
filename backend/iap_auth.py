@@ -13,6 +13,7 @@ import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from types import MappingProxyType
 from typing import Any
 
 from backend.config import Settings
@@ -31,6 +32,56 @@ _EMAIL_RE = re.compile(
 
 class AuthenticationError(ValueError):
     """Content-free authentication admission failure."""
+
+
+# Authentication telemetry is intentionally a closed vocabulary.  The source
+# messages remain useful to local callers/tests, but only these stable codes
+# may cross the logging boundary.  Unknown or dynamically composed messages
+# always collapse to the generic code.
+IAP_REJECTION_REASON_GENERIC = "generic_iap_rejection"
+IAP_REJECTION_REASON_BY_MESSAGE: Mapping[str, str] = MappingProxyType(
+    {
+        "IAP authentication is disabled": "iap_authentication_disabled",
+        "invalid IAP assertion": "invalid_iap_assertion",
+        "missing IAP assertion": "missing_iap_assertion",
+        "malformed IAP assertion": "malformed_iap_assertion",
+        "invalid IAP signature": "invalid_iap_signature",
+        "malformed IAP email": "malformed_iap_email",
+        "malformed IAP subject": "malformed_iap_subject",
+        "unverified IAP email": "unverified_iap_email",
+        "malformed IAP auth time": "malformed_iap_auth_time",
+        "malformed IAP gcip": "malformed_iap_gcip",
+        "wrong IAP issuer": "wrong_iap_issuer",
+        "wrong IAP audience": "wrong_iap_audience",
+        "malformed IAP lifetime": "malformed_iap_lifetime",
+        "excessive IAP lifetime": "excessive_iap_lifetime",
+        "future IAP assertion": "future_iap_assertion",
+        "expired IAP assertion": "expired_iap_assertion",
+        "future IAP authentication": "future_iap_authentication",
+        "malformed IAP authentication": "malformed_iap_authentication",
+        "unsupported IAP provider": "unsupported_iap_provider",
+        "account is not provisioned": "account_not_provisioned",
+        "principal is revoked": "principal_revoked",
+    }
+)
+IAP_REJECTION_REASON_CODES = frozenset(
+    {*IAP_REJECTION_REASON_BY_MESSAGE.values(), IAP_REJECTION_REASON_GENERIC}
+)
+
+
+def iap_rejection_reason(error: BaseException | str | None) -> str:
+    """Return one allowlisted, content-free reason code for an IAP rejection."""
+    message: str | None = None
+    if isinstance(error, str):
+        message = error
+    elif isinstance(error, BaseException) and len(error.args) == 1:
+        candidate = error.args[0]
+        if isinstance(candidate, str):
+            message = candidate
+    return IAP_REJECTION_REASON_BY_MESSAGE.get(
+        message,
+        IAP_REJECTION_REASON_GENERIC,
+    )
 
 
 # Backward-compatible explicit name for callers that want to distinguish the

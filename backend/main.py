@@ -40,6 +40,7 @@ from backend.config import (
     select_cors_allowed_origins,
 )
 from backend.documents.parser import MAX_FILE_SIZE, DocumentParseError, parse_document
+from backend.iap_auth import iap_rejection_reason
 from backend.llm.context_window import ContextWindowManager
 from backend.llm.gemini import GeminiClient
 from backend.llm.interview_prompts import (
@@ -579,6 +580,26 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="T.A.R.S.", lifespan=lifespan)
 app.state.ready = False
 
+
+def _log_iap_rejection(
+    error: BaseException | str | None,
+    *,
+    request_settings: Settings | None = None,
+) -> None:
+    """Emit only the closed, content-free IAP rejection reason code."""
+    try:
+        active_settings = request_settings or settings
+        if active_settings is None or active_settings.auth_mode != "iap":
+            return
+        logger.warning(
+            "iap_auth_rejected",
+            reason_code=iap_rejection_reason(error),
+        )
+    except Exception:
+        # Telemetry is strictly best-effort.  Never expose the source error or
+        # allow a broken reason mapper/sink to alter fail-closed auth behavior.
+        return
+
 @app.middleware("http")
 async def authenticate_api_requests(request: Request, call_next):
     """Authenticate every API request before route code can touch data."""
@@ -619,7 +640,8 @@ async def authenticate_api_requests(request: Request, call_next):
             )
             if not admitted and not operator_after_kill:
                 raise AuthenticationError("principal is revoked")
-        except (AuthenticationError, ValueError):
+        except (AuthenticationError, ValueError) as error:
+            _log_iap_rejection(error, request_settings=request_settings)
             return JSONResponse(
                 status_code=401,
                 content={"detail": "Authentication required"},
@@ -1006,14 +1028,17 @@ def _iap_websocket_user(websocket: WebSocket) -> AuthContext | None:
         values = [value] if value is not None else []
     try:
         user = verify_iap_token(values, request_settings)
-    except (AuthenticationError, ValueError):
+    except (AuthenticationError, ValueError) as error:
+        _log_iap_rejection(error, request_settings=request_settings)
         return None
     try:
         if user.auth_time is None or not auth_runtime.admit_principal(
             user.uid, user.auth_time
         ):
+            _log_iap_rejection("principal is revoked", request_settings=request_settings)
             return None
-    except (TypeError, ValueError):
+    except (TypeError, ValueError) as error:
+        _log_iap_rejection(error, request_settings=request_settings)
         return None
     return user
 
