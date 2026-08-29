@@ -1,6 +1,6 @@
 # Task 08 private preproduction provider evidence
 
-Status: `PRIVATE_PREPRODUCTION_CANARY_QUALIFIED_BUDGET_HARD_GATE`
+Status: `PRIVATE_PREPRODUCTION_CANARY_QUALIFIED`
 Evidence date (UTC): `2026-08-28`
 
 ## Executable source and CI
@@ -54,10 +54,13 @@ Evidence date (UTC): `2026-08-28`
 - The 3300-second maximum is schema-capped and exact 3299/3300 behavior is offline-tested and CI-tested. No 55-minute wall-clock soak is claimed.
 - Current `rec2` error-level logs: zero observed. No production business/user records, audio, or transcript data was accessed; only the authorized operator identity needed for the authentication canary was observed. Synthetic sessions were cleaned.
 
-## Budget and monitoring hard gate
+## Budget and monitoring
 
-- Billing account currency is USD; no Task08 budget exists. The approved amount is BRL 250 and no owner-approved exact USD amount exists. No budget was created and no FX conversion is inferred.
-- A monitoring channel resource/address match exists, but actual email delivery remains unproven. Historical channel resource: `projects/transcriptor-490222/notificationChannels/8720244377476471633`; approved email: `deli@ellaexecutivesearch.com`.
+- Owner-authorized alert-only monthly amount: `USD 100`. Budget resource: `billingAccounts/01CA38-F1E90C-E9FD07/budgets/cebe8616-5fa7-4b12-87a9-8cd496017985`; display name `TARS Task 08 private preproduction USD 100`.
+- Exact readback: `USD 100`, calendar period `MONTH`, `INCLUDE_ALL_CREDITS`, and the sole project filter `projects/33726443105` (`transcriptor-490222`). Current-spend thresholds are exactly `0.5`, `0.9`, and `1.0`.
+- Notifications use exactly `projects/transcriptor-490222/notificationChannels/8720244377476471633`; the enabled channel is type `email` and resolves to `deli@ellaexecutivesearch.com`. Default billing-IAM recipients are disabled. The full budget-resource readback contains no `notificationsRule.pubsubTopic` field.
+- Canonical readback projection `{name,displayName,amount,budgetFilter,thresholdRules,notificationsRule}` SHA-256: `1a16278697650e9298cdc0efa06075a94476078af63209db6ba008386eb27c37`. A billing-account list readback found exactly one budget with this display name.
+- This is an alerts-only budget, not a spending cap; it does not automatically stop usage or billing. Actual monitoring email delivery remains unproven until a threshold-triggered message is received.
 
 ## Evidence ceiling
 
@@ -65,7 +68,6 @@ This ledger is preproduction evidence, not production or merge authorization. Re
 
 - no 55-minute wall-clock soak;
 - no provider monitoring email-delivery proof;
-- no budget;
 - no current App Hosting `build-006` source-archive readback or provider-to-Git source binding;
 - no privacy/legal or production authorization/evidence;
 - no merge evidence;
