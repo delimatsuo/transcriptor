@@ -53,8 +53,9 @@ Evidence date (UTC): `2026-08-29`
 - Reconnect: two fresh tickets, two opens, pongs, 1000 closes, and cleanup 200. No audio was sent.
 - Logout drill: open socket, logout 204, socket 4003, same signed session `/api/me` 401. The terminal synthetic record was deleted after identical-image recovery `...-task08-8070rec1`; readiness then showed all zero and kill `false`.
 - Kill drill: open socket, kill 200, socket 4003, `/api/me` 401. Response counts for active sessions, sockets, tickets, stream keys, and provider operations were all zero; kill `true`, ready `false`. Identical-image recovery `...-task08-8070rec2` restored `/api/me` 200, deleted the terminal synthetic record, and readiness returned all zero/kill `false`.
-- The 3300-second maximum is schema-capped and exact 3299/3300 behavior is offline-tested and CI-tested. No 55-minute wall-clock soak is claimed.
-- Current `rec2` error-level logs: zero observed. No production business/user records, audio, or transcript data was accessed; only the authorized operator identity needed for the authentication canary was observed. Synthetic sessions were cleaned.
+- The 3300-second maximum is schema-capped and exact 3299/3300 behavior is offline-tested and CI-tested.
+- A live final-host absolute-lifetime soak opened one ticketed browser WebSocket at `2026-08-29T13:08:45.156Z` and received the clean server-enforced close at `2026-08-29T14:03:45.159Z`: elapsed `3300` seconds, code `4001`, reason `auth_expired`, `110/110` ping/pong responses, no reconnect, no audio, and no WebSocket error. The Cloud Run request log independently recorded exactly one HTTP `101` WebSocket request on revision `tars-backend-staging-task08-8070rec2`, starting `2026-08-29T13:08:45.083502Z` with latency `3300.063552s`. The synthetic session stopped with HTTP `200`; the count-only readiness readback then returned all zero, kill `false`, and ready `true`. After an authorized sign-in refresh, deleting its completed synthetic record returned HTTP `200`, a fresh GET returned HTTP `404`, and the final count-only readiness readback again returned all zero, kill `false`, and ready `true`.
+- Current `rec2` error-level logs: zero observed, including the live-soak window `2026-08-29T13:08:30Z..14:05:30Z`. No production business/user records, audio, or transcript data was accessed; only the authorized operator identity needed for the authentication canary was observed. Synthetic sessions were cleaned.
 
 ## Budget and monitoring
 
@@ -68,7 +69,6 @@ Evidence date (UTC): `2026-08-29`
 
 This ledger is preproduction evidence, not production or merge authorization. The `build-006` binding covers only the 84-file protected/environment-excluded `frontend/` projection, not full-archive equality or `.env.example` contents. Remaining gates are:
 
-- no 55-minute wall-clock soak;
 - no provider monitoring email-delivery proof;
 - no privacy/legal or production authorization/evidence;
 - no merge evidence;
