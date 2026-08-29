@@ -31,6 +31,7 @@ cp "${INFO_PLIST}" "${CONTENTS_DIR}/Info.plist"
 printf "APPL????" > "${CONTENTS_DIR}/PkgInfo"
 
 echo "4. Ad-hoc codesigning app bundle..."
+# Assinatura ad-hoc somente para desenvolvimento local; scripts/release_menubar_app.sh produz o build distribuível.
 codesign --force --deep -s - "${APP_BUNDLE}"
 
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
