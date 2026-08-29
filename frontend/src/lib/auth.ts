@@ -10,13 +10,31 @@ import {
 } from "firebase/auth";
 import { auth, firebaseConfigured } from "@/lib/firebase";
 import { admissionIsCurrent } from "@/lib/authAdmission";
+import { getRuntimeConfig } from "@/lib/runtimeConfig";
+import {
+  emitIapHttpTerminalIfNeeded,
+  iapAdmissionAttemptIsCurrent,
+} from "@/lib/iapLifecycle";
+import {
+  buildIapBootstrapUrl,
+  emitIapTerminalAuthEvent,
+  fetchIapAdmission,
+  resetIapTerminalAuthEvent,
+  runIapLogoutLifecycle,
+} from "@/lib/iapSession";
 
-const bypassEnabled =
-  process.env.NEXT_PUBLIC_AUTH_BYPASS === "1" && process.env.NODE_ENV !== "production";
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+export const runtimeConfig = getRuntimeConfig();
+const bypassEnabled = runtimeConfig.authBypass && process.env.NODE_ENV !== "production";
+const API_BASE_URL = runtimeConfig.apiOrigin;
 
-export type AuthStatus = "initializing" | "signed_out" | "signed_in" | "error";
+export type AuthStatus =
+  | "initializing"
+  | "signed_out"
+  | "signed_in"
+  | "revoked"
+  | "error";
 export const authBypassEnabled = bypassEnabled;
+export const authIapEnabled = runtimeConfig.iap;
 export interface AuthUser {
   uid: string;
   email: string;
@@ -43,7 +61,7 @@ export function syntheticAuthUser(): AuthUser {
 }
 
 export async function getIdToken(forceRefresh = false): Promise<string | null> {
-  if (bypassEnabled) return null;
+  if (bypassEnabled || runtimeConfig.iap) return null;
   if (!auth?.currentUser) return null;
   return auth.currentUser.getIdToken(forceRefresh);
 }
@@ -52,15 +70,46 @@ export async function apiFetch(
   input: RequestInfo | URL,
   init: RequestInit = {},
 ): Promise<Response> {
+  let target = input;
+  if (runtimeConfig.iap) {
+    // Keep every application call on the direct approved API origin even
+    // when a legacy component still supplies its development URL constant.
+    const requested = new URL(
+      typeof input === "string"
+        ? input
+        : input instanceof URL
+          ? input.toString()
+          : input.url,
+      API_BASE_URL,
+    );
+    target = `${API_BASE_URL}${requested.pathname}${requested.search}`;
+  }
   const token = await getIdToken();
   const headers = new Headers(init.headers);
-  if (token) headers.set("Authorization", `Bearer ${token}`);
-  let response = await fetch(input, { ...init, headers });
-  if (response.status === 401 && token && !bypassEnabled) {
+  if (runtimeConfig.iap) {
+    // IAP's signed request assertion is the only authority.  Never send a
+    // stale Firebase bearer alongside it or let callers override credentials.
+    headers.delete("Authorization");
+  } else if (token) {
+    headers.set("Authorization", `Bearer ${token}`);
+  }
+  let response = await fetch(target, {
+    ...init,
+    headers,
+    ...(runtimeConfig.iap ? { credentials: "include" as RequestCredentials } : {}),
+  });
+  // Every authenticated IAP boundary is terminal on auth denial, including
+  // ordinary REST calls that are not ticket endpoints.
+  emitIapHttpTerminalIfNeeded(
+    response.status,
+    runtimeConfig.iap,
+    emitIapTerminalAuthEvent,
+  );
+  if (response.status === 401 && token && !bypassEnabled && !runtimeConfig.iap) {
     const refreshed = await getIdToken(true);
     if (refreshed) {
       headers.set("Authorization", `Bearer ${refreshed}`);
-      response = await fetch(input, { ...init, headers });
+      response = await fetch(target, { ...init, headers });
     }
   }
   return response;
@@ -78,6 +127,60 @@ export function useAuth() {
       setUser(syntheticAuthUser());
       setStatus("signed_in");
       return;
+    }
+    if (runtimeConfig.iap) {
+      const generation = admissionGenerationRef.current + 1;
+      admissionGenerationRef.current = generation;
+      const controller = new AbortController();
+      admissionAbortRef.current = controller;
+      void (async () => {
+        try {
+          const admitted = await fetchIapAdmission(
+            runtimeConfig,
+            fetch,
+            controller.signal,
+          );
+          if (
+            !iapAdmissionAttemptIsCurrent(
+              generation,
+              admissionGenerationRef.current,
+              controller.signal,
+            )
+          ) {
+            return;
+          }
+          if (!admitted) {
+            setUser(null);
+            setStatus("signed_out");
+            return;
+          }
+          setUser({
+            uid: admitted.uid,
+            email: admitted.email,
+            displayName: admitted.email,
+            native: null,
+          });
+          resetIapTerminalAuthEvent();
+          setStatus("signed_in");
+          setError(null);
+        } catch {
+          if (!iapAdmissionAttemptIsCurrent(
+            generation,
+            admissionGenerationRef.current,
+            controller.signal,
+          )) {
+            return;
+          }
+          setUser(null);
+          setStatus("error");
+          setError("Não foi possível validar o acesso com o backend. Verifique a conexão e tente novamente.");
+        }
+      })();
+      return () => {
+        admissionGenerationRef.current += 1;
+        controller.abort();
+        admissionAbortRef.current = null;
+      };
     }
     if (!firebaseConfigured || !auth) {
       setStatus("signed_out");
@@ -154,7 +257,32 @@ export function useAuth() {
     };
   }, []);
 
+  useEffect(() => {
+    if (!runtimeConfig.iap || typeof window === "undefined") return;
+    const onTerminalAuth = () => {
+      admissionGenerationRef.current += 1;
+      admissionAbortRef.current?.abort();
+      admissionAbortRef.current = null;
+      setUser(null);
+      setError(null);
+      setStatus("revoked");
+    };
+    window.addEventListener("tars:iap-auth-terminal", onTerminalAuth);
+    return () => {
+      window.removeEventListener("tars:iap-auth-terminal", onTerminalAuth);
+      admissionGenerationRef.current += 1;
+      admissionAbortRef.current?.abort();
+      admissionAbortRef.current = null;
+    };
+  }, []);
+
   const signIn = async () => {
+    if (runtimeConfig.iap) {
+      if (typeof window !== "undefined") {
+        window.location.assign(buildIapBootstrapUrl(runtimeConfig));
+      }
+      return;
+    }
     if (bypassEnabled) return;
     if (!auth) {
       setError("A configuração do Google ainda não está disponível nesta máquina.");
@@ -170,6 +298,22 @@ export function useAuth() {
   };
 
   const signOut = async () => {
+    if (runtimeConfig.iap) {
+      await runIapLogoutLifecycle(runtimeConfig, {
+        cleanup: () => {
+          admissionGenerationRef.current += 1;
+          admissionAbortRef.current?.abort();
+          admissionAbortRef.current = null;
+          // This event is terminal and synchronous from the UI's perspective:
+          // capture and socket hooks stop before the backend/provider round-trip.
+          emitIapTerminalAuthEvent();
+          setUser(null);
+          setStatus("signed_out");
+          setError(null);
+        },
+      });
+      return;
+    }
     if (bypassEnabled || !auth) return;
     // Clear the local principal before the provider round-trip so the prior
     // account's interview state cannot remain visible during sign-out.

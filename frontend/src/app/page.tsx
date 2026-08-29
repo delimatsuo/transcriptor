@@ -10,13 +10,13 @@ import MeetingLiveView from "@/components/views/MeetingLiveView";
 import PostSessionView from "@/components/views/PostSessionView";
 import { reviewWarning as getReviewWarning } from "@/lib/sessionReview";
 import { requestSessionStop } from "@/lib/sessionStop";
-import { apiFetch, useAuth } from "@/lib/auth";
+import { apiFetch, authIapEnabled, runtimeConfig, useAuth } from "@/lib/auth";
 import AuthControls from "@/components/AuthControls";
 import AudioDeviceSelector from "@/components/AudioDeviceSelector";
 import { useBrowserAudioCapture } from "@/hooks/useBrowserAudioCapture";
 import type { SessionMode, SessionReview } from "@/types/ws";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
+const API_BASE = runtimeConfig.apiOrigin;
 
 function reviewLoadError(status: number): string {
   if (status === 404) {
@@ -92,10 +92,11 @@ function AuthenticatedHome({ auth }: { auth: AuthenticatedAuthState }) {
       setReviewError(null);
       setPersistedReviewWarning(null);
       setStopCapability(initialStopCapability ?? null);
-      setStreamKey(sessionStreamKey ?? null);
+      const browserStreamKey = authIapEnabled ? undefined : sessionStreamKey;
+      setStreamKey(browserStreamKey ?? null);
       window.history.replaceState({}, "", window.location.pathname);
       connect(id);
-      void audioCapture.startStreaming(id, sessionStreamKey);
+      void audioCapture.startStreaming(id, browserStreamKey);
     },
     [connect, disconnect, audioCapture],
   );
@@ -210,12 +211,27 @@ function AuthenticatedHome({ auth }: { auth: AuthenticatedAuthState }) {
   }, [sessionId, disconnect, stopCapability, audioCapture]);
 
   const handleSignOut = useCallback(async () => {
+    if (authIapEnabled) {
+      // Terminal local cleanup is ordered before the backend/provider round
+      // trip so stale capture, retries, sockets, and data cannot linger.
+      reviewRequestTokenRef.current += 1;
+      reviewRequestRef.current?.abort();
+      reviewRequestRef.current = null;
+      if (disconnectTimerRef.current) {
+        clearTimeout(disconnectTimerRef.current);
+        disconnectTimerRef.current = null;
+      }
+      audioCapture.stopStreaming();
+      disconnect();
+      await auth.signOut();
+      return;
+    }
     if (isActive) {
       setStopError("Encerre a entrevista e aguarde a confirmação antes de sair.");
       return;
     }
     await auth.signOut();
-  }, [auth, isActive]);
+  }, [auth, isActive, audioCapture, disconnect]);
 
   const isInterview = sessionMode === "interview";
   const isPostSession = !isActive && sessionId !== null;
@@ -292,7 +308,7 @@ function AuthenticatedHome({ auth }: { auth: AuthenticatedAuthState }) {
           error={auth.error}
           onSignIn={auth.signIn}
           onSignOut={handleSignOut}
-          disabled={isActive}
+          disabled={isActive && !authIapEnabled}
         />
       </header>
 
@@ -331,7 +347,7 @@ function AuthenticatedHome({ auth }: { auth: AuthenticatedAuthState }) {
           captureState={companionCaptureState}
           companionMessage={companionMessage}
           suggestionHistory={suggestionHistory}
-          streamKey={streamKey ?? undefined}
+          streamKey={authIapEnabled ? undefined : streamKey ?? undefined}
         />
       )}
 

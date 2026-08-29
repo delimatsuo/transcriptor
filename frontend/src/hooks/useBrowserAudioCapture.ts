@@ -8,10 +8,26 @@ import {
   type FrameMetadata,
 } from "@/lib/browserPcmEncoder";
 import { buildStreamSocketConfig } from "@/lib/streamUrl";
+import { apiFetch } from "@/lib/auth";
+import { getRuntimeConfig } from "@/lib/runtimeConfig";
+import {
+  IAP_AUTH_TERMINAL_EVENT,
+  emitIapTerminalAuthEvent,
+} from "@/lib/iapSession";
+import {
+  boundedRetryDelay,
+  cancelLifecycleRetry,
+  commitIfCurrent,
+  commitAsyncResource,
+  isIapTerminalClose,
+  isIapTerminalHttpStatus,
+  lifecycleAttemptIsCurrent,
+  scheduleLifecycleRetry,
+} from "@/lib/iapLifecycle";
 
-const WS_STREAM_BASE =
-  process.env.NEXT_PUBLIC_WS_STREAM_URL ||
-  "ws://127.0.0.1:8000/api/stream/native";
+const runtimeConfig = getRuntimeConfig();
+const WS_STREAM_BASE = runtimeConfig.streamWsUrl;
+const API_BASE_URL = runtimeConfig.apiOrigin;
 const STORAGE_KEY_MIC = "tars_selected_mic_device_id";
 
 export interface AudioInputDevice {
@@ -49,9 +65,15 @@ export function useBrowserAudioCapture(): UseBrowserAudioCaptureReturn {
   const sourceNodeRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const processorNodeRef = useRef<ScriptProcessorNode | null>(null);
   const analyserNodeRef = useRef<AnalyserNode | null>(null);
+  const silentGainNodeRef = useRef<GainNode | null>(null);
   const animFrameRef = useRef<number | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const pingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const streamReconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const streamReconnectDelayRef = useRef(1000);
+  const streamAttemptGenerationRef = useRef(0);
+  const audioGraphGenerationRef = useRef(0);
+  const startStreamingRef = useRef<((sessionId: string, streamKey?: string) => Promise<void>) | null>(null);
   const helloReadySocketRef = useRef<WebSocket | null>(null);
 
   const activeSessionIdRef = useRef<string | null>(null);
@@ -164,20 +186,54 @@ export function useBrowserAudioCapture(): UseBrowserAudioCaptureReturn {
 
   // Setup Web Audio graph for the given device ID
   const setupAudioGraph = useCallback(
-    async (deviceId: string) => {
-      // Teardown previous nodes
-      if (processorNodeRef.current) {
-        processorNodeRef.current.disconnect();
-        processorNodeRef.current = null;
-      }
-      if (sourceNodeRef.current) {
-        sourceNodeRef.current.disconnect();
-        sourceNodeRef.current = null;
-      }
-      if (mediaStreamRef.current) {
-        mediaStreamRef.current.getTracks().forEach((t) => t.stop());
-        mediaStreamRef.current = null;
-      }
+    async (
+      deviceId: string,
+      expectedStreamGeneration = streamAttemptGenerationRef.current,
+      expectedGraphGeneration = audioGraphGenerationRef.current,
+    ) => {
+      const graphGeneration = expectedGraphGeneration;
+      const graphIsCurrent = () =>
+        lifecycleAttemptIsCurrent(
+          graphGeneration,
+          audioGraphGenerationRef.current,
+          "graph",
+          "graph",
+        ) &&
+        lifecycleAttemptIsCurrent(
+          expectedStreamGeneration,
+          streamAttemptGenerationRef.current,
+          "stream",
+          "stream",
+        );
+      let stream: MediaStream | null = null;
+      let ctx: AudioContext | null = null;
+      let ownsContext = false;
+      let sourceNode: MediaStreamAudioSourceNode | null = null;
+      let analyser: AnalyserNode | null = null;
+      let processor: ScriptProcessorNode | null = null;
+      let silentGain: GainNode | null = null;
+
+      const disconnectNode = (node: AudioNode | null) => {
+        try {
+          node?.disconnect();
+        } catch {
+          // Teardown is idempotent across browser implementations.
+        }
+      };
+      const disposeNewGraph = async () => {
+        disconnectNode(processor);
+        disconnectNode(sourceNode);
+        disconnectNode(analyser);
+        disconnectNode(silentGain);
+        stream?.getTracks().forEach((track) => track.stop());
+        if (ownsContext && ctx) {
+          try {
+            await ctx.close();
+          } catch {
+            // Closing a context that failed during setup is best effort.
+          }
+        }
+      };
 
       const constraints: MediaStreamConstraints = {
         audio: deviceId
@@ -194,35 +250,46 @@ export function useBrowserAudioCapture(): UseBrowserAudioCaptureReturn {
             },
       };
 
-      const stream = await navigator.mediaDevices.getUserMedia(constraints);
-      mediaStreamRef.current = stream;
+      try {
+        const acquiredStream = await navigator.mediaDevices.getUserMedia(constraints);
+        stream = await commitAsyncResource(
+          acquiredStream,
+          graphIsCurrent,
+          async (staleStream) => {
+            staleStream.getTracks().forEach((track) => track.stop());
+          },
+        );
+        if (!stream) return;
 
-      const AudioContextClass =
-        window.AudioContext ||
-        (window as unknown as { webkitAudioContext: typeof AudioContext })
-          .webkitAudioContext;
-      const ctx = audioContextRef.current || new AudioContextClass();
-      if (ctx.state === "suspended") {
-        await ctx.resume();
-      }
-      audioContextRef.current = ctx;
+        const AudioContextClass =
+          window.AudioContext ||
+          (window as unknown as { webkitAudioContext: typeof AudioContext })
+            .webkitAudioContext;
+        const existingContext = audioContextRef.current;
+        ctx = existingContext && existingContext.state !== "closed"
+          ? existingContext
+          : new AudioContextClass();
+        ownsContext = ctx !== existingContext;
+        if (ctx.state === "suspended") {
+          await ctx.resume();
+        }
+        if (!graphIsCurrent()) {
+          await disposeNewGraph();
+          return;
+        }
 
-      const sourceNode = ctx.createMediaStreamSource(stream);
-      sourceNodeRef.current = sourceNode;
+        sourceNode = ctx.createMediaStreamSource(stream);
+        analyser = ctx.createAnalyser();
+        analyser.fftSize = 256;
+        analyser.smoothingTimeConstant = 0.5;
+        sourceNode.connect(analyser);
 
-      const analyser = ctx.createAnalyser();
-      analyser.fftSize = 256;
-      analyser.smoothingTimeConstant = 0.5;
-      analyserNodeRef.current = analyser;
-      sourceNode.connect(analyser);
-      startLevelMeter(analyser);
+        // ScriptProcessor downsamples and emits 50ms chunks (800 samples at 16kHz)
+        const bufferSize = 2048;
+        processor = ctx.createScriptProcessor(bufferSize, 1, 1);
 
-      // ScriptProcessor downsamples and emits 50ms chunks (800 samples at 16kHz)
-      const bufferSize = 2048;
-      const processor = ctx.createScriptProcessor(bufferSize, 1, 1);
-      processorNodeRef.current = processor;
-
-      processor.onaudioprocess = (e: AudioProcessingEvent) => {
+        processor.onaudioprocess = (e: AudioProcessingEvent) => {
+        if (!graphIsCurrent()) return;
         const inputData = e.inputBuffer.getChannelData(0);
         const currentWs = wsRef.current;
         if (
@@ -235,7 +302,7 @@ export function useBrowserAudioCapture(): UseBrowserAudioCaptureReturn {
         }
 
         // Resample input to 16,000 Hz
-        const resampled = resampleTo16k(inputData, ctx.sampleRate, 16000);
+        const resampled = resampleTo16k(inputData, ctx!.sampleRate, 16000);
 
         // Append to accumulation buffer
         const prevBuf = pcmBufferRef.current;
@@ -273,14 +340,42 @@ export function useBrowserAudioCapture(): UseBrowserAudioCaptureReturn {
             // Socket write failed, ignore transient error
           }
         }
-      };
+        };
 
-      sourceNode.connect(processor);
-      // Connect to destination via silent gain to keep processor running
-      const silentGain = ctx.createGain();
-      silentGain.gain.value = 0;
-      processor.connect(silentGain);
-      silentGain.connect(ctx.destination);
+        sourceNode.connect(processor);
+        // Connect to destination via silent gain to keep processor running
+        silentGain = ctx.createGain();
+        silentGain.gain.value = 0;
+        processor.connect(silentGain);
+        silentGain.connect(ctx.destination);
+
+        if (!graphIsCurrent()) {
+          await disposeNewGraph();
+          return;
+        }
+
+        startLevelMeter(analyser!);
+        if (!graphIsCurrent()) {
+          await disposeNewGraph();
+          return;
+        }
+        // Commit only after getUserMedia, context setup, and every node have
+        // succeeded. The old graph is torn down at this single commit point.
+        disconnectNode(processorNodeRef.current);
+        disconnectNode(sourceNodeRef.current);
+        disconnectNode(analyserNodeRef.current);
+        disconnectNode(silentGainNodeRef.current);
+        mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
+        mediaStreamRef.current = stream;
+        audioContextRef.current = ctx;
+        sourceNodeRef.current = sourceNode;
+        analyserNodeRef.current = analyser;
+        processorNodeRef.current = processor;
+        silentGainNodeRef.current = silentGain;
+      } catch (error) {
+        await disposeNewGraph();
+        throw error;
+      }
     },
     [startLevelMeter],
   );
@@ -289,16 +384,24 @@ export function useBrowserAudioCapture(): UseBrowserAudioCaptureReturn {
   const selectDevice = useCallback(
     async (deviceId: string) => {
       setSelectedDeviceId(deviceId);
+      const graphGeneration = audioGraphGenerationRef.current + 1;
+      audioGraphGenerationRef.current = graphGeneration;
       if (typeof window !== "undefined") {
         localStorage.setItem(STORAGE_KEY_MIC, deviceId);
       }
       if (isStreaming || mediaStreamRef.current) {
         try {
-          await setupAudioGraph(deviceId);
-        } catch (err) {
-          setLastError(
-            err instanceof Error ? err.message : "Falha ao trocar de microfone.",
+          await setupAudioGraph(
+            deviceId,
+            streamAttemptGenerationRef.current,
+            graphGeneration,
           );
+        } catch (err) {
+          if (graphGeneration === audioGraphGenerationRef.current) {
+            setLastError(
+              err instanceof Error ? err.message : "Falha ao trocar de microfone.",
+            );
+          }
         }
       }
     },
@@ -307,8 +410,12 @@ export function useBrowserAudioCapture(): UseBrowserAudioCaptureReturn {
 
   // Stop streaming & release resources
   const stopStreaming = useCallback(() => {
+    streamAttemptGenerationRef.current += 1;
+    audioGraphGenerationRef.current += 1;
     helloReadySocketRef.current = null;
     activeSessionIdRef.current = null;
+    cancelLifecycleRetry(streamReconnectTimerRef.current);
+    streamReconnectTimerRef.current = null;
     if (pingIntervalRef.current) {
       clearInterval(pingIntervalRef.current);
       pingIntervalRef.current = null;
@@ -325,6 +432,14 @@ export function useBrowserAudioCapture(): UseBrowserAudioCaptureReturn {
       sourceNodeRef.current.disconnect();
       sourceNodeRef.current = null;
     }
+    if (analyserNodeRef.current) {
+      analyserNodeRef.current.disconnect();
+      analyserNodeRef.current = null;
+    }
+    if (silentGainNodeRef.current) {
+      silentGainNodeRef.current.disconnect();
+      silentGainNodeRef.current = null;
+    }
     if (mediaStreamRef.current) {
       mediaStreamRef.current.getTracks().forEach((t) => t.stop());
       mediaStreamRef.current = null;
@@ -340,9 +455,63 @@ export function useBrowserAudioCapture(): UseBrowserAudioCaptureReturn {
   // Start live streaming to native stream gateway
   const startStreaming = useCallback(
     async (sessionId: string, streamKey?: string) => {
-      if (!streamKey) {
+      if (!runtimeConfig.iap && !streamKey) {
         setLastError("Chave do fluxo de áudio ausente.");
         return;
+      }
+
+      const attemptGeneration = streamAttemptGenerationRef.current + 1;
+      streamAttemptGenerationRef.current = attemptGeneration;
+      const graphAttemptGeneration = audioGraphGenerationRef.current + 1;
+      audioGraphGenerationRef.current = graphAttemptGeneration;
+      const iapAttemptIsCurrent = () =>
+        lifecycleAttemptIsCurrent(
+          attemptGeneration,
+          streamAttemptGenerationRef.current,
+          sessionId,
+          activeSessionIdRef.current,
+        );
+      activeSessionIdRef.current = sessionId;
+
+      const scheduleRetry = () => {
+        if (!iapAttemptIsCurrent() || !activeSessionIdRef.current) return;
+        if (streamReconnectTimerRef.current) return;
+        const delay = streamReconnectDelayRef.current;
+        streamReconnectTimerRef.current = scheduleLifecycleRetry(iapAttemptIsCurrent, delay, () => {
+          streamReconnectTimerRef.current = null;
+          if (activeSessionIdRef.current === sessionId) {
+            void startStreamingRef.current?.(sessionId, streamKey);
+          }
+        });
+        streamReconnectDelayRef.current = boundedRetryDelay(delay, 30000);
+      };
+
+      let streamCredential = streamKey;
+      if (runtimeConfig.iap) {
+        try {
+          const ticketResponse = await apiFetch(
+            `${API_BASE_URL}/api/sessions/${encodeURIComponent(sessionId)}/stream-ticket`,
+            { method: "POST" },
+          );
+          if (!iapAttemptIsCurrent()) return;
+          if (!ticketResponse.ok) {
+            if (runtimeConfig.iap && isIapTerminalHttpStatus(ticketResponse.status)) {
+              stopStreaming();
+              emitIapTerminalAuthEvent();
+              return;
+            }
+            throw new Error("A sessão autenticada do áudio expirou.");
+          }
+          const ticketPayload = (await ticketResponse.json()) as { ticket?: string };
+          if (!ticketPayload.ticket) throw new Error("Ticket de áudio ausente.");
+          streamCredential = ticketPayload.ticket;
+          if (!iapAttemptIsCurrent()) return;
+        } catch (err) {
+          if (!iapAttemptIsCurrent()) return;
+          setLastError(err instanceof Error ? err.message : "Falha ao obter ticket de áudio.");
+          scheduleRetry();
+          return;
+        }
       }
 
       let config;
@@ -350,7 +519,7 @@ export function useBrowserAudioCapture(): UseBrowserAudioCaptureReturn {
         config = buildStreamSocketConfig(
           WS_STREAM_BASE,
           sessionId,
-          streamKey,
+          streamCredential!,
           ["microphone"],
         );
       } catch (err) {
@@ -362,14 +531,25 @@ export function useBrowserAudioCapture(): UseBrowserAudioCaptureReturn {
         return;
       }
 
+      if (!iapAttemptIsCurrent()) return;
+
       // Open WebSocket connection to native stream gateway before mutating active state
       let ws: WebSocket;
       try {
         ws = new WebSocket(config.url, config.protocols);
       } catch {
+        scheduleRetry();
         setLastError("Falha ao abrir conexão com o gateway de áudio.");
         return;
       }
+
+      if (!iapAttemptIsCurrent()) {
+        ws.close();
+        return;
+      }
+      const committedSocket = commitIfCurrent(ws, iapAttemptIsCurrent, (stale) => stale.close());
+      if (!committedSocket) return;
+      ws = committedSocket;
 
       helloReadySocketRef.current = null;
       activeSessionIdRef.current = sessionId;
@@ -380,9 +560,11 @@ export function useBrowserAudioCapture(): UseBrowserAudioCaptureReturn {
       wsRef.current = ws;
 
       ws.onopen = () => {
-        if (wsRef.current !== ws) {
+        if (wsRef.current !== ws || !iapAttemptIsCurrent()) {
+          ws.close();
           return;
         }
+        streamReconnectDelayRef.current = 1000;
         try {
           ws.send(config.hello);
           helloReadySocketRef.current = ws;
@@ -416,7 +598,7 @@ export function useBrowserAudioCapture(): UseBrowserAudioCaptureReturn {
         setLastError("Erro na conexão com o gateway de áudio.");
       };
 
-      ws.onclose = () => {
+      ws.onclose = (event) => {
         if (wsRef.current !== ws) {
           return;
         }
@@ -428,12 +610,29 @@ export function useBrowserAudioCapture(): UseBrowserAudioCaptureReturn {
           clearInterval(pingIntervalRef.current);
           pingIntervalRef.current = null;
         }
+        if (runtimeConfig.iap && isIapTerminalClose(event.code, event.reason)) {
+          stopStreaming();
+          emitIapTerminalAuthEvent();
+        } else if (
+          runtimeConfig.iap &&
+          iapAttemptIsCurrent() &&
+          activeSessionIdRef.current === sessionId
+        ) {
+          // Every retry obtains a new HTTP stream ticket above. Policy
+          // logout/kill events are terminal and never enter this branch.
+          scheduleRetry();
+        }
       };
 
       // Start audio graph
       try {
-        await setupAudioGraph(selectedDeviceId);
+        await setupAudioGraph(
+          selectedDeviceId,
+          attemptGeneration,
+          graphAttemptGeneration,
+        );
       } catch (err) {
+        if (!iapAttemptIsCurrent()) return;
         setLastError(
           err instanceof Error
             ? err.message
@@ -444,6 +643,15 @@ export function useBrowserAudioCapture(): UseBrowserAudioCaptureReturn {
     },
     [selectedDeviceId, setupAudioGraph, stopStreaming],
   );
+
+  useEffect(() => {
+    startStreamingRef.current = startStreaming;
+    return () => {
+      if (startStreamingRef.current === startStreaming) {
+        startStreamingRef.current = null;
+      }
+    };
+  }, [startStreaming]);
 
   // Initial load: enumerate devices & listen for changes
   useEffect(() => {
@@ -463,6 +671,12 @@ export function useBrowserAudioCapture(): UseBrowserAudioCaptureReturn {
       };
     }
   }, [updateDeviceList]);
+
+  useEffect(() => {
+    const onTerminalAuth = () => stopStreaming();
+    window.addEventListener(IAP_AUTH_TERMINAL_EVENT, onTerminalAuth);
+    return () => window.removeEventListener(IAP_AUTH_TERMINAL_EVENT, onTerminalAuth);
+  }, [stopStreaming]);
 
   // Cleanup on unmount
   useEffect(() => {

@@ -83,10 +83,14 @@ class StreamManager:
             Callable[[TranscriptSegment], None | Awaitable[None]] | None
         ) = None,
         source_label: str = "",
+        admission_check: Callable[[], bool] | None = None,
+        task_tracker: Callable[[asyncio.Task], None] | None = None,
     ) -> None:
         self.settings = settings
         self.on_transcript = on_transcript
         self.source_label = source_label
+        self._admission_check = admission_check
+        self._task_tracker = task_tracker
 
         self._current_stream: GoogleSTTStream | None = None
         self._stream_counter = 0
@@ -98,6 +102,8 @@ class StreamManager:
         self._audio_dropped = False
         self._drain_completed: bool | None = None
         self._drain_failure_reason: str | None = None
+        self._emergency_aborted = False
+        self._accepting_audio = False
 
         # Track last emitted end_time to avoid duplicate segments during overlap
         # None means no final has been emitted yet. A real first final may map
@@ -121,6 +127,38 @@ class StreamManager:
         # Tasks
         self._response_task: asyncio.Task | None = None
         self._rotation_task: asyncio.Task | None = None
+        # Emergency abort is bounded, so cancellation-resistant workers stay
+        # attached here until they truly finish.  The owner tracker mirrors
+        # this set into Task08's count-only readiness accounting.
+        self._unsettled_tasks: set[asyncio.Task] = set()
+        self._emergency_abort_lock = asyncio.Lock()
+        self._emergency_abort_complete = False
+
+    def _track_task(self, task: asyncio.Task) -> None:
+        """Retain a worker until done and forward it to the session owner."""
+        if task.done() or task in self._unsettled_tasks:
+            return
+        self._unsettled_tasks.add(task)
+
+        def settled(completed: asyncio.Task) -> None:
+            self._unsettled_tasks.discard(completed)
+            try:
+                completed.exception()
+            except (asyncio.CancelledError, Exception):
+                pass
+
+        task.add_done_callback(settled)
+        tracker = self._task_tracker
+        if tracker is not None:
+            try:
+                tracker(task)
+            except Exception:
+                logger.exception("stt_task_tracking_error", source=self.source_label)
+
+    @property
+    def unsettled_tasks(self) -> set[asyncio.Task]:
+        """Live response/rotation/stream-abort tasks retained after abort."""
+        return set(self._unsettled_tasks)
 
     def _next_stream_id(self) -> str:
         self._stream_counter += 1
@@ -128,8 +166,13 @@ class StreamManager:
 
     async def start(self) -> None:
         """Start the stream manager with auto-recovering response loop."""
+        if not self._admitted():
+            raise RuntimeError("STT stream admission lost")
         self._session_start_time = time.monotonic()
         self._running = True
+        self._accepting_audio = True
+        self._emergency_aborted = False
+        self._emergency_abort_complete = False
         self._start_requested = True
         self._ever_stream_opened = False
         self._audio_dropped = False
@@ -145,11 +188,17 @@ class StreamManager:
         self._response_task = asyncio.create_task(
             self._process_responses_loop()
         )
+        self._track_task(self._response_task)
 
         # Start rotation monitor
         self._rotation_task = asyncio.create_task(self._rotation_loop())
+        self._track_task(self._rotation_task)
 
         logger.info("stream_manager_started")
+
+    def _admitted(self) -> bool:
+        check = self._admission_check
+        return check is None or bool(check())
 
     def mark_failed(self, reason: str) -> None:
         """Make the session's incomplete state sticky after audio risk."""
@@ -163,7 +212,10 @@ class StreamManager:
 
     async def stop(self) -> bool:
         """Half-close input and await final responses within a bounded deadline."""
+        if self._emergency_aborted:
+            return False
         self._running = False
+        self._accepting_audio = False
 
         if not self._start_requested:
             self.mark_failed("not_started")
@@ -246,6 +298,66 @@ class StreamManager:
         )
         return self._drain_completed
 
+    async def abort_emergency(self) -> bool:
+        """Abort immediately without flushing queued audio or awaiting a final.
+
+        A provider task that resists cancellation remains attached and counted
+        by its owner until it really finishes.  The emergency path itself is
+        bounded so logout/kill cannot hang behind Python cancellation.
+        """
+        self._emergency_aborted = True
+        self._running = False
+        self._accepting_audio = False
+        self._audio_dropped = True
+        self.mark_failed("emergency_abort")
+        self._pending_audio.clear()
+
+        async with self._emergency_abort_lock:
+            if self._emergency_abort_complete:
+                return False
+            current_task = asyncio.current_task()
+            timeout = min(
+                0.5,
+                max(0.01, self.settings.stt_graceful_drain_timeout_seconds),
+            )
+
+            async def settle(task: asyncio.Task | None) -> None:
+                if task is None or task is current_task or task.done():
+                    return
+                task.cancel()
+                try:
+                    await asyncio.wait_for(asyncio.shield(task), timeout=timeout)
+                except asyncio.TimeoutError:
+                    # Do not force-release a live provider task. Its done
+                    # callback/owner will clear the reference when it settles.
+                    def consume(completed: asyncio.Task) -> None:
+                        try:
+                            completed.exception()
+                        except (asyncio.CancelledError, Exception):
+                            pass
+
+                    task.add_done_callback(consume)
+                except (asyncio.CancelledError, Exception):
+                    pass
+
+            await settle(self._rotation_task)
+
+            current_stream = self._current_stream
+            if current_stream is not None:
+                try:
+                    abort = getattr(current_stream, "abort_emergency", None)
+                    operation = abort() if callable(abort) else current_stream.stop()
+                    current_stream_abort_task = asyncio.create_task(operation)
+                    self._track_task(current_stream_abort_task)
+                    await settle(current_stream_abort_task)
+                except Exception:
+                    logger.exception("stt_emergency_stream_stop_error", source=self.source_label)
+
+            await settle(self._response_task)
+            self._emergency_abort_complete = True
+        self._drain_completed = False
+        return False
+
     @property
     def drain_completed(self) -> bool | None:
         return self._drain_completed
@@ -271,6 +383,9 @@ class StreamManager:
 
     async def send_audio(self, audio_bytes: bytes) -> None:
         """Send audio to the current stream, buffering across rotation gaps."""
+        if self._emergency_aborted or not self._admitted():
+            await self.abort_emergency()
+            raise RuntimeError("STT stream admission lost")
         bytes_per_second = (
             self.settings.sample_rate * self.settings.channels * 2
         )
@@ -295,7 +410,13 @@ class StreamManager:
                     0.0, chunk_start - pending_duration
                 )
             while self._pending_audio:
+                if self._emergency_aborted or not self._admitted():
+                    await self.abort_emergency()
+                    raise RuntimeError("STT stream admission lost")
                 await self._current_stream.send_audio(self._pending_audio.popleft())
+            if self._emergency_aborted or not self._admitted():
+                await self.abort_emergency()
+                raise RuntimeError("STT stream admission lost")
             await self._current_stream.send_audio(audio_bytes)
             if stream_id:
                 self._stream_audio_ends[stream_id] = self._audio_timeline_seconds
@@ -326,6 +447,10 @@ class StreamManager:
         while self._running:
             await asyncio.sleep(1.0)
 
+            if not self._admitted():
+                await self.abort_emergency()
+                return
+
             if self._current_stream is None:
                 continue
 
@@ -349,19 +474,29 @@ class StreamManager:
     async def _process_responses_loop(self) -> None:
         """Continuously process STT responses, auto-recovering on stream errors."""
         while self._running:
+            if not self._admitted():
+                self.mark_failed("emergency_abort")
+                return
             stream = GoogleSTTStream(
                 settings=self.settings,
                 stream_id=self._next_stream_id(),
             )
             self._current_stream = stream
 
+            if not self._admitted():
+                return
+
             try:
                 async for response in stream.start():
+                    if self._emergency_aborted or not self._admitted():
+                        return
                     self._ever_stream_opened = (
                         self._ever_stream_opened
                         or getattr(stream, "request_opened", False)
                     )
                     for result in response.results:
+                        if self._emergency_aborted or not self._admitted():
+                            return
                         if not result.alternatives:
                             continue
 
@@ -431,10 +566,14 @@ class StreamManager:
                             self._last_emitted_end_time = end_time
 
                         if self.on_transcript:
+                            if self._emergency_aborted or not self._admitted():
+                                return
                             try:
                                 callback_result = self.on_transcript(segment)
                                 if inspect.isawaitable(callback_result):
                                     await callback_result
+                                if self._emergency_aborted or not self._admitted():
+                                    return
                             except Exception:
                                 # Callback failures include durable transcript
                                 # writes. Reopening STT every 0.5s would turn a

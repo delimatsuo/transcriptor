@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import ipaddress
+import re
 from urllib.parse import urlsplit
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings
 
 DEFAULT_LOCAL_CORS_ORIGINS: list[str] = [
@@ -14,6 +15,7 @@ DEFAULT_LOCAL_CORS_ORIGINS: list[str] = [
     "http://127.0.0.1:3003",
     "chrome-extension://fhnadcdkfgdlkomjpilmgehhpgmkjnga",
 ]
+IAP_FRONTEND_ORIGIN = "https://tars.ellaexecutivesearch.com"
 
 
 def parse_cors_allowed_origins(raw: str | None) -> list[str]:
@@ -141,6 +143,22 @@ def parse_cors_allowed_origins(raw: str | None) -> list[str]:
     return parsed_origins
 
 
+def select_cors_allowed_origins(
+    auth_mode: str = "firebase", raw: str | None = None
+) -> list[str]:
+    """Select CORS origins without weakening the hosted IAP boundary.
+
+    Firebase/local behavior remains the existing configurable parser.  IAP
+    mode is fixed to the approved App Hosting origin; a wildcard or any extra
+    origin is a configuration error rather than a silently widened policy.
+    """
+    if auth_mode == "iap":
+        if raw is not None and parse_cors_allowed_origins(raw) != [IAP_FRONTEND_ORIGIN]:
+            raise ValueError("IAP mode CORS must contain only the approved frontend origin")
+        return [IAP_FRONTEND_ORIGIN]
+    return parse_cors_allowed_origins(raw)
+
+
 class CorsSettings(BaseSettings):
     """Isolated settings reader for CORS configuration without full Settings requirements."""
 
@@ -150,6 +168,7 @@ class CorsSettings(BaseSettings):
         default=None,
         description="Optional comma-separated list of allowed CORS origins",
     )
+    auth_mode: str = Field(default="firebase")
 
 
 class Settings(BaseSettings):
@@ -178,6 +197,115 @@ class Settings(BaseSettings):
         description="Comma-separated exact email allowlist for internal access",
     )
     auth_ws_ticket_ttl_seconds: int = Field(default=60, gt=0, le=300)
+
+    # Task 08 private preproduction authentication.  These values are
+    # intentionally optional in Firebase mode so existing local/dev startup
+    # remains backward-compatible.
+    auth_mode: str = Field(default="firebase", description="Authentication mode: firebase or iap")
+    auth_iap_audience: str | None = Field(
+        default=None,
+        description="Exact Cloud Run IAP audience path",
+    )
+    auth_iap_frontend_origin: str | None = Field(
+        default=None,
+        description="Exact App Hosting frontend origin for IAP bootstrap",
+    )
+    auth_iap_ws_max_lifetime_seconds: int = Field(
+        default=3300,
+        ge=1,
+        le=3300,
+        description="Absolute browser WebSocket lease lifetime",
+    )
+    auth_task08_operator_emails: str = Field(
+        default="",
+        description="Comma-separated IAP operator subset of auth_allowed_emails",
+    )
+    auth_kill_switch: bool = Field(
+        default=False,
+        description="Monotonic process-local emergency admission latch",
+    )
+
+    @model_validator(mode="after")
+    def validate_task08_iap_configuration(self) -> "Settings":
+        if self.auth_mode not in {"firebase", "iap"}:
+            raise ValueError("AUTH_MODE must be exactly firebase or iap")
+        if self.auth_mode != "iap":
+            return self
+
+        if self.auth_bypass:
+            raise ValueError("AUTH_BYPASS is incompatible with AUTH_MODE=iap")
+        if self.auth_org_id != "ella-internal":
+            raise ValueError("AUTH_ORG_ID must be exactly ella-internal in IAP mode")
+
+        audience = (self.auth_iap_audience or "").strip()
+        if not re.fullmatch(
+            r"/projects/[0-9]+/locations/[a-z0-9-]+/services/[a-z0-9](?:[a-z0-9-]*[a-z0-9])?",
+            audience,
+        ):
+            raise ValueError("AUTH_IAP_AUDIENCE must be a Cloud Run IAP audience path")
+        self.auth_iap_audience = audience
+
+        origin = (self.auth_iap_frontend_origin or "").strip()
+        if origin != "https://tars.ellaexecutivesearch.com":
+            raise ValueError(
+                "AUTH_IAP_FRONTEND_ORIGIN must be the approved HTTPS frontend origin"
+            )
+        self.auth_iap_frontend_origin = origin
+
+        admitted = self._strict_email_values(self.auth_allowed_emails, "AUTH_ALLOWED_EMAILS")
+        operators = self._strict_email_values(
+            self.auth_task08_operator_emails,
+            "AUTH_TASK08_OPERATOR_EMAILS",
+        )
+        if not operators:
+            raise ValueError("AUTH_TASK08_OPERATOR_EMAILS must not be empty in IAP mode")
+        if not operators.issubset(admitted):
+            raise ValueError(
+                "AUTH_TASK08_OPERATOR_EMAILS must be a subset of AUTH_ALLOWED_EMAILS"
+            )
+        # The hosted packet is bound to exactly five unique corporate
+        # identities.  Do not let duplicate normalization silently reduce the
+        # independently reviewed admission set.
+        raw_admitted = [item.strip().casefold() for item in self.auth_allowed_emails.split(",")]
+        if len(raw_admitted) != 5 or len(admitted) != 5:
+            raise ValueError("AUTH_ALLOWED_EMAILS must contain exactly five unique addresses")
+        if any(address.rsplit("@", 1)[-1] != "ellaexecutivesearch.com" for address in admitted):
+            raise ValueError("AUTH_ALLOWED_EMAILS must use the ellaexecutivesearch.com domain")
+        return self
+
+    @staticmethod
+    def _email_values(raw: str) -> set[str]:
+        return {item.strip().casefold() for item in raw.split(",") if item.strip()}
+
+    @staticmethod
+    def _strict_email_values(raw: str, label: str) -> set[str]:
+        if not isinstance(raw, str) or not raw.strip():
+            raise ValueError(f"{label} must not be blank in IAP mode")
+        values: set[str] = set()
+        for item in raw.split(","):
+            value = item.strip()
+            if (
+                not value
+                or any(character.isspace() for character in value)
+                or not value.isascii()
+            ):
+                raise ValueError(f"{label} contains a malformed email")
+            value = value.casefold()
+            if not re.fullmatch(
+                r"[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+",
+                value,
+            ):
+                raise ValueError(f"{label} contains a malformed email")
+            values.add(value)
+        return values
+
+    @property
+    def admitted_email_set(self) -> set[str]:
+        return self._email_values(self.auth_allowed_emails)
+
+    @property
+    def task08_operator_email_set(self) -> set[str]:
+        return self._email_values(self.auth_task08_operator_emails)
 
     @field_validator("gcs_bucket_name")
     @classmethod

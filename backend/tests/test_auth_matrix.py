@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import httpx
 import pytest
@@ -22,6 +22,7 @@ from starlette.websockets import WebSocketDisconnect
 from backend import main
 from backend.auth import AuthContext, AuthenticationError, verify_bearer_token
 from backend.config import Settings
+from backend.iap_auth import IAP_REJECTION_REASON_GENERIC
 from backend.schemas.models import SessionStatus
 
 
@@ -46,6 +47,29 @@ def claims(**overrides) -> dict:
     }
     value.update(overrides)
     return value
+
+
+IAP_ADMITTED = ",".join(
+    [
+        "task08-recruiter@ellaexecutivesearch.com",
+        "task08-operator@ellaexecutivesearch.com",
+        "task08-auditor@ellaexecutivesearch.com",
+        "task08-reviewer@ellaexecutivesearch.com",
+        "task08-backup@ellaexecutivesearch.com",
+    ]
+)
+
+
+def iap_request_settings(**overrides) -> Settings:
+    values = {
+        "auth_mode": "iap",
+        "auth_allowed_emails": IAP_ADMITTED,
+        "auth_iap_audience": "/projects/123/locations/us-central1/services/tars-api",
+        "auth_iap_frontend_origin": "https://tars.ellaexecutivesearch.com",
+        "auth_task08_operator_emails": "task08-operator@ellaexecutivesearch.com",
+    }
+    values.update(overrides)
+    return auth_settings(**values)
 
 
 @pytest.mark.parametrize("authorization", [None, "", "Basic token", "Bearer "])
@@ -121,6 +145,139 @@ def test_api_auth_boundary_rejects_route_requests_but_leaves_health_probe_public
     assert denied.status_code == 401
     assert denied.headers["www-authenticate"] == "Bearer"
     assert _run_middleware("/healthz").status_code == 200
+
+
+def test_iap_rejection_logs_only_a_safe_reason_code_and_preserves_401_contract(monkeypatch):
+    request_settings = iap_request_settings()
+    sentinel = "provider-payload-sentinel-for-sentinel@example.com"
+
+    def rejected_verifier(*_args, **_kwargs):
+        raise AuthenticationError(sentinel)
+
+    warning = Mock()
+    monkeypatch.setattr(main, "settings", request_settings)
+    monkeypatch.setattr(main, "verify_iap_token", rejected_verifier)
+    monkeypatch.setattr(main, "logger", SimpleNamespace(warning=warning))
+
+    async def endpoint(_request):
+        raise AssertionError("route code must not run")
+
+    response = asyncio.run(
+        main.authenticate_api_requests(_request("/api/me"), endpoint)
+    )
+    assert response.status_code == 401
+    assert response.body == b'{"detail":"Authentication required"}'
+    assert response.headers["www-authenticate"] == "Bearer"
+    warning.assert_called_once_with(
+        "iap_auth_rejected",
+        reason_code=IAP_REJECTION_REASON_GENERIC,
+    )
+    assert sentinel not in repr(warning.call_args)
+
+
+def test_iap_rejection_log_sink_failure_preserves_http_401_contract(monkeypatch):
+    def rejected_verifier(*_args, **_kwargs):
+        raise AuthenticationError("invalid IAP signature")
+
+    warning = Mock(side_effect=RuntimeError("telemetry sink unavailable"))
+    monkeypatch.setattr(main, "settings", iap_request_settings())
+    monkeypatch.setattr(main, "verify_iap_token", rejected_verifier)
+    monkeypatch.setattr(main, "logger", SimpleNamespace(warning=warning))
+
+    async def endpoint(_request):
+        raise AssertionError("route code must not run")
+
+    response = asyncio.run(
+        main.authenticate_api_requests(_request("/api/me"), endpoint)
+    )
+    assert response.status_code == 401
+    assert response.body == b'{"detail":"Authentication required"}'
+    assert response.headers["www-authenticate"] == "Bearer"
+    warning.assert_called_once_with(
+        "iap_auth_rejected",
+        reason_code="invalid_iap_signature",
+    )
+
+
+@pytest.mark.parametrize(
+    "case, expected_reason",
+    [
+        ("verifier", IAP_REJECTION_REASON_GENERIC),
+        ("missing_auth_time", "principal_revoked"),
+        ("failed_admission", "principal_revoked"),
+        ("admission_type_error", IAP_REJECTION_REASON_GENERIC),
+        ("admission_value_error", IAP_REJECTION_REASON_GENERIC),
+    ],
+)
+def test_iap_websocket_rejections_log_one_safe_code_and_remain_fail_closed(
+    case, expected_reason, monkeypatch
+):
+    request_settings = iap_request_settings()
+    sentinel = "ws-provider-payload-sentinel-for-sentinel@example.com"
+    warning = Mock()
+    monkeypatch.setattr(main, "settings", request_settings)
+    monkeypatch.setattr(main, "logger", SimpleNamespace(warning=warning))
+
+    if case == "verifier":
+        def rejected_verifier(*_args, **_kwargs):
+            raise AuthenticationError(sentinel)
+
+        monkeypatch.setattr(main, "verify_iap_token", rejected_verifier)
+    else:
+        auth_time = None if case == "missing_auth_time" else 22
+        monkeypatch.setattr(
+            main,
+            "verify_iap_token",
+            lambda *_args, **_kwargs: AuthContext(
+                "ws-user", "task08-recruiter@ellaexecutivesearch.com", "ella-internal", auth_time
+            ),
+        )
+        if case == "failed_admission":
+            monkeypatch.setattr(main.auth_runtime, "admit_principal", lambda *_args: False)
+        elif case == "admission_type_error":
+            monkeypatch.setattr(
+                main.auth_runtime,
+                "admit_principal",
+                lambda *_args: (_ for _ in ()).throw(TypeError(sentinel)),
+            )
+        elif case == "admission_value_error":
+            monkeypatch.setattr(
+                main.auth_runtime,
+                "admit_principal",
+                lambda *_args: (_ for _ in ()).throw(ValueError(sentinel)),
+            )
+
+    result = main._iap_websocket_user(
+        SimpleNamespace(headers={"x-goog-iap-jwt-assertion": "synthetic-assertion"})
+    )
+    assert result is None
+    warning.assert_called_once_with(
+        "iap_auth_rejected",
+        reason_code=expected_reason,
+    )
+    assert sentinel not in repr(warning.call_args)
+
+
+def test_iap_websocket_log_sink_failure_remains_fail_closed(monkeypatch):
+    sentinel = "ws-log-sink-sentinel-for-sentinel@example.com"
+
+    def rejected_verifier(*_args, **_kwargs):
+        raise AuthenticationError(sentinel)
+
+    warning = Mock(side_effect=RuntimeError("telemetry sink unavailable"))
+    monkeypatch.setattr(main, "settings", iap_request_settings())
+    monkeypatch.setattr(main, "verify_iap_token", rejected_verifier)
+    monkeypatch.setattr(main, "logger", SimpleNamespace(warning=warning))
+
+    result = main._iap_websocket_user(
+        SimpleNamespace(headers={"x-goog-iap-jwt-assertion": "synthetic-assertion"})
+    )
+    assert result is None
+    warning.assert_called_once_with(
+        "iap_auth_rejected",
+        reason_code=IAP_REJECTION_REASON_GENERIC,
+    )
+    assert sentinel not in repr(warning.call_args)
 
 
 @pytest.mark.parametrize(

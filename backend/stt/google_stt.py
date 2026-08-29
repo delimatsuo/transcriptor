@@ -35,6 +35,7 @@ class GoogleSTTStream:
         self._input_closed = False
         self._request_opened = False
         self._started_at: float = 0.0
+        self._emergency_aborted = False
 
     async def _get_client(self) -> SpeechAsyncClient:
         if self._client is None:
@@ -107,6 +108,8 @@ class GoogleSTTStream:
     async def start(self) -> AsyncIterator[cloud_speech.StreamingRecognizeResponse]:
         """Start the streaming recognition and yield responses."""
         client = await self._get_client()
+        if self._emergency_aborted:
+            return
         self._accepting_audio = not self._input_closed
         self._started_at = time.monotonic()
 
@@ -129,7 +132,7 @@ class GoogleSTTStream:
 
     async def send_audio(self, audio_bytes: bytes) -> None:
         """Send audio data to the stream."""
-        if self._accepting_audio:
+        if self._accepting_audio and not self._emergency_aborted:
             await self._audio_queue.put(audio_bytes)
 
     async def stop(self) -> None:
@@ -141,6 +144,23 @@ class GoogleSTTStream:
         await self._audio_queue.put(None)
         if self._client is not None:
             # Client can be reused, no need to close for each stream
+            pass
+
+    async def abort_emergency(self) -> None:
+        """Drop queued audio and close input without waiting for final results."""
+        self._emergency_aborted = True
+        self._input_closed = True
+        self._accepting_audio = False
+        while not self._audio_queue.empty():
+            try:
+                self._audio_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+        # Wake a request generator that is already waiting, while the manager
+        # cancels the response task so no provider response can be published.
+        try:
+            self._audio_queue.put_nowait(None)
+        except asyncio.QueueFull:
             pass
 
     @property
