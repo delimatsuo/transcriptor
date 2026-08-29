@@ -1,7 +1,7 @@
 # Task 08 private preproduction provider evidence
 
 Status: `PRIVATE_PREPRODUCTION_CANARY_QUALIFIED`
-Evidence date (UTC): `2026-08-28`
+Evidence date (UTC): `2026-08-29`
 
 ## Executable source and CI
 
@@ -24,10 +24,12 @@ Evidence date (UTC): `2026-08-28`
 
 ### App Hosting
 
-- Current backend `tars-frontend`: rollout/build `build-2026-08-28-006`, rollout `SUCCEEDED`, build `READY`, `reconciling=false`, `100%` traffic, current image tag `build-006`.
+- Current backend `tars-frontend`: rollout/build `build-2026-08-28-006`, rollout `SUCCEEDED`, build `READY`, `reconciling=false`, `100%` traffic, current image tag `build-2026-08-28-006`.
 - Current custom domain `tars.ellaexecutivesearch.com`: `reconciling=false`, `hostState=HOST_ACTIVE`, `ownershipState=OWNERSHIP_ACTIVE`, `certState=CERT_ACTIVE`.
-- The frontend tree object at commit `f1107a68c27afdf5374947765ece6ce04ec14d3a` and at executable head `8070cc16788a602fde553ad214b628499183b248` is identical: `4dbf3cfdaf9ac2d0d3a0c0a815915a61750b7284`.
-- That Git tree identity does **not** bind provider build `build-006`; no `build-006` source-archive readback was performed.
+- The frontend tree object at commit `f1107a68c27afdf5374947765ece6ce04ec14d3a`, executable head `8070cc16788a602fde553ad214b628499183b248`, and verification head `7d93c32f55a1b869577dc9fdab8ff030e44ec0a2` is identical: `4dbf3cfdaf9ac2d0d3a0c0a815915a61750b7284`.
+- Current `build-006` REST v1beta readback reported `READY`, image tag `build-2026-08-28-006`, and archive `rootDirectory=frontend`. The readback window was `2026-08-29T03:07:28Z..03:07:31Z`.
+- This build's source-readback archive SHA-256 is `0c33b49281e5d35810fee8528c708cfe26d2844f32bfccb0b79295be4fe72faf`. Its path-name audit found zero `AGENTS.md`, zero `CLAUDE.md`, and exactly one tracked `.env.example` path with zero other `.env*` paths. The `.env.example` contents were neither extracted nor read.
+- Selective extraction of the provider-declared `frontend` root while excluding protected and `.env*` paths produced 84 files. Their exact path set and byte content matched the corresponding 84-file projection at verification head `7d93c32f55a1b869577dc9fdab8ff030e44ec0a2`.
 - Historical App Hosting archive provenance (not proof of `build-006`): rollout/build `build-2026-08-28-001` was `SUCCEEDED`/`READY` with `reconciling=false`, image `us-central1-docker.pkg.dev/transcriptor-490222/firebaseapphosting-images/tars-frontend:build-2026-08-28-001`, and archive SHA-256 `cd1c657718124f021a67ffdb42741ee6811a61599dd2b146e3861a54c890e4f8`.
 - Historical root verifier window `2026-08-28T02:34:53Z..02:34:56Z` used App Hosting REST v1beta source-archive readback, Cloud Storage, unzip, `git archive`, and `diff -qr`; all 84 provider frontend files matched the exact `e1eaa12633d4c62eaa5c71ff18379ce7abe0d1bb` `frontend/` projection, excluding `frontend/AGENTS.md`, `frontend/CLAUDE.md`, and every `.env*` path. The separate `firebase.json` Firebase Tools 14.17.0 schema check and dry run passed.
 
@@ -64,11 +66,10 @@ Evidence date (UTC): `2026-08-28`
 
 ## Evidence ceiling
 
-This ledger is preproduction evidence, not production or merge authorization. Remaining gates are:
+This ledger is preproduction evidence, not production or merge authorization. The `build-006` binding covers only the 84-file protected/environment-excluded `frontend/` projection, not full-archive equality or `.env.example` contents. Remaining gates are:
 
 - no 55-minute wall-clock soak;
 - no provider monitoring email-delivery proof;
-- no current App Hosting `build-006` source-archive readback or provider-to-Git source binding;
 - no privacy/legal or production authorization/evidence;
 - no merge evidence;
 - API-key raw values, secrets, and environment values remain uninspected;
