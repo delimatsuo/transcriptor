@@ -5,7 +5,22 @@ import TarsNativeCompanion
 @main
 struct TarsCompanionApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
-    @StateObject private var controller = CompanionSessionController()
+    @StateObject private var controller: CompanionSessionController
+
+    init() {
+        do {
+            let preference = try SystemAudioEnginePreference.preference(fromLaunchArguments: CommandLine.arguments)
+            _controller = StateObject(wrappedValue: CompanionSessionController(enginePreference: preference))
+        } catch {
+            // Keep the app visible so the actionable pt-BR error can be shown,
+            // but the controller refuses every start and never constructs a
+            // capture source for this invalid invocation.
+            _controller = StateObject(wrappedValue: CompanionSessionController(
+                enginePreference: .automatic,
+                launchArgumentError: String(describing: error)
+            ))
+        }
+    }
 
     var body: some Scene {
         MenuBarExtra {
@@ -160,7 +175,7 @@ struct CompanionMenuView: View {
                 .font(.headline)
         case .capturing:
             let prefix = controller.activeSessionID.map { String($0.prefix(8)) } ?? ""
-            Text("Capturando — sessão \(prefix)")
+            Text("Capturando — sessão \(prefix)\n\(engineLabel)")
                 .font(.headline)
         case .reconnecting:
             Text("Reconectando…")
@@ -171,6 +186,23 @@ struct CompanionMenuView: View {
                 .font(.subheadline)
                 .foregroundColor(.red)
         }
+    }
+
+    private var engineLabel: String {
+        let engine: String
+        switch controller.resolvedSystemAudioEngine {
+        case .processTap: engine = "Process Tap"
+        case .screenCaptureKit: engine = "ScreenCaptureKit"
+        case nil: engine = "áudio do sistema"
+        }
+        let health: String
+        switch controller.systemAudioHealth.permission {
+        case .unknown: health = "permissão desconhecida"
+        case .granted: health = "permissão verificada"
+        case .denied: health = "permissão negada"
+        case .revoked: health = "permissão revogada"
+        }
+        return "\(engine) — \(health)"
     }
 
     private func isErrorState(_ state: CompanionState) -> Bool {

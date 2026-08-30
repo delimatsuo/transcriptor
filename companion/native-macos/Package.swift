@@ -11,7 +11,19 @@ let package = Package(
     ],
     targets: [
         .target(
+            name: "TarsRealtimeAudioBridge",
+            path: "Sources/TarsRealtimeAudioBridge",
+            publicHeadersPath: "include",
+            cSettings: [
+                .unsafeFlags(["-Werror=function-effects"])
+            ],
+            linkerSettings: [
+                .linkedFramework("CoreAudio")
+            ]
+        ),
+        .target(
             name: "TarsNativeCompanion",
+            dependencies: ["TarsRealtimeAudioBridge"],
             path: "Sources/TarsNativeCompanion"
         ),
         .executableTarget(
