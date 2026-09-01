@@ -293,15 +293,25 @@ class FakeTransaction:
         document.data = next_data
         self.writes.append(document.id)
 
+    def create(self, document, data):
+        if document.data is not None:
+            raise AlreadyExists("exists")
+        document.data = copy.deepcopy(data)
+        self.writes.append(document.id)
+
 
 class FakeDB:
     def __init__(self):
         self.sessions = FakeSessions()
+        self.session_tombstones = FakeCollection()
         self.transactions = []
 
     def collection(self, name):
-        assert name == "sessions"
-        return self.sessions
+        if name == "sessions":
+            return self.sessions
+        if name == "session_tombstones":
+            return self.session_tombstones
+        raise AssertionError(name)
 
     def transaction(self):
         transaction = FakeTransaction()
@@ -323,6 +333,12 @@ def configure_storage(monkeypatch):
 
 def test_firestore_transactions_reject_stale_edit_and_approve_edit_race(monkeypatch):
     storage, db = configure_storage(monkeypatch)
+    db.sessions.document(SESSION_ID).data = {
+        "mode": "interview",
+        "status": "completed",
+        "ownerId": None,
+        "orgId": None,
+    }
     first = asyncio.run(storage.save_generated_report(parsed_report()))
     replay = asyncio.run(storage.save_generated_report(parsed_report()))
     assert replay == first
@@ -347,10 +363,92 @@ def test_firestore_transactions_reject_stale_edit_and_approve_edit_race(monkeypa
     assert exact_retry == approved
     with pytest.raises(InterviewReportConflict, match="immutable"):
         asyncio.run(storage.update_interview_report(SESSION_ID, update_request(version=2)))
+    stored_approved = copy.deepcopy(
+        db.sessions.document(SESSION_ID).collection("reports").document("current").data
+    )
+    differing_payload = generated_payload()
+    differing_payload["internal_sections"][0]["body"] = (
+        "A newly generated draft that must not replace reviewed content."
+    )
+    preserved = asyncio.run(
+        storage.save_generated_report(parsed_report(differing_payload))
+    )
+    assert preserved == approved
+    assert (
+        db.sessions.document(SESSION_ID).collection("reports").document("current").data
+        == stored_approved
+    )
     assert report_from_record(
         SESSION_ID,
         db.sessions.document(SESSION_ID).collection("reports").document("current").data,
     ) == approved
+
+
+def test_report_draft_transaction_cannot_cross_a_deletion_tombstone(monkeypatch):
+    storage, db = configure_storage(monkeypatch)
+    db.sessions.document(SESSION_ID).data = {
+        "mode": "interview",
+        "status": "completed",
+        "ownerId": None,
+        "orgId": None,
+    }
+    db.session_tombstones.document(SESSION_ID).data = {
+        "sessionId": SESSION_ID,
+        "ownerId": None,
+        "orgId": None,
+        "reason": "owner_request",
+    }
+
+    with pytest.raises(InterviewReportConflict, match="not found"):
+        asyncio.run(storage.save_generated_report(parsed_report()))
+    assert (
+        db.sessions.document(SESSION_ID).collection("reports").document("current").data
+        is None
+    )
+
+
+def test_report_draft_requires_exact_completed_parent_scope(monkeypatch):
+    storage, db = configure_storage(monkeypatch)
+    parent = db.sessions.document(SESSION_ID)
+    with pytest.raises(InterviewReportConflict, match="not found"):
+        asyncio.run(storage.save_generated_report(parsed_report()))
+    parent.data = {
+        "mode": "interview",
+        "status": "active",
+        "ownerId": None,
+        "orgId": None,
+    }
+    with pytest.raises(InterviewReportConflict, match="not found"):
+        asyncio.run(storage.save_generated_report(parsed_report()))
+    parent.data["status"] = "completed"
+    parent.data["ownerId"] = "different-owner"
+    with pytest.raises(InterviewReportConflict, match="not found"):
+        asyncio.run(storage.save_generated_report(parsed_report()))
+
+
+def test_existing_report_scope_must_match_completed_parent(monkeypatch):
+    storage, db = configure_storage(monkeypatch)
+    parent = db.sessions.document(SESSION_ID)
+    parent.data = {
+        "mode": "interview",
+        "status": "completed",
+        "ownerId": None,
+        "orgId": None,
+    }
+    cross_scope = parse_generated_report(
+        SESSION_ID,
+        json.dumps(generated_payload()),
+        transcript_ids={"seg-1"},
+        note_ids={"note-1"},
+        context_ids={"resume", "next_steps"},
+        owner_id="other-owner",
+        org_id="other-org",
+        now=NOW,
+    )
+    parent.collection("reports").document("current").data = report_to_record(cross_scope)
+
+    with pytest.raises(InterviewReportConflict, match="not found"):
+        asyncio.run(storage.save_generated_report(parsed_report()))
 
 
 def test_concurrent_edits_retry_on_storage_conflict_and_only_one_cas_wins(monkeypatch):

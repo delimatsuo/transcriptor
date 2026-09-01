@@ -1,6 +1,8 @@
 """delete_session_everywhere must cascade: subcollections, GCS blobs, doc, tombstone."""
 import asyncio
 
+import pytest
+
 from backend.storage.deletion import delete_session_everywhere
 
 
@@ -47,6 +49,7 @@ class FakeDB:
     def __init__(self, session_doc):
         self._session_doc = session_doc
         self.tombstones = []
+        self.session_tombstone = None
 
     def collection(self, name):
         db = self
@@ -56,8 +59,30 @@ class FakeDB:
                 if name == "sessions":
                     return db._session_doc
 
+                if name == "session_tombstones":
+                    class Snapshot:
+                        @property
+                        def exists(self):
+                            return db.session_tombstone is not None
+
+                        def to_dict(self):
+                            return db.session_tombstone or {}
+
+                    class Fence:
+                        async def get(self):
+                            return Snapshot()
+
+                        async def set(self, data, merge=False):
+                            base = (db.session_tombstone or {}) if merge else {}
+                            db.session_tombstone = {
+                                **base,
+                                **data,
+                            }
+
+                    return Fence()
+
                 class T:
-                    async def set(self, data):
+                    async def set(self, data, merge=False):
                         db.tombstones.append(data)
 
                 return T()
@@ -101,4 +126,20 @@ def test_cascade_deletes_everything_and_tombstones():
     )
     assert gcs.deleted == ["sessions/s1/cv.pdf"]
     assert db.tombstones and db.tombstones[0]["sessionId"] == "s1"
+    assert db.session_tombstone["sessionId"] == "s1"
     assert result["gcs_blobs_deleted"] == 1
+
+
+def test_failure_after_fencing_stays_fenced_and_retryable():
+    class FailingDoc(FakeDoc):
+        async def delete(self):
+            raise RuntimeError("synthetic child delete failure")
+
+    child = FailingDoc("seg1", {"text": "synthetic"})
+    session = FakeDoc("s1", {"title": "t"}, {"transcript": [child]})
+    db = FakeDB(session)
+
+    with pytest.raises(RuntimeError, match="synthetic"):
+        asyncio.run(delete_session_everywhere("s1", db, FakeGCS()))
+    assert db.session_tombstone["sessionId"] == "s1"
+    assert session.deleted is False

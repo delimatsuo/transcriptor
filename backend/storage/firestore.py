@@ -5,7 +5,6 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 import structlog
-from google.api_core.exceptions import AlreadyExists
 from google.cloud import firestore
 
 from backend.config import Settings
@@ -33,6 +32,15 @@ from backend.sessions.reports import (
     report_from_record,
     report_to_record,
     update_report_content,
+)
+from backend.sessions.workspace_imports import NormalizedGoogleMeetImport
+from backend.workers.google_meet_import import (
+    ImportClaim,
+    ImportJobState,
+    ImportJobStatus,
+    TranscriptImportConflict,
+    TranscriptImportDeleted,
+    TranscriptImportNotFound,
 )
 
 logger = structlog.get_logger()
@@ -107,6 +115,308 @@ class FirestoreStorage:
 
         await save_in_transaction(db.transaction())
         logger.info("firestore_interview_report_queued", session_id=session.id)
+
+    @staticmethod
+    def _import_job(record: dict) -> ImportJobState:
+        return ImportJobState(
+            source_key=record["sourceKey"],
+            source_digest=record["sourceDigest"],
+            session_id=record["sessionId"],
+            owner_id=record["ownerId"],
+            org_id=record["orgId"],
+            status=record["status"],
+            version=record["version"],
+            attempt_count=record["attemptCount"],
+            lease_token=record.get("leaseToken"),
+            lease_expires_at=record.get("leaseExpiresAt"),
+            reason_code=record.get("reasonCode"),
+            segment_count=record.get("segmentCount", 0),
+            updated_at=record["updatedAt"],
+        )
+
+    @staticmethod
+    def _import_job_record(job: ImportJobState) -> dict:
+        return {
+            "sourceKey": job.source_key,
+            "sourceDigest": job.source_digest,
+            "sessionId": job.session_id,
+            "ownerId": job.owner_id,
+            "orgId": job.org_id,
+            "status": job.status.value,
+            "version": job.version,
+            "attemptCount": job.attempt_count,
+            "leaseToken": job.lease_token,
+            "leaseExpiresAt": job.lease_expires_at,
+            "reasonCode": job.reason_code,
+            "segmentCount": job.segment_count,
+            "updatedAt": job.updated_at,
+        }
+
+    async def queue_transcript_import(
+        self,
+        normalized: NormalizedGoogleMeetImport,
+        *,
+        updated_at: datetime,
+    ) -> ImportJobState:
+        """Durably expose a queued import before any lease or session write."""
+        db = await self._get_db()
+        job_ref = db.collection("transcript_import_jobs").document(normalized.source_key)
+        tombstone_ref = db.collection("session_tombstones").document(
+            normalized.session.id
+        )
+
+        @firestore.async_transactional
+        async def queue_in_transaction(transaction):
+            snapshot = await job_ref.get(transaction=transaction)
+            tombstone = await tombstone_ref.get(transaction=transaction)
+            if tombstone.exists:
+                raise TranscriptImportDeleted("deleted transcript import is fenced")
+            if snapshot.exists:
+                job = self._import_job(snapshot.to_dict() or {})
+                if (
+                    job.owner_id != normalized.session.owner_id
+                    or job.org_id != normalized.session.org_id
+                ):
+                    raise TranscriptImportNotFound("transcript import not found")
+                if job.source_digest != normalized.source_digest:
+                    raise TranscriptImportConflict(
+                        "source artifact identity is already bound to different content"
+                    )
+                return job
+            job = ImportJobState(
+                source_key=normalized.source_key,
+                source_digest=normalized.source_digest,
+                session_id=normalized.session.id,
+                owner_id=normalized.session.owner_id or "",
+                org_id=normalized.session.org_id or "",
+                status=ImportJobStatus.QUEUED,
+                version=1,
+                attempt_count=0,
+                updated_at=updated_at,
+            )
+            transaction.create(job_ref, self._import_job_record(job))
+            return job
+
+        return await queue_in_transaction(db.transaction())
+
+    async def claim_transcript_import(
+        self,
+        *,
+        source_key: str,
+        source_digest: str,
+        session_id: str,
+        owner_id: str,
+        org_id: str,
+        lease_token: str,
+        lease_expires_at: datetime,
+        updated_at: datetime,
+    ) -> ImportClaim:
+        """Claim queued, failed, or expired work with a versioned durable lease."""
+        db = await self._get_db()
+        job_ref = db.collection("transcript_import_jobs").document(source_key)
+        tombstone_ref = db.collection("session_tombstones").document(session_id)
+
+        @firestore.async_transactional
+        async def claim_in_transaction(transaction):
+            snapshot = await job_ref.get(transaction=transaction)
+            tombstone = await tombstone_ref.get(transaction=transaction)
+            if tombstone.exists:
+                raise TranscriptImportDeleted("deleted transcript import is fenced")
+            if not snapshot.exists:
+                raise TranscriptImportNotFound("transcript import not found")
+            job = self._import_job(snapshot.to_dict() or {})
+            if job.owner_id != owner_id or job.org_id != org_id:
+                raise TranscriptImportNotFound("transcript import not found")
+            if job.source_digest != source_digest or job.session_id != session_id:
+                raise TranscriptImportConflict(
+                    "source artifact identity is already bound to different content"
+                )
+            if job.status == ImportJobStatus.COMPLETED:
+                return ImportClaim(job=job, idempotent_replay=True)
+            if (
+                job.status == ImportJobStatus.LEASED
+                and job.lease_expires_at is not None
+                and job.lease_expires_at > updated_at
+            ):
+                raise TranscriptImportConflict("transcript import has an active lease")
+            claimed = job.model_copy(
+                update={
+                    "status": ImportJobStatus.LEASED,
+                    "version": job.version + 1,
+                    "attempt_count": job.attempt_count + 1,
+                    "lease_token": lease_token,
+                    "lease_expires_at": lease_expires_at,
+                    "reason_code": None,
+                    "updated_at": updated_at,
+                }
+            )
+            transaction.set(job_ref, self._import_job_record(claimed))
+            return ImportClaim(job=claimed, idempotent_replay=False)
+
+        return await claim_in_transaction(db.transaction())
+
+    async def commit_transcript_import(
+        self,
+        normalized: NormalizedGoogleMeetImport,
+        *,
+        lease_token: str,
+        version: int,
+        updated_at: datetime,
+    ) -> ImportJobState:
+        """Publish the completed interview and its report obligation atomically."""
+        db = await self._get_db()
+        job_ref = db.collection("transcript_import_jobs").document(normalized.source_key)
+        session_ref = db.collection("sessions").document(normalized.session.id)
+        tombstone_ref = db.collection("session_tombstones").document(normalized.session.id)
+        current_report_ref = session_ref.collection("reports").document("current")
+        generation_ref = session_ref.collection("reports").document("generation")
+        import_ref = session_ref.collection("imports").document("source")
+
+        @firestore.async_transactional
+        async def commit_in_transaction(transaction):
+            job_snapshot = await job_ref.get(transaction=transaction)
+            tombstone = await tombstone_ref.get(transaction=transaction)
+            session_snapshot = await session_ref.get(transaction=transaction)
+            current_report = await current_report_ref.get(transaction=transaction)
+            if not job_snapshot.exists:
+                raise TranscriptImportNotFound("transcript import not found")
+            job = self._import_job(job_snapshot.to_dict() or {})
+            if (
+                job.owner_id != normalized.session.owner_id
+                or job.org_id != normalized.session.org_id
+            ):
+                raise TranscriptImportNotFound("transcript import not found")
+            if job.source_digest != normalized.source_digest:
+                raise TranscriptImportConflict("transcript import digest changed")
+            if job.status == ImportJobStatus.COMPLETED:
+                return job
+            if tombstone.exists:
+                raise TranscriptImportDeleted("deleted transcript import is fenced")
+            if (
+                job.status != ImportJobStatus.LEASED
+                or job.version != version
+                or job.lease_token != lease_token
+                or job.lease_expires_at is None
+                or job.lease_expires_at <= updated_at
+            ):
+                raise TranscriptImportConflict("transcript import lease is stale")
+            if session_snapshot.exists or current_report.exists:
+                raise TranscriptImportConflict(
+                    "deterministic transcript import session already exists"
+                )
+
+            transaction.create(session_ref, self._session_record(normalized.session))
+            for segment in normalized.segments:
+                segment_ref = session_ref.collection("transcript").document(segment.id)
+                segment_record = {
+                    "text": segment.text,
+                    "speaker": segment.speaker,
+                    "startTime": segment.start_time,
+                    "endTime": segment.end_time,
+                    "confidence": segment.confidence,
+                    "sequenceNumber": segment.sequence_number,
+                    "sequenceScope": "session",
+                    "ownerId": normalized.session.owner_id,
+                    "orgId": normalized.session.org_id,
+                    "importProvenance": normalized.segment_provenance[segment.id],
+                }
+                transaction.create(segment_ref, segment_record)
+            transaction.create(
+                import_ref,
+                {
+                    **normalized.source_provenance,
+                    "ownerId": normalized.session.owner_id,
+                    "orgId": normalized.session.org_id,
+                },
+            )
+            for source_id, source in normalized.report_sources.items():
+                transaction.create(
+                    session_ref.collection("report_sources").document(source_id),
+                    {
+                        **source,
+                        "updatedAt": updated_at,
+                        "ownerId": normalized.session.owner_id,
+                        "orgId": normalized.session.org_id,
+                    },
+                )
+            transaction.create(
+                generation_ref,
+                {
+                    "status": "queued",
+                    "reasonCode": None,
+                    "updatedAt": updated_at,
+                    "ownerId": normalized.session.owner_id,
+                    "orgId": normalized.session.org_id,
+                },
+            )
+            completed = job.model_copy(
+                update={
+                    "status": ImportJobStatus.COMPLETED,
+                    "lease_token": None,
+                    "lease_expires_at": None,
+                    "reason_code": None,
+                    "segment_count": len(normalized.segments),
+                    "updated_at": updated_at,
+                }
+            )
+            transaction.set(job_ref, self._import_job_record(completed))
+            return completed
+
+        return await commit_in_transaction(db.transaction())
+
+    async def fail_transcript_import(
+        self,
+        *,
+        source_key: str,
+        owner_id: str,
+        org_id: str,
+        lease_token: str,
+        version: int,
+        reason_code: str,
+        updated_at: datetime,
+    ) -> ImportJobState:
+        """Record a recoverable content-free failure for the active lease."""
+        db = await self._get_db()
+        job_ref = db.collection("transcript_import_jobs").document(source_key)
+
+        @firestore.async_transactional
+        async def fail_in_transaction(transaction):
+            snapshot = await job_ref.get(transaction=transaction)
+            if not snapshot.exists:
+                raise TranscriptImportNotFound("transcript import not found")
+            job = self._import_job(snapshot.to_dict() or {})
+            if job.owner_id != owner_id or job.org_id != org_id:
+                raise TranscriptImportNotFound("transcript import not found")
+            if job.status == ImportJobStatus.COMPLETED:
+                return job
+            if job.version != version or job.lease_token != lease_token:
+                raise TranscriptImportConflict("transcript import lease is stale")
+            failed = job.model_copy(
+                update={
+                    "status": ImportJobStatus.FAILED,
+                    "lease_token": None,
+                    "lease_expires_at": None,
+                    "reason_code": reason_code,
+                    "updated_at": updated_at,
+                }
+            )
+            transaction.set(job_ref, self._import_job_record(failed))
+            return failed
+
+        return await fail_in_transaction(db.transaction())
+
+    async def get_transcript_import_job(
+        self, source_key: str, *, owner_id: str, org_id: str
+    ) -> ImportJobState:
+        """Read content-free import status for its exact principal only."""
+        db = await self._get_db()
+        snapshot = await db.collection("transcript_import_jobs").document(source_key).get()
+        if not snapshot.exists:
+            raise TranscriptImportNotFound("transcript import not found")
+        job = self._import_job(snapshot.to_dict() or {})
+        if job.owner_id != owner_id or job.org_id != org_id:
+            raise TranscriptImportNotFound("transcript import not found")
+        return job
 
     async def save_transcript_segment(
         self,
@@ -491,24 +801,43 @@ class FirestoreStorage:
         return snapshot.to_dict() or {}
 
     async def save_generated_report(self, report: InterviewReport) -> InterviewReport:
-        """Create the first draft without overwriting human work or approval."""
+        """Create one draft only while its completed parent is not deleted."""
         db = await self._get_db()
+        session_ref = db.collection("sessions").document(report.session_id)
         doc_ref = (
-            db.collection("sessions")
-            .document(report.session_id)
-            .collection("reports")
-            .document("current")
+            session_ref.collection("reports").document("current")
         )
-        try:
-            await doc_ref.create(report_to_record(report))
+        tombstone_ref = db.collection("session_tombstones").document(report.session_id)
+
+        @firestore.async_transactional
+        async def create_in_transaction(transaction):
+            session = await session_ref.get(transaction=transaction)
+            existing_snapshot = await doc_ref.get(transaction=transaction)
+            tombstone = await tombstone_ref.get(transaction=transaction)
+            if tombstone.exists or not session.exists:
+                raise InterviewReportConflict("completed interview not found")
+            session_data = session.to_dict() or {}
+            if (
+                session_data.get("mode") != "interview"
+                or session_data.get("status") != "completed"
+                or session_data.get("ownerId") != report.owner_id
+                or session_data.get("orgId") != report.org_id
+            ):
+                raise InterviewReportConflict("completed interview not found")
+            if existing_snapshot.exists:
+                existing = report_from_record(
+                    report.session_id, existing_snapshot.to_dict() or {}
+                )
+                if (
+                    existing.owner_id != session_data.get("ownerId")
+                    or existing.org_id != session_data.get("orgId")
+                ):
+                    raise InterviewReportConflict("completed interview not found")
+                return existing
+            transaction.create(doc_ref, report_to_record(report))
             return report
-        except AlreadyExists:
-            snapshot = await doc_ref.get()
-            if not snapshot.exists:
-                raise InterviewReportConflict(
-                    "report exists but cannot be read"
-                ) from None
-            return report_from_record(report.session_id, snapshot.to_dict() or {})
+
+        return await create_in_transaction(db.transaction())
 
     async def get_interview_report(self, session_id: str) -> InterviewReport | None:
         """Read the typed report after restart without invoking a provider."""

@@ -114,9 +114,15 @@ from backend.sessions.reports import (
     render_internal_summary,
     report_generation_is_stale,
 )
+from backend.sessions.workspace_imports import GoogleMeetImportRequest, MAX_REQUEST_BYTES
 from backend.stt.stream_manager import StreamManager
 from backend.storage.firestore import FirestoreStorage
 from backend.storage.gcs import GCSStorage
+from backend.workers.google_meet_import import (
+    GoogleMeetImportWorker,
+    TranscriptImportConflict,
+    TranscriptImportNotFound,
+)
 from backend.ws.handler import ws_manager
 
 logger = structlog.get_logger()
@@ -1562,6 +1568,69 @@ async def _stop_pipeline(session_id: str) -> bool:
 
 
 # --- REST Endpoints ---
+
+@app.post("/api/transcript-imports/google-meet")
+async def import_google_meet_transcript(request: Request):
+    """Import one manually supplied synthetic/offline Meet transcript artifact."""
+    assert firestore_storage
+    user = _principal()
+    # This path is deliberately unavailable to auth-bypass direct callers: an
+    # import creates durable interview/report obligations and needs real scope.
+    if user is None:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    content_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+    if content_type != "application/json":
+        raise HTTPException(status_code=415, detail="Content-Type must be application/json")
+
+    body = bytearray()
+    async for chunk in request.stream():
+        body.extend(chunk)
+        if len(body) > MAX_REQUEST_BYTES:
+            raise HTTPException(status_code=422, detail="Import request is too large")
+    try:
+        typed_request = GoogleMeetImportRequest.from_json_bytes(bytes(body))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=422, detail="Import request is invalid") from None
+
+    worker = GoogleMeetImportWorker(firestore_storage)
+    try:
+        result = await worker.run(
+            typed_request,
+            owner_id=user.uid,
+            org_id=user.org_id,
+        )
+    except TranscriptImportNotFound:
+        raise HTTPException(status_code=404, detail="Transcript import not found") from None
+    except TranscriptImportConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+    except Exception:
+        logger.exception("google_meet_transcript_import_failed")
+        raise HTTPException(
+            status_code=503,
+            detail="Transcript import failed and can be retried",
+        ) from None
+    return result.model_dump(mode="json")
+
+
+@app.get("/api/transcript-imports/{source_key}")
+async def get_transcript_import_status(source_key: str):
+    """Return only content-free durable status to the exact owning scope."""
+    assert firestore_storage
+    user = _principal()
+    if user is None:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    if len(source_key) != 64 or any(char not in "0123456789abcdef" for char in source_key):
+        raise HTTPException(status_code=404, detail="Transcript import not found")
+    worker = GoogleMeetImportWorker(firestore_storage)
+    try:
+        result = await worker.status(
+            source_key,
+            owner_id=user.uid,
+            org_id=user.org_id,
+        )
+    except TranscriptImportNotFound:
+        raise HTTPException(status_code=404, detail="Transcript import not found") from None
+    return result.model_dump(mode="json")
 
 @app.post("/api/sessions")
 async def create_session(

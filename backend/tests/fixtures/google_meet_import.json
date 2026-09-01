@@ -1,0 +1,51 @@
+{
+  "sourceType": "GOOGLE_MEET",
+  "sourceArtifactId": "meet-artifacts/example-2026-09-01",
+  "title": "Synthetic product interview",
+  "noticeGiven": true,
+  "noticeProvenance": "Synthetic fixture: participant notice recorded before the meeting",
+  "candidateId": "candidate-synthetic-01",
+  "candidateName": "Synthetic Candidate",
+  "resumeArtifactId": "resume-synthetic-01",
+  "resumeText": "Synthetic resume context only.",
+  "jobDescriptionArtifactId": "jd-synthetic-01",
+  "jobDescriptionText": "Synthetic job description context only.",
+  "briefing": "Synthetic offline briefing.",
+  "transcriptSessions": [
+    {
+      "name": "conferenceRecords/example/transcripts/first",
+      "entries": [
+        {
+          "name": "conferenceRecords/example/transcripts/first/entries/002",
+          "participant": "conferenceRecords/example/participants/002",
+          "text": "Answer without a timestamp or display name."
+        },
+        {
+          "name": "conferenceRecords/example/transcripts/first/entries/001",
+          "participant": "conferenceRecords/example/participants/001",
+          "participantName": "Interviewer",
+          "text": "Welcome to the synthetic interview.",
+          "startTime": "2026-09-01T14:00:00Z",
+          "endTime": "2026-09-01T14:00:03Z",
+          "languageCode": "en-US",
+          "confidence": 0.99
+        }
+      ]
+    },
+    {
+      "name": "conferenceRecords/example/transcripts/second",
+      "entries": [
+        {
+          "name": "conferenceRecords/example/transcripts/second/entries/001",
+          "participant": "conferenceRecords/example/participants/002",
+          "participantName": "Synthetic Candidate",
+          "text": "A structured answer from a second transcript resource.",
+          "startTime": "2026-09-01T14:00:04Z",
+          "endTime": "2026-09-01T14:00:08Z",
+          "languageCode": "en-US",
+          "confidence": 0.95
+        }
+      ]
+    }
+  ]
+}
