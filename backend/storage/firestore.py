@@ -151,6 +151,17 @@ _RECONCILIATION_LEASE_RECORD_KEYS = frozenset(
     }
 )
 _BINDING_INDEX_RECORD_KEYS = frozenset({"bindingKey"})
+_PUSH_BINDING_INDEX_RECORD_KEYS = frozenset(
+    {
+        "bindingKey",
+        "ownerId",
+        "orgId",
+        "grantId",
+        "workspaceSubject",
+        "calendarId",
+        "calendarEventId",
+    }
+)
 
 
 class FirestoreStorage:
@@ -732,6 +743,31 @@ class FirestoreStorage:
             raise MeetAutomationNotFound("eligible Meet event not found")
         return binding_key
 
+    @staticmethod
+    def _push_binding_index_record(binding: EligibleMeetEventBinding) -> dict:
+        return {
+            "bindingKey": eligible_binding_key(binding),
+            "ownerId": binding.owner_id,
+            "orgId": binding.org_id,
+            "grantId": binding.grant_id,
+            "workspaceSubject": binding.workspace_subject,
+            "calendarId": binding.calendar_id,
+            "calendarEventId": binding.calendar_event_id,
+        }
+
+    @classmethod
+    def _push_binding_index(cls, record: dict) -> tuple[str, dict]:
+        if set(record) != _PUSH_BINDING_INDEX_RECORD_KEYS:
+            raise MeetAutomationNotFound("eligible Meet event not found")
+        binding_key = cls._binding_index({"bindingKey": record["bindingKey"]})
+        if any(
+            not isinstance(record[key], str)
+            for key in record
+            if key != "bindingKey"
+        ):
+            raise MeetAutomationNotFound("eligible Meet event not found")
+        return binding_key, record
+
     @classmethod
     def _canonical_binding(cls, record: dict, *, document_id: str) -> EligibleMeetEventBinding:
         binding = cls._eligible_meet_binding(record)
@@ -865,7 +901,7 @@ class FirestoreStorage:
                     ) from None
                 if existing != binding:
                     raise MeetAutomationConflict("eligible Meet event identity conflict")
-            for snapshot in (manual_snapshot, push_snapshot, list_snapshot):
+            for snapshot in (manual_snapshot, list_snapshot):
                 if snapshot.exists:
                     try:
                         existing_index = self._binding_index(snapshot.to_dict() or {})
@@ -877,13 +913,30 @@ class FirestoreStorage:
                         raise MeetAutomationConflict(
                             "eligible Meet event identity conflict"
                         )
+            push_record = self._push_binding_index_record(binding)
+            if push_snapshot.exists:
+                try:
+                    existing_push_key, existing_push_record = self._push_binding_index(
+                        push_snapshot.to_dict() or {}
+                    )
+                except (KeyError, TypeError, ValueError, MeetAutomationNotFound):
+                    raise MeetAutomationConflict(
+                        "eligible Meet event identity conflict"
+                    ) from None
+                if (
+                    existing_push_key != binding_id
+                    or existing_push_record != push_record
+                ):
+                    raise MeetAutomationConflict(
+                        "eligible Meet event identity conflict"
+                    )
             record = self._eligible_meet_binding_record(binding)
             if not binding_snapshot.exists:
                 transaction.create(binding_ref, record)
             if not manual_snapshot.exists:
                 transaction.create(manual_ref, {"bindingKey": binding_id})
             if not push_snapshot.exists:
-                transaction.create(push_ref, {"bindingKey": binding_id})
+                transaction.create(push_ref, push_record)
             if not list_snapshot.exists:
                 transaction.create(list_ref, {"bindingKey": binding_id})
             return binding
@@ -950,7 +1003,7 @@ class FirestoreStorage:
         if not index.exists:
             raise MeetAutomationNotFound("eligible Meet event not found")
         try:
-            binding_id = self._binding_index(index.to_dict() or {})
+            binding_id, push_identity = self._push_binding_index(index.to_dict() or {})
         except (KeyError, TypeError, ValueError):
             raise MeetAutomationNotFound("eligible Meet event not found")
         snapshot = await db.collection("workspace_meet_eligible_events").document(binding_id).get()
@@ -963,7 +1016,13 @@ class FirestoreStorage:
         except (KeyError, TypeError, ValueError):
             raise MeetAutomationNotFound("eligible Meet event not found") from None
         if (
-            binding.workspace_subscription_source != workspace_subscription_source
+            push_identity["ownerId"] != binding.owner_id
+            or push_identity["orgId"] != binding.org_id
+            or push_identity["grantId"] != binding.grant_id
+            or push_identity["workspaceSubject"] != binding.workspace_subject
+            or push_identity["calendarId"] != binding.calendar_id
+            or push_identity["calendarEventId"] != binding.calendar_event_id
+            or binding.workspace_subscription_source != workspace_subscription_source
             or binding.pubsub_subscription != pubsub_subscription
             or binding.meet_target != meet_target
         ):

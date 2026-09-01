@@ -1348,24 +1348,63 @@ def test_firestore_binding_indexes_are_identity_only_and_canonical(monkeypatch):
     assert all(
         set(value) == {"bindingKey"}
         for path, value in db.data.items()
-        if path[0] in {"workspace_meet_manual_index", "workspace_meet_push_index"}
+        if path[0] == "workspace_meet_manual_index"
+    )
+    push_records = [
+        value
+        for path, value in db.data.items()
+        if path[0] == "workspace_meet_push_index"
+    ]
+    assert push_records == [
+        {
+            "bindingKey": binding_id,
+            "ownerId": item.owner_id,
+            "orgId": item.org_id,
+            "grantId": item.grant_id,
+            "workspaceSubject": item.workspace_subject,
+            "calendarId": item.calendar_id,
+            "calendarEventId": item.calendar_event_id,
+        }
+    ]
+    assert (
+        asyncio.run(
+            storage.get_eligible_meet_binding_push(
+                workspace_subscription_source=item.workspace_subscription_source,
+                pubsub_subscription=item.pubsub_subscription,
+                meet_target=item.meet_target,
+            )
+        )
+        == item
     )
 
 
 def test_firestore_corrupt_indexes_and_noncanonical_binding_ids_fail_closed(monkeypatch):
     storage, db = firestore_storage(monkeypatch)
     first = numbered_binding(1)
-    other = numbered_binding(2, owner_id="owner-2")
+    other = numbered_binding(
+        2,
+        owner_id="owner-2",
+        org_id="org-2",
+        grant_id="grant-2",
+        workspace_subject="other@example.com",
+        calendar_id="other@example.com",
+        workspace_subscription_source=first.workspace_subscription_source,
+        pubsub_subscription=first.pubsub_subscription,
+        meet_target=first.meet_target,
+    )
     asyncio.run(storage.store_eligible_meet_binding(first))
-    asyncio.run(storage.store_eligible_meet_binding(other))
+    other_binding_id = eligible_binding_key(other)
+    db.data[("workspace_meet_eligible_events", other_binding_id)] = (
+        storage._eligible_meet_binding_record(other)
+    )
     first_push_id = push_binding_lookup_key(
         workspace_subscription_source=first.workspace_subscription_source,
         pubsub_subscription=first.pubsub_subscription,
         meet_target=first.meet_target,
     )
-    db.data[("workspace_meet_push_index", first_push_id)] = {
-        "bindingKey": eligible_binding_key(other)
-    }
+    db.data[("workspace_meet_push_index", first_push_id)]["bindingKey"] = (
+        other_binding_id
+    )
     with pytest.raises(MeetAutomationNotFound):
         asyncio.run(
             storage.get_eligible_meet_binding_push(
