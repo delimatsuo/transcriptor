@@ -1,5 +1,7 @@
 # Task 08 Antigravity Computer Use Restart Handoff
 
+> **Archived historical snapshot — not current continuation state.** Preserved for provenance only. Do not execute its objective or transport procedure, and do not treat its branches, heads, dirty-worktree, PR, application/runtime, crash, or Antigravity state as current. Use the newest durable handoff and exact-head PR/CI/review records.
+
 Created: 2026-08-28 22:54 America/New_York
 Prepared by: Codex
 

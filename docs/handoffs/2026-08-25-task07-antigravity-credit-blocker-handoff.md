@@ -1,5 +1,7 @@
 # Transcriptor Task 07 Antigravity Credit-Blocked Handoff
 
+> **Archived historical snapshot — not current continuation state.** Preserved for provenance only. Do not execute its objective or steps, and do not treat its branch, HEAD, dirty-worktree, PR, builder-credit, or verification statements as current. Use the newest durable handoff and exact-head PR/CI/review records.
+
 Created: 2026-08-25 00:16 EDT
 Prepared by: Codex
 

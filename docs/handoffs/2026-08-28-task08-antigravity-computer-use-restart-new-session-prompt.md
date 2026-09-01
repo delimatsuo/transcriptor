@@ -1,3 +1,5 @@
+> **Archived historical prompt — do not execute.** This paste-ready prompt is preserved for provenance only and its Task 08 transport state is superseded. Do not reopen its Antigravity/Computer Use workflow, restore its old dirty-worktree state, or use its branches, heads, PR, build, crash, port, or authority as current. Use the newest durable handoff and exact-head PR/CI/review records.
+
 You are continuing the Transcriptor Task 08 Antigravity Computer Use integration repair.
 
 Current objective:

@@ -1,3 +1,5 @@
+> **Archived historical prompt — do not execute.** This paste-ready prompt is preserved for provenance only and was superseded after Repair 10A.11 and the split PR stack completed. Do not resume the named repair, restore its old dirty-worktree state, or use its counts, digests, builder blocker, or authority as current. Use the newest durable handoff and exact-head PR/CI/review records.
+
 You are continuing Transcriptor Recruiter-phase Task 07, a source-only Firebase-auth hardening and causal-verification effort.
 
 Current objective:

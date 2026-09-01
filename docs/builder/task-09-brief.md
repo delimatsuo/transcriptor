@@ -41,7 +41,7 @@ Read `docs/builder/README.md` first. Repo: `"/Volumes/Extreme Pro/MYPROJECTS/Tra
    Then verify with `codesign --verify --deep --strict --verbose=2` and print `codesign -dv --verbose=4` output (must show `TeamIdentifier=3FLG8W6B95` and `flags=...runtime`).
 5. **Build a .dmg**: `hdiutil create -volname "$APP_NAME" -srcfolder dist/TarsCompanion.app -ov -format UDZO "dist/${APP_NAME}.dmg"`, then sign the dmg with the same identity (`codesign --force --timestamp --sign "$SIGN_IDENTITY" "dist/${APP_NAME}.dmg"`).
 6. **Notarize and staple**: `xcrun notarytool submit "dist/${APP_NAME}.dmg" --keychain-profile "$NOTARY_PROFILE" --wait`, then `xcrun stapler staple "dist/${APP_NAME}.dmg"` and `xcrun stapler validate "dist/${APP_NAME}.dmg"`. If notarytool reports `Invalid`, fetch and print the log (`xcrun notarytool log <submission-id> --keychain-profile "$NOTARY_PROFILE"`) before exiting non-zero.
-7. Print a final summary: dmg path, its SHA-256, and the `spctl -a -vvv -t install dist/TarsCompanion.app` result.
+7. Print a final summary: dmg path, its SHA-256, and the `spctl -a -vvv -t exec dist/TarsCompanion.app` result.
 
 **Modify** `scripts/package_menubar_app.sh`: add one comment line above its `codesign --force --deep -s -` call stating that ad-hoc signing is for local development only and that `scripts/release_menubar_app.sh` produces the distributable build. Change nothing else.
 
