@@ -48,16 +48,16 @@ Test Suite 'All tests' passed at 2026-08-23 10:45:01.080.
 Command: `cd "/Volumes/Extreme Pro/MYPROJECTS/Transcriptor" && bash scripts/package_menubar_app.sh`
 Result: App bundle `dist/TarsCompanion.app` compiled and ad-hoc signed successfully.
 
-### C. Live Diagnostic Log Output
+### C. Historical Live Diagnostic Log Output (sanitized)
 Commands:
 ```bash
 cd "/Volumes/Extreme Pro/MYPROJECTS/Transcriptor" && pkill -x TarsCompanionApp 2>/dev/null; "dist/TarsCompanion.app/Contents/MacOS/TarsCompanionApp" > /tmp/diag.log 2>&1 &
-sleep 3; open "tars-companion://join?session=diagtest&key=diagkey&gateway=ws://127.0.0.1:8000/api/stream/native"; sleep 5; cat /tmp/diag.log; pkill -x TarsCompanionApp
+sleep 3; open "tars-companion://join?session=diagtest&key=<redacted>&gateway=ws://127.0.0.1:8000/api/stream/native"; sleep 5; cat /tmp/diag.log; pkill -x TarsCompanionApp
 ```
 
-**Verbatim Diagnostic Log:**
+**Sanitized historical diagnostic log:**
 ```
-2026-08-23 10:45:15.981 TarsCompanionApp[26750:5899791] TarsCompanion: URL recebida: tars-companion://join?session=diagtest&key=diagkey&gateway=ws://127.0.0.1:8000/api/stream/native
+2026-08-23 10:45:15.981 TarsCompanionApp[26750:5899791] TarsCompanion: URL recebida: <redacted>
 2026-08-23 10:45:15.981 TarsCompanionApp[26750:5899791] TarsCompanion: start solicitado — sessão diagtest, gateway ws://127.0.0.1:8000/api/stream/native
 2026-08-23 10:45:15.990 TarsCompanionApp[26750:5899791] TarsCompanion: permissão de captura concedida
 2026-08-23 10:45:15.990 TarsCompanionApp[26750:5899791] TarsCompanion: sink iniciado — conectando a ws://127.0.0.1:8000/api/stream/native/diagtest?stream_key=***
@@ -66,10 +66,14 @@ sleep 3; open "tars-companion://join?session=diagtest&key=diagkey&gateway=ws://1
 ```
 
 ### D. Stream Key Redaction Verification
-- Stream key `diagkey` was passed in the join URL query parameter.
+- A diagnostic stream key was passed in the join URL query parameter.
 - The sink connection log entry explicitly redacted the value:
   `sink iniciado — conectando a ws://127.0.0.1:8000/api/stream/native/diagtest?stream_key=***`
-- Confirmed that neither the plain text key `diagkey` nor any percent-encoded variant leaked in the diagnostic log.
+- The sink connection entry redacted its query value. A later security review
+  found that the earlier raw URL receipt entry still exposed the join
+  credential; this historical evidence is sanitized and does not qualify the
+  repaired implementation. The causal receipt-path tests added with the repair
+  supersede this claim.
 
 ### E. Backend Pytest Invariant Suite
 Command: `cd "/Volumes/Extreme Pro/MYPROJECTS/Transcriptor" && .venv/bin/python -m pytest backend/tests -q`
