@@ -2,12 +2,10 @@
 export function buildJoinLink(
   sessionId: string,
   streamKey: string,
-  gatewayBase?: string,
 ): string {
   const params = [
     `session=${encodeURIComponent(sessionId)}`,
     `key=${encodeURIComponent(streamKey)}`,
   ];
-  if (gatewayBase) params.push(`gateway=${encodeURIComponent(gatewayBase)}`);
   return `tars-companion://join?${params.join("&")}`;
 }

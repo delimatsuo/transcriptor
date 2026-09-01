@@ -28,10 +28,7 @@ export default function CompanionCommand({ sessionId, streamKey }: Props) {
     return null;
   }
 
-  const gatewayBase =
-    process.env.NEXT_PUBLIC_WS_STREAM_URL ||
-    "ws://127.0.0.1:8000/api/stream/native";
-  const joinHref = buildJoinLink(sessionId, streamKey, gatewayBase);
+  const joinHref = buildJoinLink(sessionId, streamKey);
 
   return (
     <div

@@ -11,10 +11,8 @@ struct TarsCompanionApp: App {
         MenuBarExtra {
             CompanionMenuView(controller: controller)
                 .onOpenURL { url in
-                    if let request = JoinLink.parse(url.absoluteString) {
+                    JoinLink.receive(url.absoluteString) { request in
                         handleJoin(request)
-                    } else {
-                        NSLog("TarsCompanion: link inválido")
                     }
                 }
         } label: {
@@ -33,8 +31,7 @@ struct TarsCompanionApp: App {
     private func handleJoin(_ request: JoinRequest) {
         switch controller.state {
         case .idle, .error:
-            let storedGateway = UserDefaults.standard.string(forKey: "tars_gateway_base") ?? "ws://127.0.0.1:8000/api/stream/native"
-            let effectiveGateway = request.gateway ?? storedGateway
+            let effectiveGateway = UserDefaults.standard.string(forKey: "tars_gateway_base") ?? "ws://127.0.0.1:8000/api/stream/native"
             Task {
                 await controller.start(
                     sessionID: request.sessionID,
@@ -184,12 +181,11 @@ struct CompanionMenuView: View {
             return
         }
         isInvalidLink = false
-        let effectiveGateway = request.gateway ?? gatewayBase
         Task {
             await controller.start(
                 sessionID: request.sessionID,
                 streamKey: request.streamKey,
-                gatewayBase: effectiveGateway
+                gatewayBase: gatewayBase
             )
         }
     }

@@ -2,18 +2,20 @@ import XCTest
 @testable import TarsNativeCompanion
 
 final class JoinLinkTests: XCTestCase {
-    func testFullURLWithGateway() {
+    func testRejectsFullURLWithGateway() {
         let input = "tars-companion://join?session=sess_123&key=key_abc&gateway=ws://custom:8000/api"
-        guard let request = JoinLink.parse(input) else {
-            XCTFail("Failed to parse full URL with gateway")
-            return
-        }
-        XCTAssertEqual(request.sessionID, "sess_123")
-        XCTAssertEqual(request.streamKey, "key_abc")
-        XCTAssertEqual(request.gateway, "ws://custom:8000/api")
+        XCTAssertNil(JoinLink.parse(input))
     }
 
-    func testFullURLWithoutGatewayYieldsNilGateway() {
+    func testRejectsFullURLWithEmptyGateway() {
+        let inputWithValueEmpty = "tars-companion://join?session=sess_123&key=key_abc&gateway="
+        XCTAssertNil(JoinLink.parse(inputWithValueEmpty))
+
+        let inputWithoutValue = "tars-companion://join?session=sess_123&key=key_abc&gateway"
+        XCTAssertNil(JoinLink.parse(inputWithoutValue))
+    }
+
+    func testFullURLWithoutGatewayYieldsValidRequest() {
         let input = "tars-companion://join?session=sess_456&key=key_def"
         guard let request = JoinLink.parse(input) else {
             XCTFail("Failed to parse full URL without gateway")
@@ -21,7 +23,6 @@ final class JoinLinkTests: XCTestCase {
         }
         XCTAssertEqual(request.sessionID, "sess_456")
         XCTAssertEqual(request.streamKey, "key_def")
-        XCTAssertNil(request.gateway)
     }
 
     func testCompactForm() {
@@ -32,7 +33,6 @@ final class JoinLinkTests: XCTestCase {
         }
         XCTAssertEqual(request.sessionID, "abc123")
         XCTAssertEqual(request.streamKey, "key456")
-        XCTAssertNil(request.gateway)
     }
 
     func testTrimsWhitespace() {
@@ -55,17 +55,6 @@ final class JoinLinkTests: XCTestCase {
         }
         XCTAssertEqual(request.sessionID, "s1")
         XCTAssertEqual(request.streamKey, "k+/=")
-    }
-
-    func testPercentEncodedGatewayInURLDecodes() {
-        let input = "tars-companion://join?session=s1&key=k1&gateway=ws%3A%2F%2F127.0.0.1%3A8000%2Fnative"
-        guard let request = JoinLink.parse(input) else {
-            XCTFail("Failed to parse percent-encoded gateway")
-            return
-        }
-        XCTAssertEqual(request.sessionID, "s1")
-        XCTAssertEqual(request.streamKey, "k1")
-        XCTAssertEqual(request.gateway, "ws://127.0.0.1:8000/native")
     }
 
     func testRejectsEmptyAndWhitespaceStrings() {
@@ -96,5 +85,93 @@ final class JoinLinkTests: XCTestCase {
 
     func testRejectsSinglePartWithoutColon() {
         XCTAssertNil(JoinLink.parse("justonepart"))
+    }
+
+    // MARK: - Causal Receipt Function Tests
+
+    func testReceiptHostileGatewayWithCanaryProducesZeroAdmissionsAndSafeLogs() {
+        let canary = "credential-canary"
+        let hostileURL = "tars-companion://join?session=sess_hostile&key=\(canary)&gateway=wss://exfil.example/api"
+
+        var logs: [String] = []
+        var admissions: [JoinRequest] = []
+
+        JoinLink.receive(hostileURL, log: { msg in
+            logs.append(msg)
+        }, onAdmit: { req in
+            admissions.append(req)
+        })
+
+        // Zero admissions
+        XCTAssertEqual(admissions.count, 0)
+
+        // Fixed receipt plus invalid logs
+        XCTAssertEqual(logs, [
+            "TarsCompanion: URL recebida",
+            "TarsCompanion: link inválido"
+        ])
+
+        // Neither canary, nor exfil host, nor raw URL in any log entry
+        for log in logs {
+            XCTAssertFalse(log.contains(canary))
+            XCTAssertFalse(log.contains("exfil.example"))
+            XCTAssertFalse(log.contains("tars-companion://"))
+            XCTAssertFalse(log.contains(hostileURL))
+        }
+    }
+
+    func testReceiptValidNoGatewayLinkAdmitsOnceAndExcludesKeyAndRawURLFromLogs() {
+        let secretKey = "VALID_STREAM_KEY_SECRET_54321"
+        let validURL = "tars-companion://join?session=sess_clean&key=\(secretKey)"
+
+        var logs: [String] = []
+        var admissions: [JoinRequest] = []
+
+        JoinLink.receive(validURL, log: { msg in
+            logs.append(msg)
+        }, onAdmit: { req in
+            admissions.append(req)
+        })
+
+        // Valid link admits exactly once
+        XCTAssertEqual(admissions.count, 1)
+        XCTAssertEqual(admissions.first?.sessionID, "sess_clean")
+        XCTAssertEqual(admissions.first?.streamKey, secretKey)
+
+        // Fixed receipt log only
+        XCTAssertEqual(logs, [
+            "TarsCompanion: URL recebida"
+        ])
+
+        // Logs exclude key and raw URL
+        for log in logs {
+            XCTAssertFalse(log.contains(secretKey))
+            XCTAssertFalse(log.contains("tars-companion://"))
+            XCTAssertFalse(log.contains(validURL))
+        }
+    }
+
+    func testReceiptEmptyGatewayRejectedWithSafeLogs() {
+        let canary = "EMPTY_GATEWAY_CANARY_112233"
+        let url = "tars-companion://join?session=sess_1&key=\(canary)&gateway="
+
+        var logs: [String] = []
+        var admissions: [JoinRequest] = []
+
+        JoinLink.receive(url, log: { msg in
+            logs.append(msg)
+        }, onAdmit: { req in
+            admissions.append(req)
+        })
+
+        XCTAssertEqual(admissions.count, 0)
+        XCTAssertEqual(logs, [
+            "TarsCompanion: URL recebida",
+            "TarsCompanion: link inválido"
+        ])
+        for log in logs {
+            XCTAssertFalse(log.contains(canary))
+            XCTAssertFalse(log.contains(url))
+        }
     }
 }

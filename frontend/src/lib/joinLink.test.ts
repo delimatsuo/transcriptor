@@ -3,27 +3,29 @@ import { test } from "node:test";
 
 import { buildJoinLink } from "./joinLink.ts";
 
-test("builds deep link with gateway", () => {
+test("builds deep link without gateway", () => {
+  const link = buildJoinLink("sess_123", "key_abc");
   assert.equal(
-    buildJoinLink(
-      "sess_123",
-      "key_abc",
-      "ws://127.0.0.1:8000/api/stream/native",
-    ),
-    "tars-companion://join?session=sess_123&key=key_abc&gateway=ws%3A%2F%2F127.0.0.1%3A8000%2Fapi%2Fstream%2Fnative",
+    link,
+    "tars-companion://join?session=sess_123&key=key_abc",
   );
+  assert.equal(link.includes("gateway"), false);
 });
 
-test("omits gateway when not provided", () => {
+test("omits gateway when building deep link", () => {
+  const link = buildJoinLink("sess_456", "key_def");
   assert.equal(
-    buildJoinLink("sess_456", "key_def"),
+    link,
     "tars-companion://join?session=sess_456&key=key_def",
   );
+  assert.equal(link.includes("gateway"), false);
 });
 
 test("encodes special characters in key and session", () => {
+  const link = buildJoinLink("s/1", "k/+=");
   assert.equal(
-    buildJoinLink("s/1", "k/+="),
+    link,
     "tars-companion://join?session=s%2F1&key=k%2F%2B%3D",
   );
+  assert.equal(link.includes("gateway"), false);
 });
