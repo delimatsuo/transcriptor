@@ -1,0 +1,512 @@
+Transcriptor Task 07 — Repair 10B.5B.1I
+Close the deterministic control failure and every remaining teardown/proxy/ledger gap
+
+You are Antigravity/Gemini, bounded code builder. Codex is designer, verifier,
+and Git owner.
+
+EDIT EXACTLY
+
+  backend/tests/test_auth_matrix.py
+
+Edit only these four current regions:
+
+1. In `_run_primary_negative_readiness_row`, from
+   `# 2. Direct invocations inside an explicitly owned fresh event loop`
+   through immediately before `# 3. Exact schema assertion`.
+2. The primary expected-effects block from `expected_effects = {` through its
+   fixed mismatch assertion, immediately before
+   `# 4. Identity & content snapshots`.
+3. In `test_unready_fallback_close_when_no_send_denial_response`, from
+   `# Direct invocations in explicitly owned event loop` through immediately
+   before `# 3. Exact schema assertion for fallback`.
+4. The fallback expected-effects block from `expected_effects = {` through its
+   fixed mismatch assertion, immediately before
+   `# 4. Identity & content snapshots`.
+
+Do not edit imports, helpers/classes outside these regions, TestClient setup or
+cleanup, endpoint inputs or denial/close assertions, the three positive
+controls, malformed-subprotocol tests, `CustomBaseException`, lifecycle tests,
+production, reports, or any other file.
+
+Do not use Git. Do not run Python, tests, pytest, compilers, linters, formatters,
+package/project commands, or the clean-room wrapper. Do not inspect `.env*`,
+AGENTS.md, frontend/AGENTS.md, or frontend/CLAUDE.md. No network/provider/
+Firebase/GCP/cloud/credential/live/device/deployment actions. Static editing,
+static source reads, and `/usr/bin/shasum -a 256` only.
+
+EXACT START
+
+repo /Volumes/Extreme Pro/MYPROJECTS/Transcriptor
+branch codex/recruiter-phase
+HEAD dc262e55f62771615102cef22667f21c3a52a219
+canonical executable digest
+  5dcbc5b902ef19e02fdcc86b35785f78965e159238b9da69f7ee8e44cd76ca78
+backend/tests/test_auth_matrix.py SHA-256
+  3dd330748844e0d7800098e6145fd0f129806123155e090960a34265cd70e96e
+backend/main.py frozen SHA-256
+  4033f14dabcfc04ec2c8cd60f63d4761099a4646177887c6fe885b79d6e73711
+backend/tests/test_task07_auth_source_readiness.py frozen SHA-256
+  0f0b922591763bd39b69a78a136a56eb77261090ed1a07e8c3e56f512f866d37
+backend/tests/test_startup_credentials.py frozen SHA-256
+  eccea857d155fab2a3f4866b52630714378b9e39e72470abcddc196d4f972758
+previous packet SHA-256
+  4df761155a9272207d7530c09a6517b014b95eb2daebaa5e04f80655b7204f0f
+
+Frozen source-region evidence:
+
+* prefix through immediately before
+  `def _run_primary_negative_readiness_row`: SHA-256
+  cfcf9d0e8b3c38ca6c26bbe8f77c24c98f11305236b6c1e9503d13e8ef8f18b3
+* positive controls: SHA-256
+  a5551a1494d34b353392fb5d8391cd2932c2f1d4469d8b5b43fb7cefdbcd3198
+* malformed-subprotocol block: SHA-256
+  da02b645eae39b06c3272ee93b84325abc3ea7509a3d5512d386b6a980a4d2ba
+* `CustomBaseException` plus lifecycle tail: SHA-256
+  87aa966eaa0ca46847a5a32c8b3e8c228c54e499c7e280cd24a7ab2efafe7b26
+
+Dirty state is intentional; no staged paths. Stop if any binding differs.
+
+WHY 1H IS REJECTED
+
+The 1H source is deterministically red without needing execution:
+
+* `control_proxy_tracker` contains only `proxy_cancels`, but the frozen
+  `TrackedTaskProxy.cancel()` indexes `native_stall_task_cancel_calls` for the
+  control proxy. The cancel raises, never delegates to the real Task, and the
+  identity ledger prevents retry. The parking Task remains pending. Nothing
+  ever appends a proxy object to `proxy_cancels`, so that assertion is also
+  impossible.
+* `safe_bounded_drive` calls `is_closed()` outside protection and accepts a
+  `None`/invalid `call_later` return before `run_forever`; the outer `finally`
+  also begins with an unguarded `is_closed()` call. Cleanup exceptions are
+  still swallowed in one branch.
+* runner-local `finally` blocks cancel/gather retained production Tasks before
+  the required outer-finally disposal phase.
+* Task positional arguments are ignored; create_task/ensure_future still have
+  raw Task/Future returns and unscheduled-coroutine leak paths.
+* the construction-control boolean is never asserted and no exact injected
+  failure identity is retained.
+* reverse proxy/task/coroutine ledgers and the exact runner relation remain
+  incomplete; `create_task` and `ensure_future` also have no direct local
+  witness, so a short-lived raw-return mutant can evade loop inventory.
+
+KEEP THE CLOSED WORK
+
+Preserve the exact-string normalizer, concurrent-Future classification,
+registry inherited-operation hooks, TestClient cleanup, exact endpoint inputs
+and denial/close assertions, module-local proxies, source duplicate flag,
+direct test-owned runner construction, finite checkpoints, exact category
+mapping, independent default dictionaries with separate row overrides, hard-
+coded event traces, fixed dictionary mismatch codes, frozen regions, and the
+three core isolated-control design. Positive controls remain frozen for later
+10B.5B.2 rebuilding and must not be edited or executed.
+
+APPLY EVERY CLAUSE SYMMETRICALLY TO PRIMARY AND FALLBACK
+
+1. MAKE THE NORMAL CONTROL PATH ACTUALLY GREEN
+
+1. Replace the impossible `{"proxy_cancels": []}` control tracker with a
+   separate local tracker compatible with frozen `TrackedTaskProxy`: include
+   the exact browser/native cancel/await list keys it may index plus a local
+   `proxies` identity list. It must remain completely separate from `effects`.
+
+2. When each cancel/late control proxy is created, retain that exact proxy once
+   in the local `proxies` list. For the cancellation control, prove exactly one
+   record was appended to the frozen proxy's native cancel list, exactly the
+   same record object occurs once in `cancel_control_proxy.cancel_calls`, the
+   exact proxy occurs once in `proxies`, and the real Task cancel returned exact
+   `True`. Prove the late proxy has zero cancel calls. Do not invent a tracker
+   key that frozen `TrackedTaskProxy` never writes.
+
+3. Add terminal-outcome ledgers that distinguish normal completion,
+   cancellation, and exception. Outcome retrieval must occur once per retained
+   terminal Task. Require the cancellation control's Task to be exactly
+   cancelled and recorded once as cancelled; require the late control's Task
+   to be non-cancelled, exception-free, and recorded once as normal. Do not
+   accept `done()` alone for either control.
+
+3A. Add two fresh native-source surface witnesses inside the cancellation-
+    control group, without adding production effects:
+
+    * one source routed directly through `MainAsyncioProxy.create_task`; and
+    * one source routed directly through `MainAsyncioProxy.ensure_future`.
+
+    Give them separate exact local source identities, separate local origin
+    lists, and closed explicit control categories. For each, substitute its own
+    test-owned normally finishing coroutine, retain the exact returned proxy,
+    and require exact source close, exact category origin, exact record/proxy/
+    real-Task/controlled-coroutine relations, one normal outcome retrieval,
+    non-cancelled terminal state, and zero proxy/harness cancellation. They may
+    share the compatible local control-proxy tracker but must never touch
+    `effects`. Keep the original cancellation source routed through `.Task`
+    and the original late source routed through `.Task`; these two new witnesses
+    causally exercise the other two creation surfaces and make a raw short-lived
+    return observable.
+
+3B. Add four exact hostile surface probes. The first re-pass probe is a required
+    success path. Only the unclassified-Future, resolver-miss, and positional
+    probes have exact locally expected fixed-rejection identities so the
+    ordinary row stays green. Use private sentinel/exception identities and
+    separate local outcome ledgers; never inspect exception text and never write
+    the three exact expected rejection events into `effects` or the ordinary
+    `runner_failures` list. Every setup, source-close, construction, retention,
+    Future-cleanup, outcome-retrieval, or identity failure remains ordinary
+    fixed-red, including failures supporting an expected-rejection probe. Any
+    non-exact invocation remains ordinary fixed-red:
+
+    * Re-pass the exact cancellation-control proxy through
+      `MainAsyncioProxy.ensure_future(..., loop=owned_loop)` and require the
+      exact same proxy identity. Then re-pass its exact classified real Task and
+      again require the exact same proxy. Record both returned identities once.
+      Both calls must succeed; any exception, missing return, or wrong identity
+      is an ordinary fixed failure and may not be locally suppressed.
+    * Create and strongly retain one exact owned-loop but unclassified
+      `real_asyncio.Future`. Pass it to `ensure_future` and require the method's
+      exact private fixed-rejection identity, with no returned object and no
+      wrapper Task/proxy/record. In unconditional outer-finally cleanup, cancel
+      that Future once, require cancel return `is True`, retrieve its cancelled
+      outcome once, and assert exact owner-loop/cancel/retrieval/terminal
+      identities outside cleanup. It is a Future probe, not a Task ledger entry.
+    * Create one fresh exact native source and route it through a designated
+      `create_task` resolver-miss probe. The custom factory must still close the
+      source, construct a normally finishing controlled coroutine, real Task,
+      exact proxy, record, origins, and strong ledgers. Inject the resolver miss
+      only after those identities exist; require the exact private fixed-
+      rejection identity and no returned object. The retained real Task must
+      finish normally and be retrieved once. A raw return, missing retention,
+      or missing rejection fails fixed.
+    * Create one fresh exact native source and call `MainAsyncioProxy.Task` with
+      one private unsupported positional sentinel plus the exact owned loop.
+      Require the exact private positional-rejection identity, exact source
+      close attempt/success/closed state, no returned object, and zero Task,
+      proxy, record, or controlled-coroutine identities for that source.
+
+    The happy-path witnesses in 3A plus these probes must causally execute every
+    Task/create_task/ensure_future branch named above. Deleting a rejection,
+    returning raw, skipping resolver validation, or ignoring positional args
+    must fail an exact local outcome/identity assertion even if the affected
+    Future/Task is short-lived and absent from `asyncio.all_tasks()` later.
+
+2. TRUE OUTER-FINALLY DISPOSAL AND RESTORE CONTINUATION
+
+4. Remove all retained-task cancellation, `asyncio.wait`, gather, terminal
+   retrieval, and unhanded-source closing from the runner coroutine's own
+   `finally`. The runner may set `current_phase = "cleanup"`, but the first
+   retained-task inventory/disposal/retrieval must occur only inside the outer
+   `finally`.
+
+5. Before the outer `finally`, the initial bounded runner drive may execute the
+   endpoint. If the runner remains pending, record fixed timeout state but do
+   not cancel or drive it there. Defer timeout cancellation and its bounded
+   progress window to the outer-finally disposal phase.
+
+6. Make the disposal phase the first protected phase inside the outer
+   `finally`. It must run before pre-restore identity capture and all five
+   restores. Pre-restore capture and every restore/loop-close attempt must be in
+   a later `finally` or otherwise structurally guaranteed even if disposal
+   records an unexpected failure.
+
+7. A single broad catch that skips later disposal steps is insufficient. Guard
+   independently: owner/loop closed-state reads, all five seam reads/reinstalls
+   and repair verifications, task inventories, every `done`/`get_loop`/
+   `get_coro`/`cancelled` read, each cancel, each bounded drive, late callback
+   registration, final scan, source close, and terminal retrieval. Each failure
+   adds an explicit fixed literal and later cleanup steps still execute. Replace
+   every cleanup `except BaseException: pass` with a fixed code while
+   continuing.
+
+8. Capture `threading.get_ident()` under a fixed-code guard inside the owner.
+   Remove the unused non-verified `installed_*` flags, or use them without ever
+   treating them as authority. Runner execution and cleanup drives require the
+   exact verified custom factory plus all four exact module-proxy identities;
+   also require a created open owned loop, captured original factory (where
+   legitimate `None` differs from the unset sentinel), captured owner thread,
+   and non-None proxy objects.
+
+9. At disposal start, before any cleanup drive, sentinel-read every seam. For
+   each lost seam, record its distinct fixed lost code, reinstall the exact
+   custom factory/proxy under its own guard, and verify exact identity under its
+   own guard. If all five exact identities and an open owned loop cannot be
+   proven, record `CLEANUP_DRIVE_UNSAFE_SEAMS`, request each safe cancellation
+   once where possible, close all still-unhanded known source coroutines, skip
+   every loop drive, and still execute final inventory/retrieval attempts and
+   all restores/loop-close attempts.
+
+10. Close any known but unhanded `tracked_expiry_coro_obj`, cancellation-control
+    source, or late-control source exactly once in outer-finally cleanup. An
+    intercepted source already has its exact attempt/success and must not be
+    closed twice. No test-owned runner/replacement/construction-control
+    coroutine may enter the source-close ledger.
+    Use separate outer-rescue attempt/success ledgers. Every outer rescue close
+    is leak prevention only: append an ordinary fixed `SOURCE_RESCUE_REQUIRED`
+    failure, retain its exact rescue close proof, and never let a rescue entry
+    satisfy an interception-time or positional-rejection close requirement.
+    Apply this to every known 3A/3B native source, not only the examples named
+    above. The late-control source is intentionally unhanded when outer cleanup
+    begins: do not rescue or close it before its required callback scheduling
+    and bounded late-discovery window. Rescue it only after that handoff cannot
+    be proven (or cleanup seams are unsafe), then keep the row ordinary-red.
+
+3. NO TIMER HANDLE, NO RUN_FOREVER
+
+11. Make the bounded-drive helper unable to raise. Do not perform an unguarded
+    loop-state read in it. Register `call_later(duration, loop.stop)` under the
+    named registration code. Begin with an unset sentinel and require the
+    returned object to be a non-None valid real asyncio TimerHandle (and not
+    already cancelled) before calling `run_forever`. A deleted/None/fake/cancelled
+    registration must record the registration code and return without any loop
+    drive. Guard run and exact-handle cancel independently; cancel the exact
+    handle once even if run raises.
+
+12. Use explicit literal registration/run/cancel triples for all five named
+    window classes: initial endpoint execution, timeout settlement,
+    cancellation progress, checkpoint progress, and late discovery. Timer
+    registration failure must never be followed by `run_forever`. No drive may
+    occur after final rescan/retrieval or after restoration begins.
+
+13. While cleanup seams are exact, use a fixed finite sequence: inventory and
+    cancel pending Tasks once; bounded timeout settlement if applicable;
+    bounded cancellation progress; a fixed finite number of inventory/cancel/
+    bounded checkpoints; schedule the already-created late source callback;
+    one bounded late-discovery window; one final rescan; cancel each newly found
+    pending Task at most once; flag every remaining pending Task; retrieve every
+    terminal retained outcome once; never drive again. Add a separate exact
+    final-inventory execution ledger: record the one final loop-inventory call
+    only after it returned, record every already-retained Task examined by the
+    final pass once, and assert outside cleanup that the final pass completed
+    exactly once and examined every final retained Task exactly once. This
+    evidence must fail if the final rescan is deleted even though the late Task
+    was already strongly retained by its construction helper.
+
+4. EXACT CLOSE AND CONSTRUCTION-FAILURE CLASSIFICATION
+
+14. `close_test_owned_once` must identity-deduplicate, record an attempt only
+    for a real Task-construction failure, call actual `close()`, and return or
+    expose exact proof only after the call returned and direct native-coroutine
+    post-state is `cr_frame is None` and `cr_running is False`. Missing attrs,
+    deleted close, a raise, or false post-state is fixed-red.
+
+15. The shared test-owned Task constructor must retain the coroutine before
+    construction, validate that a successful return is an exact usable real
+    Task on the owned loop, and retain it once in both strong Task ledgers. A
+    `None`, non-Task, wrong-loop Task, or ordinary construction failure must not
+    be returned as valid; safely retain/cancel an actual Task or close an
+    unscheduled coroutine, add a fixed ordinary code, and raise only a fixed
+    failure.
+
+16. Create one private injected exception instance (or equally exact private
+    identity), and have the injected constructor raise that exact instance.
+    Retain an exact `(construct_fail_coro_obj, exception_identity)` expected-
+    classification record only when the same construction helper caught that
+    exact instance for that exact coroutine and exact close success/post-state
+    was proven. If the injected constructor returns, record a distinct fixed
+    unexpected-success code and retain/cancel any Task it returned. Assert
+    exactly one expected classification identity outside cleanup; remove the
+    unused boolean.
+
+17. Assert the construction-control coroutine has exactly one test-close
+    attempt, one success, exact closed native state, zero source-close attempts,
+    and zero Task identities in either strong Task ledger. Assert the complete
+    test-close ledgers contain no other identity.
+
+18. `close_source_once` must read direct native `cr_frame`/`cr_running` state
+    under guards, require exact open/non-running pre-state, use an actual
+    `close_returned` flag, and append success only when valid pre-state, returned
+    close, and exact closed/non-running post-state all hold. Missing attrs may
+    not pass via `getattr` defaults.
+
+18A. Give source closes explicit phase ownership with distinct identity ledgers:
+
+    * factory/interception attempts and successes;
+    * the exact positional-probe rejection attempt and success;
+    * other ordinary fixed-red surface-rejection closes, if needed; and
+    * outer-finally rescue attempts and successes.
+
+    In `custom_task_factory`, complete and verify the exact interception close
+    attempt/success for the exact source immediately before creating any
+    replacement coroutine, real Task, proxy, or record. If it is absent or not
+    proven, add a fixed code and construct none of those identities. The exact
+    positional probe must complete and verify its positional close before its
+    private expected rejection is classified/raised. Outer rescue uses only the
+    rescue ledger and ordinary `SOURCE_RESCUE_REQUIRED`; it can never backfill
+    either required phase ledger. Keep a combined close ledger only as an
+    additional duplicate/exact-total oracle, never as a substitute for phase
+    ownership.
+
+5. PROXY-CLOSED TASK SURFACES WITH NO RAW FALLBACK
+
+19. Use one strict identity resolver for a real Task: exactly one retained
+    `InterceptedTaskRecord`, the same `real_task`, and one exact non-None proxy.
+    Resolution failure adds only its caller's fixed code and raises a fixed
+    failure while the strong real Task remains available for cleanup.
+    Support one exact private resolver-miss probe identity from clause 3B only:
+    it must deliberately produce the expected fixed rejection after the full
+    record/proxy/strong-ledger construction, without deleting or weakening the
+    ordinary resolver checks.
+
+20. `MainAsyncioProxy.Task`: reject every unsupported positional argument with
+    a fixed code and close the still-unscheduled source once; pop/validate at
+    most one `loop` kwarg; route the source through the custom factory; resolve
+    and return only the exact proxy. Never ignore `args` or return raw.
+    The exact private positional probe is expected locally; every other
+    positional invocation appends the ordinary fixed failure and raises fixed.
+
+21. `create_task`: apply the same positional/loop normalization, route through
+    the exact custom factory or exact verified owned-loop factory, and resolve/
+    return only the exact proxy. On resolution failure retain the real Task for
+    cleanup and fail fixed. Never return `real_task` as fallback.
+    The exact designated resolver-miss probe must retain its constructed Task,
+    proxy, record, source-close proof, and normal terminal outcome while the
+    call itself produces only its exact expected local fixed rejection.
+
+22. `ensure_future`: reject unsupported positional args and duplicate/wrong
+    loop fixed, closing only a still-unscheduled native coroutine once. For a
+    native coroutine, use the same proxy-returning creation path. For a
+    `TrackedTaskProxy`, validate its exact retained record/task/owned-loop and
+    return that exact proxy. For a real Task, require owned loop and exact
+    retained record then return its proxy. Any unclassified Task/Future/other
+    awaitable must be retained if it is an actual owned-loop Task, then fail
+    fixed; do not silently return it, create an untracked wrapper, or leak an
+    unscheduled native coroutine.
+
+    The direct create_task and ensure_future surface witnesses from clause 3A
+    must each receive the exact proxy resolved for the exact newly constructed
+    Task. A raw Task/Future return, wrong proxy, missing record, or a path that
+    bypasses the custom factory must fail their fixed identity assertions even
+    if the raw Task finishes before final loop inventory.
+
+    The existing-proxy and classified-real-Task re-pass probes must both return
+    the same exact proxy. The exact unclassified Future probe must be rejected
+    without a wrapper/raw return and then be cancelled/retrieved exactly once
+    by outer-finally probe cleanup. All other unclassified Future/awaitable
+    cases remain ordinary fixed failures.
+
+23. If origin capture, category selection, replacement-coroutine creation,
+    real-Task construction, proxy construction, or record retention fails,
+    keep the source close proof and any successfully constructed real Task in
+    strong cleanup ledgers. Add a fixed code; never leak the source or raw Task.
+    Every successfully retained intercepted record must point to a source with
+    its exact one interception-phase attempt/success completed before controlled
+    construction. A later rescue close does not qualify.
+
+6. EXACT CANCELLATION AND BIDIRECTIONAL LEDGERS
+
+24. `harness_cancel_once` must guard and validate owner thread, exact owned
+    loop, and pending state before recording an attempt. For a classified Task,
+    require its exact non-None designated proxy; proxy-resolution failure is
+    fixed and must not fall back to raw cancellation. For an unclassified
+    test-owned Task, raw cancellation is allowed. Append the Task identity
+    immediately before the one actual cancel call; require return `is True`;
+    False/non-bool/raise is fixed-red and never retried.
+
+25. Keep the closed explicit category mapping, adding only the two isolated
+    `create_task_control` and `ensure_future_control` happy categories plus the
+    exact private `create_task_resolver_miss_control` category and their exact
+    local origin lists. Require exact origin record keys and source identity.
+    Require the cancel, create_task, ensure_future, resolver-miss, and late local
+    origin lists to each contain only their one exact record and to remain
+    outside `effects`. The positional source has no record/category origin.
+
+26. Add both directions of every identity proof:
+
+    * each record has one source/origin/controlled coroutine/real Task/proxy and
+      exact category-list membership;
+    * every classified proxy appears exactly once in exactly one record and in
+      the correct local/production proxy tracker;
+    * every record real Task/source/controlled coroutine/origin is unique to one
+      record;
+    * every `test_owned_task` occurs exactly once in `all_known_tasks`, and every
+      `all_known_task` occurs exactly once in `test_owned_tasks`;
+    * every Task's direct `get_coro()` is exactly one retained test-owned
+      coroutine; every retained test-owned coroutine is exactly one runner,
+      record-controlled, or expected construction-failure coroutine;
+    * `runner_task` and `runner_coro_obj` are non-None, occur exactly once in
+      their strong ledgers, relate by exact direct `get_coro()` identity, never
+      occur in either source-close ledger, finish normally, and have one normal
+      outcome retrieval;
+    * every source attempt has exactly one success only after proof; every
+      intercepted or known unhanded source has its exact one attempt/success;
+      every test-owned coroutine has zero source attempts.
+    * the final loop-inventory completion ledger has one entry, and the final
+      examined-task ledger is bidirectionally identical to the final retained
+      Task ledger with exact-one counts.
+    * every expected surface-probe exception/sentinel outcome occurs exactly
+      once; both ensure_future re-pass returns are the exact cancellation proxy;
+      the unclassified Future is absent from all Task/proxy/record ledgers and
+      has exact one cancellation/retrieval; the resolver-miss real Task remains
+      fully retained and normal; and the positional source has one close proof
+      but zero constructed identities.
+    * every record source has exact one interception-phase attempt/success and
+      zero positional/rescue entries; the positional probe source has exact one
+      positional attempt/success and zero interception/rescue entries; every
+      rescue identity has exact one rescue attempt/success plus ordinary
+      `SOURCE_RESCUE_REQUIRED`, and no required control source may be rescued in
+      a green row. Phase-ledger identities and the combined ledger must agree
+      bidirectionally without permitting one phase to satisfy another.
+
+27. Perform all outside-cleanup Task/loop/coroutine state reads through guarded
+    fixed-code helpers or explicit try/except that raises a fixed literal
+    `AssertionError`. Do not let `get_loop`, `get_coro`, `done`, `cancelled`,
+    `exception`, `cr_frame`, `cr_running`, mapping access, or baseline factory
+    reads expose arbitrary exception/object reprs through pytest rewriting.
+
+7. KEEP THE INDEPENDENT SCHEMA ORACLE
+
+28. In each expected block keep the current independent literal dictionary with
+    every exact default key/value. Do not derive/call `make_wired_effect_schema`
+    or fold row values into the initializer. Keep the separate explicit row
+    override assignments and exact hard-coded trace list.
+
+29. Keep only the fixed content-free dictionary comparisons:
+
+      if effects != expected_effects:
+          raise AssertionError("EFFECTS_SCHEMA_MISMATCH")
+
+    and the analogous fallback code. No rewritten/bare assert over effects,
+    Tasks, coroutines, proxies, handles, ledgers, auth objects, or mappings.
+
+STATIC SELF-REVIEW — DO NOT RUN
+
+Name the exact fixed failure/identity check hit by each:
+
+1. ordinary cancellation-control execution with the frozen proxy API;
+2. control proxy cancel returns False/non-bool/raises or fails to cancel real Task;
+3. a timer registration returns None/fake/cancelled or raises;
+4. loop state/seam read or repair raises before restoration;
+5. runner-local disposal reappears before the outer finally;
+6. initial seam install/identity verification fails;
+7. any seam is rebound before cleanup or cannot be repaired;
+8. Task/create_task/ensure_future receives positional, duplicate-loop,
+   wrong-loop, raw Task/Future, or resolution failure, including deletion of
+   any exact 3B expected rejection/return-identity probe;
+9. source close is deleted/raises, starts closed, lacks native attrs, moves
+   after controlled construction, or is masked by an outer rescue close;
+10. injected construction returns, raises the wrong identity, or its actual
+    close/post-close/classification is deleted;
+11. a classified Task has no proxy or is raw-cancelled;
+12. a surplus proxy/task/coroutine/origin/close/outcome ledger entry appears;
+13. cancellation control is not exactly cancelled, or the create_task,
+    ensure_future, or late control is not exact normal completion;
+14. late scheduling/window/final discovery is deleted;
+15. a second-checkpoint Task, cancellation-suppressing Task, or terminal
+    exception appears;
+16. terminal outcome retrieval is deleted/raises/duplicates;
+17. one restore or loop-close fails before later restore attempts;
+18. actual schema helper loses an otherwise-unused key;
+19. denial/close moves before readiness with counters otherwise unchanged.
+
+DONE RESPONSE
+
+Return exact file/hash; normal control tracker compatibility plus direct Task,
+create_task, and ensure_future witnesses; exact existing-proxy/real-Task Future
+re-pass, unclassified-Future rejection/cleanup, create_task resolver-miss, and
+Task positional probes; true outer-finally-only disposal;
+safe five-seam gate/reinstallation; timer-handle/no-
+drive proof; phase-owned interception/positional/rescue source close, exact
+test-owned close and injected identity; no-raw
+Task/create_task/ensure_future behavior; exact cancellation result; normal vs
+cancelled outcome proof; fully bidirectional ledgers; bounded final scan and
+restore-after-last-drive; independent default dictionaries plus separate row
+overrides; fixed-only failures; nineteen static mutant outcomes; frozen-region
+confirmation; untouched confirmation. Do not claim tests passed. No Git or
+project execution.
