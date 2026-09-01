@@ -319,6 +319,19 @@ export default function SessionControls({
         </button>
       </div>
 
+      {/* Microphone Selection & Live Audio VU Meter */}
+      {audioCapture && (
+        <AudioDeviceSelector
+          devices={audioCapture.devices}
+          selectedDeviceId={audioCapture.selectedDeviceId}
+          onSelectDevice={(id) => void audioCapture.selectDevice(id)}
+          audioLevel={audioCapture.audioLevel}
+          isStreaming={audioCapture.isStreaming}
+          permissionState={audioCapture.permissionState}
+          onRequestPermission={audioCapture.requestPermission}
+        />
+      )}
+
       {/* Interview prep panel */}
       {showInterviewPrep && (
         <div
@@ -330,19 +343,6 @@ export default function SessionControls({
             boxShadow: "0 1px 4px rgba(0, 0, 0, 0.04)",
           }}
         >
-          {/* Microphone Selection & Live Audio VU Meter */}
-          {audioCapture && (
-            <AudioDeviceSelector
-              devices={audioCapture.devices}
-              selectedDeviceId={audioCapture.selectedDeviceId}
-              onSelectDevice={(id) => void audioCapture.selectDevice(id)}
-              audioLevel={audioCapture.audioLevel}
-              isStreaming={audioCapture.isStreaming}
-              permissionState={audioCapture.permissionState}
-              onRequestPermission={audioCapture.requestPermission}
-            />
-          )}
-
           <h3
             style={{
               fontSize: 14,
