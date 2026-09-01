@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 from datetime import datetime, timezone
 from typing import Any, Literal
 
@@ -17,6 +18,10 @@ MAX_REQUEST_BYTES = 2_000_000
 MAX_UNIQUE_ENTRIES = 400
 MAX_ENTRY_CHARS = 60_000
 MAX_TRANSCRIPT_CHARS = 1_000_000
+MAX_REPORT_SOURCE_BYTES = 900_000
+RFC3339_PATTERN = re.compile(
+    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$"
+)
 
 
 def _require_exact_text(value: str, *, label: str) -> str:
@@ -82,7 +87,9 @@ class MeetTranscriptEntry(BaseModel):
     @field_validator("start_time", "end_time", mode="before")
     @classmethod
     def timestamp_shape(cls, value: Any, info) -> Any:
-        if value is not None and not isinstance(value, (str, datetime)):
+        if value is not None and (
+            not isinstance(value, str) or RFC3339_PATTERN.fullmatch(value) is None
+        ):
             raise ValueError(f"{info.field_name} must be an RFC3339 timestamp string")
         return value
 
@@ -165,6 +172,10 @@ class GoogleMeetImportRequest(BaseModel):
             raise ValueError(f"{info.field_name} must contain visible content")
         if "\x00" in value:
             raise ValueError(f"{info.field_name} contains a NUL character")
+        if len(value.encode("utf-8")) > MAX_REPORT_SOURCE_BYTES:
+            raise ValueError(
+                f"{info.field_name} exceeds {MAX_REPORT_SOURCE_BYTES} UTF-8 bytes"
+            )
         return value
 
     @model_validator(mode="after")
@@ -214,10 +225,30 @@ class GoogleMeetImportRequest(BaseModel):
         if len(raw) > MAX_REQUEST_BYTES:
             raise ValueError(f"request JSON exceeds {MAX_REQUEST_BYTES} UTF-8 bytes")
         try:
-            raw.decode("utf-8")
+            text = raw.decode("utf-8")
         except UnicodeDecodeError as exc:
             raise ValueError("request JSON must be valid UTF-8") from exc
-        return cls.model_validate_json(raw)
+
+        def reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+            value: dict[str, Any] = {}
+            for key, item in pairs:
+                if key in value:
+                    raise ValueError(f"duplicate JSON object key: {key}")
+                value[key] = item
+            return value
+
+        def reject_nonstandard_constant(value: str) -> None:
+            raise ValueError(f"invalid JSON constant: {value}")
+
+        try:
+            payload = json.loads(
+                text,
+                object_pairs_hook=reject_duplicate_keys,
+                parse_constant=reject_nonstandard_constant,
+            )
+        except json.JSONDecodeError as exc:
+            raise ValueError("request JSON is invalid") from exc
+        return cls.model_validate(payload)
 
 
 class NormalizedGoogleMeetImport(BaseModel):
@@ -298,7 +329,11 @@ def normalize_google_meet_import(
     """Normalize a manual artifact without touching session or capture runtime state."""
     imported_at = _aware(imported_at, label="imported_at")  # type: ignore[assignment]
     assert imported_at is not None
-    source_material = f"{request.source_type}\x00{request.source_artifact_id}".encode("utf-8")
+    source_material = json.dumps(
+        [owner_id, org_id, request.source_type, request.source_artifact_id],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
     source_key = hashlib.sha256(source_material).hexdigest()
     session_id = f"meet-import-{source_key[:32]}"
 

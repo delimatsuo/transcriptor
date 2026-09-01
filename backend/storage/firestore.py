@@ -31,6 +31,7 @@ from backend.sessions.reports import (
     approve_report,
     report_from_record,
     report_to_record,
+    render_internal_summary,
     update_report_content,
 )
 from backend.sessions.workspace_imports import NormalizedGoogleMeetImport
@@ -41,6 +42,13 @@ from backend.workers.google_meet_import import (
     TranscriptImportConflict,
     TranscriptImportDeleted,
     TranscriptImportNotFound,
+)
+from backend.workers.interview_report import (
+    ReportGenerationClaim,
+    ReportGenerationConflict,
+    ReportGenerationJob,
+    ReportGenerationNotFound,
+    ReportGenerationStatus,
 )
 
 logger = structlog.get_logger()
@@ -91,11 +99,23 @@ class FirestoreStorage:
         session_ref = db.collection("sessions").document(session.id)
         generation_ref = session_ref.collection("reports").document("generation")
         current_ref = session_ref.collection("reports").document("current")
+        tombstone_ref = db.collection("session_tombstones").document(session.id)
 
         @firestore.async_transactional
         async def save_in_transaction(transaction):
+            existing_session = await session_ref.get(transaction=transaction)
             generation = await generation_ref.get(transaction=transaction)
             current = await current_ref.get(transaction=transaction)
+            tombstone = await tombstone_ref.get(transaction=transaction)
+            existing_data = existing_session.to_dict() or {}
+            if tombstone.exists or (
+                existing_session.exists
+                and (
+                    existing_data.get("ownerId") != session.owner_id
+                    or existing_data.get("orgId") != session.org_id
+                )
+            ):
+                raise InterviewReportConflict("completed interview not found")
             transaction.set(
                 session_ref,
                 self._session_record(session),
@@ -106,6 +126,10 @@ class FirestoreStorage:
                     generation_ref,
                     {
                         "status": "queued",
+                        "version": 0,
+                        "attemptCount": 0,
+                        "leaseToken": None,
+                        "leaseExpiresAt": None,
                         "reasonCode": None,
                         "updatedAt": datetime.now(timezone.utc),
                         "ownerId": session.owner_id,
@@ -152,6 +176,15 @@ class FirestoreStorage:
             "updatedAt": job.updated_at,
         }
 
+    @staticmethod
+    def _tombstone_matches_scope(snapshot, *, owner_id: str, org_id: str) -> bool:
+        if not snapshot.exists:
+            return False
+        record = snapshot.to_dict() or {}
+        if record.get("ownerId") != owner_id or record.get("orgId") != org_id:
+            raise TranscriptImportNotFound("transcript import not found")
+        return True
+
     async def queue_transcript_import(
         self,
         normalized: NormalizedGoogleMeetImport,
@@ -169,8 +202,6 @@ class FirestoreStorage:
         async def queue_in_transaction(transaction):
             snapshot = await job_ref.get(transaction=transaction)
             tombstone = await tombstone_ref.get(transaction=transaction)
-            if tombstone.exists:
-                raise TranscriptImportDeleted("deleted transcript import is fenced")
             if snapshot.exists:
                 job = self._import_job(snapshot.to_dict() or {})
                 if (
@@ -182,7 +213,21 @@ class FirestoreStorage:
                     raise TranscriptImportConflict(
                         "source artifact identity is already bound to different content"
                     )
+                if self._tombstone_matches_scope(
+                    tombstone,
+                    owner_id=job.owner_id,
+                    org_id=job.org_id,
+                ):
+                    raise TranscriptImportDeleted(
+                        "deleted transcript import is fenced"
+                    )
                 return job
+            if self._tombstone_matches_scope(
+                tombstone,
+                owner_id=normalized.session.owner_id or "",
+                org_id=normalized.session.org_id or "",
+            ):
+                raise TranscriptImportDeleted("deleted transcript import is fenced")
             job = ImportJobState(
                 source_key=normalized.source_key,
                 source_digest=normalized.source_digest,
@@ -220,13 +265,17 @@ class FirestoreStorage:
         async def claim_in_transaction(transaction):
             snapshot = await job_ref.get(transaction=transaction)
             tombstone = await tombstone_ref.get(transaction=transaction)
-            if tombstone.exists:
-                raise TranscriptImportDeleted("deleted transcript import is fenced")
             if not snapshot.exists:
                 raise TranscriptImportNotFound("transcript import not found")
             job = self._import_job(snapshot.to_dict() or {})
             if job.owner_id != owner_id or job.org_id != org_id:
                 raise TranscriptImportNotFound("transcript import not found")
+            if self._tombstone_matches_scope(
+                tombstone,
+                owner_id=owner_id,
+                org_id=org_id,
+            ):
+                raise TranscriptImportDeleted("deleted transcript import is fenced")
             if job.source_digest != source_digest or job.session_id != session_id:
                 raise TranscriptImportConflict(
                     "source artifact identity is already bound to different content"
@@ -290,7 +339,11 @@ class FirestoreStorage:
                 raise TranscriptImportConflict("transcript import digest changed")
             if job.status == ImportJobStatus.COMPLETED:
                 return job
-            if tombstone.exists:
+            if self._tombstone_matches_scope(
+                tombstone,
+                owner_id=job.owner_id,
+                org_id=job.org_id,
+            ):
                 raise TranscriptImportDeleted("deleted transcript import is fenced")
             if (
                 job.status != ImportJobStatus.LEASED
@@ -343,6 +396,10 @@ class FirestoreStorage:
                 generation_ref,
                 {
                     "status": "queued",
+                    "version": 0,
+                    "attemptCount": 0,
+                    "leaseToken": None,
+                    "leaseExpiresAt": None,
                     "reasonCode": None,
                     "updatedAt": updated_at,
                     "ownerId": normalized.session.owner_id,
@@ -761,6 +818,265 @@ class FirestoreStorage:
             notes.append(data)
         return notes
 
+    @staticmethod
+    def _report_generation_job(
+        session_id: str, record: dict
+    ) -> ReportGenerationJob:
+        return ReportGenerationJob(
+            session_id=session_id,
+            owner_id=record.get("ownerId"),
+            org_id=record.get("orgId"),
+            status=record["status"],
+            version=record.get("version", 0),
+            attempt_count=record.get("attemptCount", 0),
+            lease_token=record.get("leaseToken"),
+            lease_expires_at=record.get("leaseExpiresAt"),
+            reason_code=record.get("reasonCode"),
+            updated_at=record["updatedAt"],
+        )
+
+    @staticmethod
+    def _report_generation_record(job: ReportGenerationJob) -> dict:
+        return {
+            "status": job.status.value,
+            "version": job.version,
+            "attemptCount": job.attempt_count,
+            "leaseToken": job.lease_token,
+            "leaseExpiresAt": job.lease_expires_at,
+            "reasonCode": job.reason_code,
+            "ownerId": job.owner_id,
+            "orgId": job.org_id,
+            "updatedAt": job.updated_at,
+        }
+
+    @staticmethod
+    def _validate_report_transaction_scope(
+        session_id: str,
+        *,
+        session_snapshot,
+        current_snapshot,
+        generation_snapshot,
+        tombstone_snapshot,
+        owner_id: str | None,
+        org_id: str | None,
+    ) -> tuple[ReportGenerationJob, InterviewReport | None, dict]:
+        if tombstone_snapshot.exists or not session_snapshot.exists:
+            raise ReportGenerationNotFound("completed interview not found")
+        session_data = session_snapshot.to_dict() or {}
+        if (
+            session_data.get("mode") != "interview"
+            or session_data.get("status") != "completed"
+            or session_data.get("ownerId") != owner_id
+            or session_data.get("orgId") != org_id
+        ):
+            raise ReportGenerationNotFound("completed interview not found")
+        if not generation_snapshot.exists:
+            raise ReportGenerationNotFound("report generation job not found")
+        job = FirestoreStorage._report_generation_job(
+            session_id, generation_snapshot.to_dict() or {}
+        )
+        if job.owner_id != owner_id or job.org_id != org_id:
+            raise ReportGenerationNotFound("report generation job not found")
+        current = None
+        if current_snapshot.exists:
+            current = report_from_record(
+                session_id, current_snapshot.to_dict() or {}
+            )
+            if current.owner_id != owner_id or current.org_id != org_id:
+                raise ReportGenerationNotFound("completed interview not found")
+        return job, current, session_data
+
+    async def claim_report_generation(
+        self,
+        session_id: str,
+        *,
+        owner_id: str | None,
+        org_id: str | None,
+        lease_token: str,
+        lease_expires_at: datetime,
+        updated_at: datetime,
+    ) -> ReportGenerationClaim:
+        """Claim queued or expired report work without process-local state."""
+        db = await self._get_db()
+        session_ref = db.collection("sessions").document(session_id)
+        current_ref = session_ref.collection("reports").document("current")
+        generation_ref = session_ref.collection("reports").document("generation")
+        tombstone_ref = db.collection("session_tombstones").document(session_id)
+
+        @firestore.async_transactional
+        async def claim_in_transaction(transaction):
+            session_snapshot = await session_ref.get(transaction=transaction)
+            current_snapshot = await current_ref.get(transaction=transaction)
+            generation_snapshot = await generation_ref.get(transaction=transaction)
+            tombstone_snapshot = await tombstone_ref.get(transaction=transaction)
+            job, current, _ = self._validate_report_transaction_scope(
+                session_id,
+                session_snapshot=session_snapshot,
+                current_snapshot=current_snapshot,
+                generation_snapshot=generation_snapshot,
+                tombstone_snapshot=tombstone_snapshot,
+                owner_id=owner_id,
+                org_id=org_id,
+            )
+            if job.status == ReportGenerationStatus.READY:
+                if current is None:
+                    raise ReportGenerationConflict("ready report is missing")
+                return ReportGenerationClaim(
+                    job=job,
+                    current_report=current,
+                    idempotent_ready=True,
+                )
+            if job.status == ReportGenerationStatus.FAILED:
+                raise ReportGenerationConflict("report generation previously failed")
+            if (
+                job.status == ReportGenerationStatus.GENERATING
+                and job.lease_expires_at is not None
+                and job.lease_expires_at > updated_at
+            ):
+                raise ReportGenerationConflict("report generation has an active lease")
+            if job.status not in {
+                ReportGenerationStatus.QUEUED,
+                ReportGenerationStatus.GENERATING,
+            }:
+                raise ReportGenerationConflict("report generation state is invalid")
+            claimed = job.model_copy(
+                update={
+                    "status": ReportGenerationStatus.GENERATING,
+                    "version": job.version + 1,
+                    "attempt_count": job.attempt_count + 1,
+                    "lease_token": lease_token,
+                    "lease_expires_at": lease_expires_at,
+                    "reason_code": None,
+                    "updated_at": updated_at,
+                }
+            )
+            transaction.set(
+                generation_ref, self._report_generation_record(claimed)
+            )
+            return ReportGenerationClaim(
+                job=claimed,
+                current_report=current,
+                idempotent_ready=False,
+            )
+
+        return await claim_in_transaction(db.transaction())
+
+    async def fail_report_generation(
+        self,
+        session_id: str,
+        *,
+        owner_id: str | None,
+        org_id: str | None,
+        lease_token: str,
+        version: int,
+        reason_code: str,
+        updated_at: datetime,
+    ) -> ReportGenerationJob:
+        """Fail only the exact active report lease while the parent still exists."""
+        db = await self._get_db()
+        session_ref = db.collection("sessions").document(session_id)
+        current_ref = session_ref.collection("reports").document("current")
+        generation_ref = session_ref.collection("reports").document("generation")
+        tombstone_ref = db.collection("session_tombstones").document(session_id)
+
+        @firestore.async_transactional
+        async def fail_in_transaction(transaction):
+            session_snapshot = await session_ref.get(transaction=transaction)
+            current_snapshot = await current_ref.get(transaction=transaction)
+            generation_snapshot = await generation_ref.get(transaction=transaction)
+            tombstone_snapshot = await tombstone_ref.get(transaction=transaction)
+            job, _, _ = self._validate_report_transaction_scope(
+                session_id,
+                session_snapshot=session_snapshot,
+                current_snapshot=current_snapshot,
+                generation_snapshot=generation_snapshot,
+                tombstone_snapshot=tombstone_snapshot,
+                owner_id=owner_id,
+                org_id=org_id,
+            )
+            if (
+                job.status != ReportGenerationStatus.GENERATING
+                or job.version != version
+                or job.lease_token != lease_token
+                or job.lease_expires_at is None
+                or job.lease_expires_at <= updated_at
+            ):
+                raise ReportGenerationConflict("report generation lease is stale")
+            failed = job.model_copy(
+                update={
+                    "status": ReportGenerationStatus.FAILED,
+                    "lease_token": None,
+                    "lease_expires_at": None,
+                    "reason_code": reason_code,
+                    "updated_at": updated_at,
+                }
+            )
+            transaction.set(
+                generation_ref, self._report_generation_record(failed)
+            )
+            return failed
+
+        return await fail_in_transaction(db.transaction())
+
+    async def complete_report_generation(
+        self,
+        report: InterviewReport,
+        *,
+        lease_token: str,
+        version: int,
+        updated_at: datetime,
+    ) -> InterviewReport:
+        """Atomically publish one draft, parent summary, and ready state."""
+        db = await self._get_db()
+        session_ref = db.collection("sessions").document(report.session_id)
+        current_ref = session_ref.collection("reports").document("current")
+        generation_ref = session_ref.collection("reports").document("generation")
+        tombstone_ref = db.collection("session_tombstones").document(report.session_id)
+
+        @firestore.async_transactional
+        async def complete_in_transaction(transaction):
+            session_snapshot = await session_ref.get(transaction=transaction)
+            current_snapshot = await current_ref.get(transaction=transaction)
+            generation_snapshot = await generation_ref.get(transaction=transaction)
+            tombstone_snapshot = await tombstone_ref.get(transaction=transaction)
+            job, current, _ = self._validate_report_transaction_scope(
+                report.session_id,
+                session_snapshot=session_snapshot,
+                current_snapshot=current_snapshot,
+                generation_snapshot=generation_snapshot,
+                tombstone_snapshot=tombstone_snapshot,
+                owner_id=report.owner_id,
+                org_id=report.org_id,
+            )
+            if (
+                job.status != ReportGenerationStatus.GENERATING
+                or job.version != version
+                or job.lease_token != lease_token
+                or job.lease_expires_at is None
+                or job.lease_expires_at <= updated_at
+            ):
+                raise ReportGenerationConflict("report generation lease is stale")
+            durable_report = current or report
+            if current is None:
+                transaction.create(current_ref, report_to_record(report))
+            summary = render_internal_summary(durable_report)
+            transaction.set(session_ref, {"summary": summary}, merge=True)
+            ready = job.model_copy(
+                update={
+                    "status": ReportGenerationStatus.READY,
+                    "lease_token": None,
+                    "lease_expires_at": None,
+                    "reason_code": None,
+                    "updated_at": updated_at,
+                }
+            )
+            transaction.set(
+                generation_ref, self._report_generation_record(ready)
+            )
+            return durable_report
+
+        return await complete_in_transaction(db.transaction())
+
     async def save_report_generation_state(
         self,
         session_id: str,
@@ -770,21 +1086,43 @@ class FirestoreStorage:
         owner_id: str | None = None,
         org_id: str | None = None,
     ) -> None:
-        """Persist a content-free report generation state for visible failures."""
+        """Guard legacy reconciliation writes with parent and deletion state."""
         db = await self._get_db()
-        doc_ref = (
-            db.collection("sessions")
-            .document(session_id)
-            .collection("reports")
-            .document("generation")
-        )
-        await doc_ref.set({
-            "status": status,
-            "reasonCode": reason_code,
-            "updatedAt": datetime.now(timezone.utc),
-            "ownerId": owner_id,
-            "orgId": org_id,
-        })
+        session_ref = db.collection("sessions").document(session_id)
+        current_ref = session_ref.collection("reports").document("current")
+        generation_ref = session_ref.collection("reports").document("generation")
+        tombstone_ref = db.collection("session_tombstones").document(session_id)
+        updated_at = datetime.now(timezone.utc)
+
+        @firestore.async_transactional
+        async def save_in_transaction(transaction):
+            session_snapshot = await session_ref.get(transaction=transaction)
+            current_snapshot = await current_ref.get(transaction=transaction)
+            generation_snapshot = await generation_ref.get(transaction=transaction)
+            tombstone_snapshot = await tombstone_ref.get(transaction=transaction)
+            job, _, _ = self._validate_report_transaction_scope(
+                session_id,
+                session_snapshot=session_snapshot,
+                current_snapshot=current_snapshot,
+                generation_snapshot=generation_snapshot,
+                tombstone_snapshot=tombstone_snapshot,
+                owner_id=owner_id,
+                org_id=org_id,
+            )
+            updated = job.model_copy(
+                update={
+                    "status": ReportGenerationStatus(status),
+                    "lease_token": None,
+                    "lease_expires_at": None,
+                    "reason_code": reason_code,
+                    "updated_at": updated_at,
+                }
+            )
+            transaction.set(
+                generation_ref, self._report_generation_record(updated)
+            )
+
+        await save_in_transaction(db.transaction())
 
     async def get_report_generation_state(self, session_id: str) -> dict | None:
         """Read the content-free report generation state."""

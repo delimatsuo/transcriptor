@@ -14,7 +14,12 @@ from starlette.requests import Request
 from backend import main as backend_main
 from backend.auth import AuthContext, reset_current_auth, set_current_auth
 from backend.config import Settings
-from backend.sessions.reports import parse_generated_report
+from backend.sessions.reports import (
+    ApproveInterviewReportRequest,
+    UpdateInterviewReportRequest,
+    approved_client_report,
+    parse_generated_report,
+)
 from backend.sessions.workspace_imports import (
     GoogleMeetImportRequest,
     MAX_ENTRY_CHARS,
@@ -28,6 +33,12 @@ from backend.workers.google_meet_import import (
     ImportJobStatus,
     TranscriptImportConflict,
     TranscriptImportNotFound,
+)
+from backend.workers.interview_report import (
+    DurableInterviewReportWorker,
+    ReportGenerationConflict,
+    ReportGenerationNotFound,
+    ReportGenerationStatus,
 )
 from backend.storage.firestore import FirestoreStorage
 
@@ -140,6 +151,42 @@ def test_conflicting_duplicate_identity_is_rejected_but_identical_delivery_colla
 def test_exact_raw_json_byte_limit_is_checked_before_parsing():
     with pytest.raises(ValueError, match="UTF-8 bytes"):
         GoogleMeetImportRequest.from_json_bytes(b" " * (MAX_REQUEST_BYTES + 1))
+
+
+def test_report_sources_use_utf8_byte_bounds_not_character_counts():
+    ordinary = payload()
+    ordinary["resumeText"] = "Experiência internacional — produto e liderança."
+    assert request(ordinary).resume_text == ordinary["resumeText"]
+
+    oversized = payload()
+    oversized["resumeText"] = "😀" * 300_000
+    raw = json.dumps(oversized, ensure_ascii=False).encode("utf-8")
+    assert len(raw) < MAX_REQUEST_BYTES
+    with pytest.raises(ValidationError, match="UTF-8 bytes"):
+        GoogleMeetImportRequest.from_json_bytes(raw)
+
+
+def test_raw_json_rejects_recursive_duplicate_keys_and_epoch_strings():
+    raw = FIXTURE.read_text(encoding="utf-8")
+    duplicate = raw.replace(
+        '"text": "Welcome to the synthetic interview."',
+        '"text": "first", "text": "Welcome to the synthetic interview."',
+    )
+    with pytest.raises(ValueError, match="duplicate JSON object key: text"):
+        GoogleMeetImportRequest.from_json_bytes(duplicate.encode("utf-8"))
+
+    epoch = payload()
+    epoch["transcriptSessions"][0]["entries"][1]["startTime"] = "1788271200"
+    with pytest.raises(ValidationError, match="RFC3339"):
+        request(epoch)
+
+    offset = payload()
+    offset["transcriptSessions"][0]["entries"][1]["startTime"] = (
+        "2026-09-01T10:00:00-04:00"
+    )
+    assert request(offset).transcript_sessions[0].entries[1].start_time == datetime(
+        2026, 9, 1, 10, 0, tzinfo=timezone(timedelta(hours=-4))
+    )
 
 
 def test_imported_segment_ids_are_accepted_by_strict_report_evidence_parser():
@@ -356,6 +403,79 @@ def test_worker_conflict_and_scope_are_fail_closed_and_tombstone_blocks_publish(
     assert not blocked_storage.sessions
 
 
+def test_same_provider_artifact_is_tenant_scoped_and_imports_independently():
+    storage = MemoryImportStorage()
+    worker = GoogleMeetImportWorker(storage)
+    owner_one = asyncio.run(
+        worker.run(request(), owner_id="owner-1", org_id="org-1", now=NOW)
+    )
+    owner_two = asyncio.run(
+        worker.run(request(), owner_id="owner-2", org_id="org-1", now=NOW)
+    )
+    org_two = asyncio.run(
+        worker.run(request(), owner_id="owner-1", org_id="org-2", now=NOW)
+    )
+
+    assert len({owner_one.source_key, owner_two.source_key, org_two.source_key}) == 3
+    assert len({owner_one.session_id, owner_two.session_id, org_two.session_id}) == 3
+    assert len(storage.sessions) == 3
+
+
+def test_firestore_import_job_and_tombstone_probes_are_non_enumerating(monkeypatch):
+    db = AtomicDB()
+    storage = firestore_import_storage(monkeypatch, db)
+    owner_item = normalized()
+    other_item = normalized(owner="owner-2")
+
+    async def exercise():
+        await storage.queue_transcript_import(owner_item, updated_at=NOW)
+
+        with pytest.raises(TranscriptImportNotFound):
+            await storage.claim_transcript_import(
+                source_key=owner_item.source_key,
+                source_digest=owner_item.source_digest,
+                session_id=owner_item.session.id,
+                owner_id="owner-2",
+                org_id="org-1",
+                lease_token="cross-scope-token",
+                lease_expires_at=NOW + timedelta(minutes=5),
+                updated_at=NOW,
+            )
+        live_state = copy.deepcopy(db.data)
+        assert db.data == live_state
+
+        db.data[("session_tombstones", owner_item.session.id)] = {
+            "sessionId": owner_item.session.id,
+            "ownerId": "owner-1",
+            "orgId": "org-1",
+        }
+        deleted_state = copy.deepcopy(db.data)
+        with pytest.raises(TranscriptImportNotFound):
+            await storage.claim_transcript_import(
+                source_key=owner_item.source_key,
+                source_digest=owner_item.source_digest,
+                session_id=owner_item.session.id,
+                owner_id="owner-2",
+                org_id="org-1",
+                lease_token="cross-scope-token",
+                lease_expires_at=NOW + timedelta(minutes=5),
+                updated_at=NOW,
+            )
+        assert db.data == deleted_state
+
+        db.data[("session_tombstones", other_item.session.id)] = {
+            "sessionId": other_item.session.id,
+            "ownerId": "owner-1",
+            "orgId": "org-1",
+        }
+        preclaim_state = copy.deepcopy(db.data)
+        with pytest.raises(TranscriptImportNotFound):
+            await storage.queue_transcript_import(other_item, updated_at=NOW)
+        assert db.data == preclaim_state
+
+    asyncio.run(exercise())
+
+
 class AtomicSnapshot:
     def __init__(self, reference):
         self.id = reference.path[-1]
@@ -386,6 +506,24 @@ class AtomicCollection:
 
     def document(self, document_id):
         return AtomicDocument(self.db, self.path + (document_id,))
+
+    def order_by(self, *_args, **_kwargs):
+        return self
+
+    def stream(self):
+        collection = self
+
+        async def generate():
+            children = sorted(
+                path
+                for path in collection.db.data
+                if len(path) == len(collection.path) + 1
+                and path[: len(collection.path)] == collection.path
+            )
+            for path in children:
+                yield AtomicSnapshot(AtomicDocument(collection.db, path))
+
+        return generate()
 
 
 class AtomicTransaction:
@@ -444,6 +582,290 @@ def firestore_import_storage(monkeypatch, db):
     monkeypatch.setattr(storage, "_get_db", get_db)
     monkeypatch.setattr(firestore, "async_transactional", transactional)
     return storage
+
+
+def imported_report_json(item):
+    segment_id = item.segments[0].id
+    return json.dumps(
+        {
+            "internal_sections": [
+                {
+                    "id": "summary",
+                    "title": "Summary",
+                    "body": "Synthetic imported interview evidence.",
+                    "rating": None,
+                    "evidence": [
+                        {"source": "transcript", "evidence_id": segment_id}
+                    ],
+                }
+            ],
+            "client_narrative": {
+                "trajectory": "Synthetic career context was discussed.",
+                "assessment": "The evidence describes the imported interview.",
+                "trajectory_evidence": [
+                    {"source": "context", "evidence_id": "resume"}
+                ],
+                "assessment_evidence": [
+                    {"source": "transcript", "evidence_id": segment_id}
+                ],
+            },
+        }
+    )
+
+
+class FakeReportGenerator:
+    def __init__(self, raw, *, started=None, release=None):
+        self.raw = raw
+        self.started = started
+        self.release = release
+        self.calls = 0
+
+    async def generate(self, **_kwargs):
+        self.calls += 1
+        if self.started is not None:
+            self.started.set()
+        if self.release is not None:
+            await self.release.wait()
+        return self.raw
+
+
+def test_import_report_edit_approve_export_and_duplicate_delivery_are_exactly_once(monkeypatch):
+    db = AtomicDB()
+    storage = firestore_import_storage(monkeypatch, db)
+    item = normalized()
+    generator = FakeReportGenerator(imported_report_json(item))
+
+    async def exercise():
+        imported = await GoogleMeetImportWorker(storage).run(
+            request(), owner_id="owner-1", org_id="org-1", now=NOW
+        )
+        worker = DurableInterviewReportWorker(storage, generator)
+        draft = await worker.run(
+            imported.session_id,
+            owner_id="owner-1",
+            org_id="org-1",
+            now=NOW + timedelta(seconds=1),
+        )
+        replay = await worker.run(
+            imported.session_id,
+            owner_id="owner-1",
+            org_id="org-1",
+            now=NOW + timedelta(seconds=2),
+        )
+        assert replay == draft
+        assert generator.calls == 1
+        updated = await storage.update_interview_report(
+            imported.session_id,
+            UpdateInterviewReportRequest(
+                expected_version=1,
+                sections=[
+                    {"id": "summary", "body": "Reviewed imported evidence."}
+                ],
+                client_narrative={
+                    "trajectory": "Reviewed synthetic career context.",
+                    "assessment": "Reviewed evidence describes the interview.",
+                },
+            ),
+            owner_id="owner-1",
+            org_id="org-1",
+        )
+        approved = await storage.approve_interview_report(
+            imported.session_id,
+            ApproveInterviewReportRequest(expected_version=updated.version),
+            owner_id="owner-1",
+            org_id="org-1",
+        )
+        return imported, approved
+
+    imported, approved = asyncio.run(exercise())
+    exported = approved_client_report(approved)
+    assert exported.version == 2
+    assert approved.status.value == "approved"
+    assert db.data[("sessions", imported.session_id)]["summary"].startswith(
+        "## Rascunho gerado por IA"
+    )
+    generation = db.data[
+        ("sessions", imported.session_id, "reports", "generation")
+    ]
+    assert generation["status"] == "ready"
+    assert generation["attemptCount"] == 1
+
+
+def test_active_report_lease_allows_at_most_one_provider_invocation(monkeypatch):
+    db = AtomicDB()
+    storage = firestore_import_storage(monkeypatch, db)
+    item = normalized()
+    asyncio.run(
+        GoogleMeetImportWorker(storage).run(
+            request(), owner_id="owner-1", org_id="org-1", now=NOW
+        )
+    )
+
+    async def exercise():
+        started = asyncio.Event()
+        release = asyncio.Event()
+        generator = FakeReportGenerator(
+            imported_report_json(item), started=started, release=release
+        )
+        first_worker = DurableInterviewReportWorker(storage, generator)
+        second_worker = DurableInterviewReportWorker(storage, generator)
+        first = asyncio.create_task(
+            first_worker.run(
+                item.session.id,
+                owner_id="owner-1",
+                org_id="org-1",
+                now=NOW + timedelta(seconds=1),
+            )
+        )
+        await started.wait()
+        with pytest.raises(ReportGenerationConflict, match="active lease"):
+            await second_worker.run(
+                item.session.id,
+                owner_id="owner-1",
+                org_id="org-1",
+                now=NOW + timedelta(seconds=2),
+            )
+        assert generator.calls == 1
+        release.set()
+        await first
+        return generator.calls
+
+    assert asyncio.run(exercise()) == 1
+
+
+def test_report_completion_and_failure_after_deletion_perform_zero_writes(monkeypatch):
+    db = AtomicDB()
+    storage = firestore_import_storage(monkeypatch, db)
+    item = normalized()
+    asyncio.run(
+        GoogleMeetImportWorker(storage).run(
+            request(), owner_id="owner-1", org_id="org-1", now=NOW
+        )
+    )
+
+    async def exercise():
+        claim = await storage.claim_report_generation(
+            item.session.id,
+            owner_id="owner-1",
+            org_id="org-1",
+            lease_token="paused-token",
+            lease_expires_at=NOW + timedelta(minutes=5),
+            updated_at=NOW + timedelta(seconds=1),
+        )
+        report = parse_generated_report(
+            item.session.id,
+            imported_report_json(item),
+            transcript_ids={segment.id for segment in item.segments},
+            note_ids=set(),
+            context_ids=set(item.report_sources),
+            owner_id="owner-1",
+            org_id="org-1",
+            now=NOW,
+        )
+        db.data = {
+            path: value
+            for path, value in db.data.items()
+            if path[0] != "sessions"
+        }
+        db.data[("session_tombstones", item.session.id)] = {
+            "sessionId": item.session.id,
+            "ownerId": "owner-1",
+            "orgId": "org-1",
+        }
+        fenced = copy.deepcopy(db.data)
+        with pytest.raises(ReportGenerationNotFound):
+            await storage.complete_report_generation(
+                report,
+                lease_token="paused-token",
+                version=claim.job.version,
+                updated_at=NOW + timedelta(seconds=2),
+            )
+        assert db.data == fenced
+        with pytest.raises(ReportGenerationNotFound):
+            await storage.fail_report_generation(
+                item.session.id,
+                owner_id="owner-1",
+                org_id="org-1",
+                lease_token="paused-token",
+                version=claim.job.version,
+                reason_code="provider_or_validation_failure",
+                updated_at=NOW + timedelta(seconds=2),
+            )
+        assert db.data == fenced
+
+    asyncio.run(exercise())
+
+
+def test_expired_report_lease_reclaims_and_old_claim_cannot_publish(monkeypatch):
+    db = AtomicDB()
+    storage = firestore_import_storage(monkeypatch, db)
+    item = normalized()
+    asyncio.run(
+        GoogleMeetImportWorker(storage).run(
+            request(), owner_id="owner-1", org_id="org-1", now=NOW
+        )
+    )
+    report = parse_generated_report(
+        item.session.id,
+        imported_report_json(item),
+        transcript_ids={segment.id for segment in item.segments},
+        note_ids=set(),
+        context_ids=set(item.report_sources),
+        owner_id="owner-1",
+        org_id="org-1",
+        now=NOW,
+    )
+
+    async def exercise():
+        old = await storage.claim_report_generation(
+            item.session.id,
+            owner_id="owner-1",
+            org_id="org-1",
+            lease_token="old-report-token",
+            lease_expires_at=NOW + timedelta(seconds=1),
+            updated_at=NOW,
+        )
+        with pytest.raises(ReportGenerationConflict, match="stale"):
+            await storage.fail_report_generation(
+                item.session.id,
+                owner_id="owner-1",
+                org_id="org-1",
+                lease_token="old-report-token",
+                version=old.job.version,
+                reason_code="provider_or_validation_failure",
+                updated_at=NOW + timedelta(seconds=2),
+            )
+        assert db.data[
+            ("sessions", item.session.id, "reports", "generation")
+        ]["status"] == "generating"
+        reclaimed = await storage.claim_report_generation(
+            item.session.id,
+            owner_id="owner-1",
+            org_id="org-1",
+            lease_token="new-report-token",
+            lease_expires_at=NOW + timedelta(minutes=5),
+            updated_at=NOW + timedelta(seconds=2),
+        )
+        assert reclaimed.job.version == old.job.version + 1
+        with pytest.raises(ReportGenerationConflict, match="stale"):
+            await storage.complete_report_generation(
+                report,
+                lease_token="old-report-token",
+                version=old.job.version,
+                updated_at=NOW + timedelta(seconds=3),
+            )
+        assert ("sessions", item.session.id, "reports", "current") not in db.data
+        await storage.complete_report_generation(
+            report,
+            lease_token="new-report-token",
+            version=reclaimed.job.version,
+            updated_at=NOW + timedelta(seconds=3),
+        )
+
+    asyncio.run(exercise())
+    assert db.data[
+        ("sessions", item.session.id, "reports", "generation")
+    ]["status"] == "ready"
 
 
 def test_firestore_worker_commit_is_atomic_exactly_once_and_preserves_provenance(monkeypatch):
@@ -602,6 +1024,17 @@ def http_json_request(raw: bytes, *, content_type=b"application/json"):
 def test_import_route_requires_real_principal_and_maps_typed_failures(monkeypatch):
     storage = MemoryImportStorage()
     monkeypatch.setattr(backend_main, "firestore_storage", storage)
+    monkeypatch.setattr(backend_main, "gemini_client", object())
+    monkeypatch.setattr(backend_main, "settings", object())
+    report_calls = []
+
+    async def fail_durable_report(session_id, *, owner_id, org_id):
+        report_calls.append((session_id, owner_id, org_id))
+        raise RuntimeError("synthetic report failure")
+
+    monkeypatch.setattr(
+        backend_main, "_run_durable_interview_report", fail_durable_report
+    )
     raw = json.dumps(payload()).encode("utf-8")
 
     token = set_current_auth(None)
@@ -618,6 +1051,7 @@ def test_import_route_requires_real_principal_and_maps_typed_failures(monkeypatc
             backend_main.import_google_meet_transcript(http_json_request(raw))
         )
         assert result["status"] == "completed"
+        assert report_calls == [(result["session_id"], "owner-1", "org-1")]
         assert set(result) == {
             "session_id",
             "source_key",
@@ -643,6 +1077,86 @@ def test_import_route_requires_real_principal_and_maps_typed_failures(monkeypatc
         assert oversized.value.status_code == 422
     finally:
         reset_current_auth(token)
+
+
+def test_import_route_generic_failures_never_log_hostile_content(monkeypatch):
+    sentinel = "HOSTILE_TRANSCRIPT_OR_REPORT_CONTENT_SENTINEL"
+
+    class ContentFreeLogger:
+        def __init__(self):
+            self.errors = []
+
+        def exception(self, *_args, **_kwargs):
+            pytest.fail("manual import route must not attach an exception traceback")
+
+        def error(self, event, **kwargs):
+            assert sentinel not in repr((event, kwargs))
+            self.errors.append((event, kwargs))
+
+    class HostileCommitStorage(MemoryImportStorage):
+        async def commit_transcript_import(self, *_args, **_kwargs):
+            try:
+                raise ValueError(sentinel)
+            except ValueError as cause:
+                raise RuntimeError(sentinel) from cause
+
+    logger = ContentFreeLogger()
+    monkeypatch.setattr(backend_main, "logger", logger)
+    monkeypatch.setattr(backend_main, "gemini_client", None)
+    monkeypatch.setattr(backend_main, "settings", None)
+    raw = json.dumps(payload()).encode("utf-8")
+    token = set_current_auth(AuthContext("owner-1", "owner@example.com", "org-1"))
+    try:
+        failed_storage = HostileCommitStorage()
+        monkeypatch.setattr(backend_main, "firestore_storage", failed_storage)
+        with pytest.raises(HTTPException) as failed_import:
+            asyncio.run(
+                backend_main.import_google_meet_transcript(http_json_request(raw))
+            )
+        assert failed_import.value.status_code == 503
+        assert failed_import.value.detail == "Transcript import failed and can be retried"
+        failed_job = next(iter(failed_storage.jobs.values()))
+        assert failed_job.status == ImportJobStatus.FAILED
+        assert not failed_storage.sessions
+
+        completed_storage = MemoryImportStorage()
+        monkeypatch.setattr(backend_main, "firestore_storage", completed_storage)
+        monkeypatch.setattr(backend_main, "gemini_client", object())
+        monkeypatch.setattr(backend_main, "settings", object())
+
+        async def hostile_report_failure(*_args, **_kwargs):
+            try:
+                raise ValueError(sentinel)
+            except ValueError as cause:
+                raise RuntimeError(sentinel) from cause
+
+        monkeypatch.setattr(
+            backend_main,
+            "_run_durable_interview_report",
+            hostile_report_failure,
+        )
+        completed = asyncio.run(
+            backend_main.import_google_meet_transcript(http_json_request(raw))
+        )
+        assert completed["status"] == "completed"
+        assert completed["session_id"] in completed_storage.sessions
+        assert len(completed_storage.report_obligations) == 1
+    finally:
+        reset_current_auth(token)
+
+    assert logger.errors == [
+        (
+            "google_meet_transcript_import_failed",
+            {"reason_code": "import_failed"},
+        ),
+        (
+            "google_meet_report_generation_failed",
+            {
+                "session_id": completed["session_id"],
+                "reason_code": "report_generation_failed",
+            },
+        ),
+    ]
 
 
 def test_import_status_route_is_content_free_and_cross_scope_is_not_found(monkeypatch):

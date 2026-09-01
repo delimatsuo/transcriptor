@@ -51,8 +51,6 @@ from backend.llm.context_window import ContextWindowManager
 from backend.llm.gemini import GeminiClient
 from backend.llm.interview_prompts import (
     INTERVIEW_SYSTEM_PROMPT,
-    INTERVIEW_REPORT_PROMPT,
-    INTERVIEW_REPORT_RESPONSE_SCHEMA,
     MAX_ANALYSIS_INPUT_CHARS,
     PRE_INTERVIEW_ANALYSIS_PROMPT,
     bound_analysis_inputs,
@@ -110,7 +108,6 @@ from backend.sessions.reports import (
     InterviewReportError,
     UpdateInterviewReportRequest,
     approved_client_report,
-    parse_generated_report,
     render_internal_summary,
     report_generation_is_stale,
 )
@@ -122,6 +119,11 @@ from backend.workers.google_meet_import import (
     GoogleMeetImportWorker,
     TranscriptImportConflict,
     TranscriptImportNotFound,
+)
+from backend.workers.interview_report import (
+    DurableInterviewReportWorker,
+    ReportGenerationConflict,
+    ReportGenerationNotFound,
 )
 from backend.ws.handler import ws_manager
 
@@ -599,6 +601,27 @@ async def _save_report_generation_state(
     if session is not None and session.owner_id is not None and session.org_id is not None:
         kwargs.update(owner_id=session.owner_id, org_id=session.org_id)
     await firestore_storage.save_report_generation_state(session_id, status, **kwargs)
+
+
+async def _run_durable_interview_report(
+    session_id: str,
+    *,
+    owner_id: str | None,
+    org_id: str | None,
+):
+    """Run the single durable report worker through configured generator seams."""
+    assert firestore_storage and gemini_client
+    worker = DurableInterviewReportWorker(
+        firestore_storage,
+        gemini_client,
+        max_input_chars=getattr(settings, "llm_final_report_max_input_chars", 120_000),
+        max_output_tokens=getattr(settings, "llm_max_output_tokens", 8192),
+    )
+    return await worker.run(
+        session_id,
+        owner_id=owner_id,
+        org_id=org_id,
+    )
 
 
 async def _save_transcript_segment(session_id: str, segment: TranscriptSegment) -> None:
@@ -1141,175 +1164,11 @@ async def _generate_final_summary(session_id: str) -> None:
 
     try:
         if is_interview:
-            existing = await firestore_storage.get_interview_report(session_id)
-            generation_state = await firestore_storage.get_report_generation_state(
-                session_id
+            report = await _run_durable_interview_report(
+                session_id,
+                owner_id=session.owner_id,
+                org_id=session.org_id,
             )
-            if existing is not None:
-                report = existing.model_copy(
-                    update={
-                        "owner_id": session.owner_id,
-                        "org_id": session.org_id,
-                    }
-                )
-                await _save_report_generation_state(
-                    session_id,
-                    "ready",
-                    session=session,
-                )
-            elif generation_state and generation_state.get("status") == "failed":
-                logger.warning(
-                    "interview_report_generation_previously_failed",
-                    session_id=session_id,
-                )
-                return
-            elif generation_state and generation_state.get("status") == "generating":
-                await _save_report_generation_state(
-                    session_id,
-                    "failed",
-                    reason_code="generation_interrupted",
-                    session=session,
-                )
-                logger.error(
-                    "interview_report_generation_interrupted",
-                    session_id=session_id,
-                )
-                return
-            elif generation_state and generation_state.get("status") == "ready":
-                await _save_report_generation_state(
-                    session_id,
-                    "failed",
-                    reason_code="ready_without_report",
-                    session=session,
-                )
-                logger.error(
-                    "interview_report_ready_without_report",
-                    session_id=session_id,
-                )
-                return
-            else:
-                await _save_report_generation_state(
-                    session_id,
-                    "generating",
-                    session=session,
-                )
-                transcript_records = await firestore_storage.get_session_transcript(session_id)
-                if session.owner_id is not None:
-                    for record in transcript_records:
-                        if record.get("ownerId") != session.owner_id or record.get("orgId") != session.org_id:
-                            raise InterviewReportError("durable transcript scope is invalid")
-                transcript = deserialize_transcript(transcript_records)
-                if not transcript:
-                    raise InterviewReportError(
-                        "durable transcript is required for report generation"
-                    )
-                note_records = await firestore_storage.get_session_notes(session_id)
-                if session.owner_id is not None:
-                    for record in note_records:
-                        if record.get("ownerId") != session.owner_id or record.get("orgId") != session.org_id:
-                            raise InterviewReportError("durable note scope is invalid")
-                notes = deserialize_recruiter_notes(
-                    session_id,
-                    note_records,
-                )
-                context_records = await firestore_storage.get_interview_context(session_id)
-                if session.owner_id is not None:
-                    for record in context_records:
-                        if record.get("ownerId") != session.owner_id or record.get("orgId") != session.org_id:
-                            raise InterviewReportError("durable context scope is invalid")
-                context: dict[str, str] = {}
-                for record in context_records:
-                    context_id = record.get("id")
-                    if (
-                        not isinstance(context_id, str)
-                        or record.get("type") != context_id
-                        or not isinstance(record.get("text"), str)
-                        or not record["text"].strip()
-                    ):
-                        raise InterviewReportError(
-                            "durable report context is invalid"
-                        )
-                    context[context_id] = record["text"]
-
-                user_parts = ["## Fontes de contexto duráveis"]
-                for context_id in sorted(context):
-                    user_parts.append(
-                        f"[source=context evidence_id={context_id}]\n"
-                        f"{context[context_id]}"
-                    )
-                user_parts.append("## Transcrição final durável")
-                for segment in transcript:
-                    speaker = segment.speaker_override or segment.speaker
-                    user_parts.append(
-                        f"[source=transcript evidence_id={segment.id} "
-                        f"offset_ms={round(segment.end_time * 1000)} "
-                        f"speaker={speaker}]\n{segment.text}"
-                    )
-                user_parts.append("## Julgamentos da recrutadora")
-                if notes:
-                    for note in notes:
-                        user_parts.append(
-                            f"[source=recruiter_note evidence_id={note.id} "
-                            f"kind={note.kind.value} "
-                            f"transcript_segment_id={note.transcript_segment_id}]"
-                        )
-                else:
-                    user_parts.append("(Nenhuma nota da recrutadora foi registrada.)")
-
-                user_message = "\n\n".join(user_parts)
-                max_report_input_chars = getattr(
-                    settings,
-                    "llm_final_report_max_input_chars",
-                    120_000,
-                )
-                if len(user_message) > max_report_input_chars:
-                    logger.warning(
-                        "report_input_too_large",
-                        session_id=session_id,
-                        input_chars=len(user_message),
-                        max_chars=max_report_input_chars,
-                    )
-                    # Do not silently truncate: the report's evidence IDs must
-                    # describe the complete durable source set. Fail visibly
-                    # before any provider call so an oversized request cannot
-                    # create an unbounded model bill.
-                    await _save_report_generation_state(
-                        session_id,
-                        "failed",
-                        reason_code="report_input_too_large",
-                        session=session,
-                    )
-                    return
-
-                raw_report = await asyncio.wait_for(
-                    gemini_client.generate(
-                        system_instruction=INTERVIEW_REPORT_PROMPT,
-                        user_message=user_message,
-                        temperature=0.2,
-                        max_output_tokens=min(
-                            8192,
-                            getattr(settings, "llm_max_output_tokens", 8192),
-                        ),
-                        response_mime_type="application/json",
-                        response_schema=INTERVIEW_REPORT_RESPONSE_SCHEMA,
-                    ),
-                    timeout=60,
-                )
-                report = parse_generated_report(
-                    session_id,
-                    raw_report,
-                    transcript_ids={segment.id for segment in transcript},
-                    note_ids={note.id for note in notes},
-                    context_ids=set(context),
-                    owner_id=session.owner_id,
-                    org_id=session.org_id,
-                )
-                report = await firestore_storage.save_generated_report(report)
-                await _save_report_generation_state(
-                    session_id,
-                    "ready",
-                    session=session,
-                )
             summary = render_internal_summary(report)
             transcript = session_mgr.get_transcript(session_id)
         else:
@@ -1369,7 +1228,7 @@ async def _generate_final_summary(session_id: str) -> None:
 
         # Save
         session = session_mgr.get_session(session_id)
-        if session:
+        if session and not is_interview:
             await firestore_storage.save_session(session)
             await firestore_storage.save_summary(
                 session_id, summary,
@@ -1382,19 +1241,6 @@ async def _generate_final_summary(session_id: str) -> None:
 
     except Exception:
         logger.exception("final_summary_error", session_id=session_id)
-        if is_interview:
-            try:
-                await _save_report_generation_state(
-                    session_id,
-                    "failed",
-                    reason_code="provider_or_validation_failure",
-                    session=session,
-                )
-            except Exception:
-                logger.exception(
-                    "report_generation_state_save_error",
-                    session_id=session_id,
-                )
     finally:
         _cleanup_session_context(session_id)
 
@@ -1604,11 +1450,34 @@ async def import_google_meet_transcript(request: Request):
     except TranscriptImportConflict as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from None
     except Exception:
-        logger.exception("google_meet_transcript_import_failed")
+        logger.error(
+            "google_meet_transcript_import_failed",
+            reason_code="import_failed",
+        )
         raise HTTPException(
             status_code=503,
             detail="Transcript import failed and can be retried",
         ) from None
+    if gemini_client is not None and settings is not None:
+        try:
+            await _run_durable_interview_report(
+                result.session_id,
+                owner_id=user.uid,
+                org_id=user.org_id,
+            )
+        except (ReportGenerationConflict, ReportGenerationNotFound):
+            logger.warning(
+                "google_meet_report_generation_not_started",
+                session_id=result.session_id,
+            )
+        except Exception:
+            # The transcript import is already atomically complete. The durable
+            # report job records its own recoverable, content-free failure.
+            logger.error(
+                "google_meet_report_generation_failed",
+                session_id=result.session_id,
+                reason_code="report_generation_failed",
+            )
     return result.model_dump(mode="json")
 
 
