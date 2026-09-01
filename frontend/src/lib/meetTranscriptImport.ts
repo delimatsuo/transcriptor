@@ -1,6 +1,8 @@
 import type {
   GoogleMeetImportRequest,
   GoogleMeetImportResult,
+  ManualMeetTranscriptSyncRequest,
+  MeetTranscriptAutomationResult,
   TranscriptImportStatus,
 } from "../types/ws";
 
@@ -169,4 +171,59 @@ export function parseMeetImportResult(value: unknown): GoogleMeetImportResult {
     throw new MeetTranscriptImportError("A resposta da importação é inválida.");
   }
   return value as unknown as GoogleMeetImportResult;
+}
+
+const EXACT_ID = /^[A-Za-z0-9][A-Za-z0-9._:@+-]{0,511}$/;
+
+function exactInput(value: string, label: string, pattern?: RegExp): string {
+  if (
+    value.length < 1 ||
+    value !== value.trim() ||
+    /[\u0000-\u001f\u007f]/.test(value) ||
+    (pattern !== undefined && !pattern.test(value))
+  ) {
+    throw new MeetTranscriptImportError(`${label} é inválido.`);
+  }
+  return value;
+}
+
+export function buildMeetTranscriptSyncRequest(values: {
+  grantId: string;
+  calendarId: string;
+  calendarEventId: string;
+}): ManualMeetTranscriptSyncRequest {
+  const grantId = exactInput(values.grantId, "O ID da autorização", EXACT_ID);
+  const calendarId = exactInput(values.calendarId, "O ID do calendário");
+  if (calendarId.length > 1024 || /\s/.test(calendarId)) {
+    throw new MeetTranscriptImportError("O ID do calendário é inválido.");
+  }
+  const calendarEventId = exactInput(
+    values.calendarEventId,
+    "O ID do evento",
+    EXACT_ID,
+  );
+  return { grantId, calendarId, calendarEventId };
+}
+
+const AUTOMATION_RESULT_KEYS = new Set([...RESULT_KEYS, "automation_replay"]);
+
+export function parseMeetTranscriptAutomationResult(
+  value: unknown,
+): MeetTranscriptAutomationResult {
+  if (
+    !isObject(value) ||
+    !hasOnlyKeys(value, AUTOMATION_RESULT_KEYS) ||
+    Object.keys(value).length !== AUTOMATION_RESULT_KEYS.size ||
+    typeof value.automation_replay !== "boolean"
+  ) {
+    throw new MeetTranscriptImportError("A resposta da sincronização é inválida.");
+  }
+  const base: Record<string, unknown> = {};
+  for (const key of RESULT_KEYS) base[key] = value[key];
+  try {
+    parseMeetImportResult(base);
+  } catch {
+    throw new MeetTranscriptImportError("A resposta da sincronização é inválida.");
+  }
+  return value as unknown as MeetTranscriptAutomationResult;
 }

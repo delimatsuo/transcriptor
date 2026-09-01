@@ -99,6 +99,16 @@ export interface GoogleMeetImportResult {
   idempotent_replay: boolean;
 }
 
+export interface ManualMeetTranscriptSyncRequest {
+  grantId: string;
+  calendarId: string;
+  calendarEventId: string;
+}
+
+export interface MeetTranscriptAutomationResult extends GoogleMeetImportResult {
+  automation_replay: boolean;
+}
+
 export interface TranscriptSegment {
   id: string;
   text: string;

@@ -5,8 +5,10 @@ import { apiFetch } from "@/lib/auth";
 import {
   MAX_MEET_IMPORT_BYTES,
   MeetTranscriptImportError,
+  buildMeetTranscriptSyncRequest,
   parseMeetImportFixture,
   parseMeetImportResult,
+  parseMeetTranscriptAutomationResult,
   validateMeetImportFile,
 } from "@/lib/meetTranscriptImport";
 import { apiUrl } from "@/lib/runtimeConfig";
@@ -16,6 +18,9 @@ interface Props {
 }
 export default function MeetTranscriptImport({ onOpenReview }: Props) {
   const [file, setFile] = useState<File | null>(null);
+  const [grantId, setGrantId] = useState("");
+  const [calendarId, setCalendarId] = useState("");
+  const [calendarEventId, setCalendarEventId] = useState("");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -61,6 +66,60 @@ export default function MeetTranscriptImport({ onOpenReview }: Props) {
     }
   }
 
+  async function syncEligibleEvent() {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    setMessage("Validando identidade exata do evento elegível…");
+    try {
+      const payload = buildMeetTranscriptSyncRequest({
+        grantId,
+        calendarId,
+        calendarEventId,
+      });
+      setMessage("Sincronizando transcrição elegível…");
+      const response = await apiFetch(
+        apiUrl("/api/workspace/meet-transcripts/sync"),
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        },
+      );
+      if (!response.ok) {
+        throw new MeetTranscriptImportError(
+          response.status === 404
+            ? "O evento elegível ou a autorização Workspace não foi encontrado."
+            : response.status === 409
+              ? "A sincronização já está em andamento ou conflita com o evento armazenado."
+              : response.status === 422
+                ? "A sincronização foi rejeitada por identidade ou conteúdo inválido."
+                : response.status === 503
+                  ? "O adaptador Workspace sintético/offline não está configurado."
+                  : "Não foi possível sincronizar o evento elegível.",
+        );
+      }
+      const result = parseMeetTranscriptAutomationResult(await response.json());
+      setMessage(
+        result.automation_replay
+          ? `Sincronização já concluída: ${result.segment_count} segmentos.`
+          : `Sincronização ${result.status}: ${result.segment_count} segmentos.`,
+      );
+      if (result.status === "completed") {
+        await onOpenReview(result.session_id);
+      }
+    } catch (caught) {
+      setMessage(null);
+      setError(
+        caught instanceof Error
+          ? caught.message
+          : "Não foi possível sincronizar o evento elegível.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <section
       aria-labelledby="meet-import-title"
@@ -93,6 +152,53 @@ export default function MeetTranscriptImport({ onOpenReview }: Props) {
         />
         <button type="button" disabled={!file || busy} onClick={() => void importFixture()}>
           {busy ? "Importando…" : "Importar fixture"}
+        </button>
+      </div>
+      <div
+        style={{
+          display: "grid",
+          gap: 8,
+          marginTop: 18,
+          paddingTop: 16,
+          borderTop: "1px solid #e5e5e7",
+        }}
+      >
+        <p style={{ margin: 0, color: "#6e6e73", fontSize: 13, lineHeight: 1.4 }}>
+          Sincronização sintética/offline de um evento já elegível. Indisponível sem um
+          adaptador Workspace injetado; este fluxo não conecta contas Google.
+        </p>
+        <label style={{ display: "grid", gap: 4, fontSize: 13 }}>
+          ID da autorização Workspace
+          <input
+            type="text"
+            value={grantId}
+            disabled={busy}
+            autoComplete="off"
+            onChange={(event) => setGrantId(event.currentTarget.value)}
+          />
+        </label>
+        <label style={{ display: "grid", gap: 4, fontSize: 13 }}>
+          ID do calendário
+          <input
+            type="text"
+            value={calendarId}
+            disabled={busy}
+            autoComplete="off"
+            onChange={(event) => setCalendarId(event.currentTarget.value)}
+          />
+        </label>
+        <label style={{ display: "grid", gap: 4, fontSize: 13 }}>
+          ID do evento do calendário
+          <input
+            type="text"
+            value={calendarEventId}
+            disabled={busy}
+            autoComplete="off"
+            onChange={(event) => setCalendarEventId(event.currentTarget.value)}
+          />
+        </label>
+        <button type="button" disabled={busy} onClick={() => void syncEligibleEvent()}>
+          {busy ? "Sincronizando…" : "Sincronizar evento elegível"}
         </button>
       </div>
       {message && <p role="status" style={{ fontSize: 13 }}>{message}</p>}
