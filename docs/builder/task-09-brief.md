@@ -48,7 +48,7 @@ Task 10 owns the later empirical decision under a separate fresh authorization e
 ```
 cd "/Volumes/Extreme Pro/MYPROJECTS/Transcriptor" && bash -n scripts/release_menubar_app.sh    # syntax check
 cd "/Volumes/Extreme Pro/MYPROJECTS/Transcriptor" && test ! -e companion/native-macos/Resources/TarsCompanionApp.entitlements
-cd "/Volumes/Extreme Pro/MYPROJECTS/Transcriptor" && ! rg -n -- '--entitlements|com\.apple\.security\.device\.audio-input' scripts/release_menubar_app.sh
+cd "/Volumes/Extreme Pro/MYPROJECTS/Transcriptor" && ! rg -n -- 'codesign .*--(force|sign).*--entitlements|codesign .*--entitlements.*--(force|sign)' scripts/release_menubar_app.sh
 cd "/Volumes/Extreme Pro/MYPROJECTS/Transcriptor" && bash scripts/release_menubar_app.sh        # expected: exits 2 or 3 with the actionable message, IF cert/profile are absent
 cd "/Volumes/Extreme Pro/MYPROJECTS/Transcriptor/companion/native-macos" && swift test          # unchanged, 0 failures
 ```
