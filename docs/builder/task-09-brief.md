@@ -34,7 +34,7 @@ Read `docs/builder/README.md` first. Repo: `"/Volumes/Extreme Pro/MYPROJECTS/Tra
 1. Accept optional env overrides with these defaults: `SIGN_IDENTITY="Developer ID Application: Travel Advisory LLC (3FLG8W6B95)"`, `NOTARY_PROFILE="tars-notary"`, `APP_NAME="TarsCompanion"`.
 2. **Preflight, with clear pt-BR errors and non-zero exits:**
    - `security find-identity -v -p codesigning | grep -q "$SIGN_IDENTITY"` — if absent, print that the Developer ID certificate is missing and that the Account Holder must create it (Xcode → Settings → Accounts → Manage Certificates → + → Developer ID Application), then exit 2.
-   - `xcrun notarytool history --keychain-profile "$NOTARY_PROFILE"` succeeding — if it fails, print the exact command the owner must run to create the profile (`xcrun notarytool store-credentials "tars-notary" --apple-id <APPLE_ID> --team-id 3FLG8W6B95 --password <app-specific-password>`) and exit 3.
+   - `xcrun notarytool history --keychain-profile "$NOTARY_PROFILE"` succeeding — if it fails, print the exact command the owner must run to create the profile (`xcrun notarytool store-credentials "$NOTARY_PROFILE" --apple-id <APPLE_ID> --team-id 3FLG8W6B95 --password <app-specific-password>`) and exit 3.
 3. Build the release app bundle by reusing the existing packaging: call `bash "${REPO_ROOT}/scripts/package_menubar_app.sh"` (it produces `dist/TarsCompanion.app` and ad-hoc signs it — you will re-sign over that).
 4. **Re-sign properly**, deepest-first: sign the executable inside `Contents/MacOS/`, then the bundle, each with:
    `codesign --force --options runtime --timestamp --entitlements companion/native-macos/Resources/TarsCompanionApp.entitlements --sign "$SIGN_IDENTITY" <path>`
