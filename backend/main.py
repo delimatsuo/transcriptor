@@ -251,7 +251,7 @@ async def lifespan(app: FastAPI):
         validate_existing_firebase_app(resolved_settings)
 
         # 6. ADC probe
-        await probe_application_default_credentials(resolved_settings.google_cloud_project)
+        await probe_application_default_credentials()
 
         # 7. Firebase initialization
         initialize_firebase_admin(resolved_settings.google_cloud_project, resolved_settings.firebase_project_id)
