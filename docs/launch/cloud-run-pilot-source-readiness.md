@@ -1,71 +1,44 @@
-# Cloud Run Pilot Source Readiness & Contract
+# Cloud Run pilot source readiness
 
-This document specifies the source-ready configuration contract and gate separation for the single-instance hosted T.A.R.S. pilot candidate. It serves as a non-authorizing architecture contract and gate checklist for Task 07 and Task 08.
+## Status
 
----
+**SOURCE PASS / OWNER REAL-AUTH NOT RUN**
 
-## 1. Proven by this task (Task 06)
+Executable-source digest: `1fd7c82b7164d7fb1d626df321fe5d9af6f426f93d616a7400ab873dbe4aa5f4`.
 
-The following components and contracts have been verified offline with automated test suites:
+Task 07 has source, unit, syntax, compile, build, constrained Swift, controlled local/synthetic browser evidence, and separate owner-supplied PASS evidence for the two `.env*` example nodes. No Task 07 source gate remains unrun at the recorded evidence state.
 
-- **Frame/Path Binding Gate**: Every binary audio frame received at `/api/stream/native/{session_id}` requires a JSON header containing `session_id` matching the route parameter exactly. Missing, non-string, or mismatched IDs trigger a 1008 WebSocket policy close without side effects on source health, dedup state, or audio processing.
-- **Fail-Closed CORS Parsing**: `CORS_ALLOWED_ORIGINS` is parsed strictly as ASCII. If absent, exact local defaults are preserved. If provided, wildcards, non-root paths, query parameters, fragments, credentials, internal whitespace, backslashes, percent encoding, control characters, empty port delimiters, invalid ports, non-IPv6 bracketed hosts, and non-canonical extension IDs are rejected at config time without echoing sensitive input.
-- **Liveness (`/healthz`) & Readiness (`/readyz`) Semantics**: `/healthz` provides unauthenticated, zero-dependency liveness. `/readyz` returns HTTP 503 (`{"status":"not_ready"}`) until lifespan initialization (ADC, Firebase Admin, Firestore, GCS, Gemini) completes, returning HTTP 200 (`{"status":"ready"}`) during normal serving, and resetting to 503 upon shutdown. Verified via direct ASGI route requests without running lifespan.
-- **Single-Process Container Contract**: `Dockerfile` is configured for non-root execution (`appuser` UID 1001), installs required audio libraries (`libsndfile1`, `libportaudio2`), defines safe non-capture environment defaults, contains no overriding `ENTRYPOINT`, and runs a single Uvicorn process via `exec` without `--reload` or `--workers`.
-- **Least-Privilege Storage Binding**: `GCSStorage` binds directly to `GCS_BUCKET_NAME` or the `<GOOGLE_CLOUD_PROJECT>-tars` default without inspecting bucket existence or attempting bucket creation during request handling.
-- **Build Context Containment**: `.dockerignore` establishes a checked-in source-rule contract isolating the build context to application sources only, excluding credentials, environment files, tests, documentation, caches, frontend, companion, and local scratch files. (Note: Docker image build was skipped because the daemon was unavailable; static source-rule assertions are verified in test suites rather than representing a resolved container build proof).
-- **Clean Frontend & Backend Environment Contracts**: `.env.example` and `frontend/.env.example` explicitly define the required pilot configuration parameters (`AUTH_BYPASS=false`, `NEXT_PUBLIC_AUTH_BYPASS=0`, root email placeholder, test-only bypass warning, zero credential paths). Visible `--stream-key` exposure and terminal copy commands have been removed from `CompanionCommand.tsx`.
+## Current verification
 
----
+| Area | Status | Result |
+|---|---|---|
+| Hostile environment and source isolation | PASS | Clean-room isolation passed; executable pre/post digest remained equal. |
+| Backend focused/full | PASS | Earlier clean-room aggregates: `336 passed, 2 deselected`; `580 passed, 2 deselected`. The two deselected `.env*` example nodes subsequently passed separately in the owner-supplied current-workspace scrubbed-environment run (`2 passed in 3.00s`); these are not aggregate `338`/`582` totals. |
+| Backend syntax | PASS | 4 production paths. |
+| Frontend unit / TypeScript | PASS | 125 passed; zero diagnostics. |
+| Production build | PASS | Build passed. |
+| Readiness and causal controls | PASS | Negative 18, positive 3, adapter causal 1, incomplete-drain 1. |
+| Authorized source-readiness | PASS | 175 passed, 1 deselected. |
+| WebSocket lifecycle | PASS | Targeted test passed in five fresh mirrors. |
+| Swift | CONSTRAINED PASS | 79 passed and build passed with nested SwiftPM sandbox disabled because nested `sandbox-exec` was denied; outer Codex sandbox remained enforced. |
+| Auth-offline browser | PASS | Owner-run unsandboxed local clean-room replay: 4/4 passed in 20.3s with the exact executable digest before and after. Owner-supplied terminal evidence was not independently rerun by Codex outside its sandbox. |
+| Core browser | PASS | Owner-run unsandboxed local clean-room replay: 19/19 passed in 19.8s with the exact executable digest before and after. Owner-supplied terminal evidence was not independently rerun by Codex outside its sandbox. |
+| `.env*` example nodes | PASS | Owner-supplied current-workspace scrubbed-environment run: `backend/tests/test_cloud_run_readiness.py::test_environment_examples_static_contract` and `backend/tests/test_task07_auth_source_readiness.py::test_env_example_requires_tars_runtime_mode_local`; `2 passed in 3.00s`. Codex neither independently reran these nodes nor inspected, copied, or hashed any `.env*` file. |
 
-## 2. Still required in Task 07
+An owner-run unsandboxed local clean-room replay at the exact executable digest qualified controlled local/synthetic browser behavior: auth-offline 4/4 passed in 20.3s and core 19/19 passed in 19.8s, with exact pre/post digest equality. This owner-supplied terminal evidence was not independently rerun by Codex outside its sandbox. It does not prove real identities, Firebase/provider/cloud access, deployment, production, live audio, or devices.
 
-- **Account Allowlist Verification**: Verify the exact five real Firebase/Google accounts for the pilot cohort before placing the named email allowlist into runtime configuration.
-- **Authentication Bypass Verification**: Prove local authentication flows and recruiter sign-in UX under `AUTH_BYPASS=false` with real Firebase token verification.
+The canonical browser attempts that encountered Watchpack `EMFILE` before collection are discarded diagnostics. The earlier Codex-sandbox Chromium `bootstrap_check_in org.chromium.Chromium.MachPortRendezvousServer.<pid>: Permission denied (1100)` is retained only as discarded historical diagnostic evidence and is explicitly superseded for local browser qualification by the owner run. It was a pre-assertion launch diagnostic, never a functional failure.
 
----
+The two `.env*` example results are point-in-time, owner-attributed evidence from the current workspace. The executable-source digest `1fd7c82b7164d7fb1d626df321fe5d9af6f426f93d616a7400ab873dbe4aa5f4` binds executable source only; it does not bind `.env*` byte identity. The earlier clean-room aggregate counts remain exactly `336 passed, 2 deselected` and `580 passed, 2 deselected`; the two example nodes passed separately afterward and are not folded into those aggregates.
 
-## 3. Owner/Designer-Only Task 08 Gates
+## Truthful qualification ceiling
 
-All real cloud, credential, and deployment mutations are gated to Task 08 and must be executed by the repository owner/designer. (None of these gates were executed in Task 06. This readiness document does not itself authorize or infer any cloud, infrastructure, or environment mutation):
+The evidence ceiling is source/unit/build plus constrained Swift, WebSocket lifecycle PASS, controlled local/synthetic browser qualification from the owner-supplied exact-digest replay, and the separate owner-attributed PASS for the two environment-example nodes. It does not extend to real identities/login/tokens, Firebase/GCP/cloud/provider access, deployment, Docker daemon/image, live audio/device, production, or owner real-auth; all remain NOT RUN.
 
-- **Identity & Commit Binding**: Bind deployment strictly to the committed Git SHA, designated GCP/Firebase project, owner identity, runtime service account, and verified rollback plan.
-- **Owner-Approved Allowed-Mutation Manifest**: Before any Task 08 mutation occurs, require a separately owner-approved exhaustive allowed-mutation manifest. The manifest must explicitly identify each exact target resource, operation, before/after value, responsible owner, rollback procedure, and evidence destination. Every unlisted mutation is strictly forbidden.
-- **Pre-Created Infrastructure & Storage IAM**: Pre-create and verify the exact dedicated GCS bucket with least-privilege object-level access (granting only the required object read/write access without bucket-creation or administration permissions); never use downloaded service-account JSON keys.
-- **Cloud Run Deployment Specification**:
-  - Exactly one Uvicorn process (`min=1`, `max=1`).
-  - Request timeout set to `3600` seconds.
-  - Startup probe configured to HTTP `GET /readyz`.
-  - Liveness probe configured to HTTP `GET /healthz`.
-  - HTTP/1.1 WebSocket support (no end-to-end HTTP/2 WebSocket configuration).
-- **Runtime Environment Binding**: Set `AUTH_BYPASS=false`, verified email allowlist, explicit project/org/region/bucket/CORS variables, host capture disabled, and audio backup disabled. Explicitly prove that no local `.env` or `.env.local` files leak into the runtime environment.
-- **Firebase Hosting Production Build**: Build frontend in a clean environment with explicit production URLs (`https://<cloud-run-host>`, `wss://<cloud-run-host>/ws`, `wss://<cloud-run-host>/api/stream/native`), all required Firebase public web configuration, and `NEXT_PUBLIC_AUTH_BYPASS=0`.
-- **Gate Execution & Proof**: Execute and record `docs/launch/week-4-hosted-gate-checklist.md` with complete evidence for:
-  - Allowed and denied Google accounts;
-  - Cross-owner access denial;
-  - Path and header mismatch frame rejections;
-  - Liveness and startup health probe behavior under cold starts;
-  - WebSocket ticket renewal, expiration, and reconnection handling;
-  - TLS certificates, ingress controls, and IAM service permissions;
-  - Exact deployed revision verification and 100% traffic allocation.
+Any known or suspected change to either relevant example after the owner run invalidates this two-node PASS and requires the exact owner command to be rerun. Any executable-source change continues to invalidate applicable gates.
 
----
+## Task 08 non-authorizing boundary
 
-## 4. Known Pilot Limitations & Operational Invariants
+Task 08 separately owns project/provider selection, Firebase configuration and restrictions, Hosting/Cloud Run binding, deployment, production configuration, and live operational verification. This source-readiness document authorizes none of those actions.
 
-- **WebSocket Request Timeout**: Cloud Run WebSockets operate as persistent HTTP requests subject to the configured request timeout (`3600`s maximum). When the timeout is reached, connections close and clients must reconnect.
-  - Reference: [Cloud Run WebSockets](https://cloud.google.com/run/docs/triggering/websockets)
-  - Reference: [Cloud Run Request Timeout](https://cloud.google.com/run/docs/configuring/request-timeout)
-- **Session Duration & Reconnection Boundaries**: `3600` seconds is the platform timeout ceiling, not a guarantee of continuous audio across network blips. The native macOS companion automatically reconnects with backoff; browser microphone streaming has **no automatic reconnect**. Task 08 must validate the operator recovery path and must not claim uninterrupted browser audio across a Cloud Run timeout. User guidance: "Se o status reconectando persistir por mais de 2 minutos, reinicie a sessão."
-- **Process-Local Ephemeral State**: Single-instance deployment (`min=max=1`) prevents multi-instance routing conflicts but leaves in-memory state (stream keys, active WebSocket connections, ephemeral session locks) non-durable across process restarts.
-- **Session Affinity**: Session affinity does not provide state durability across container restarts. Multi-tenant distributed clustering remains out of scope for the pilot.
-- **Retention Policy**: `DATA_RETENTION_DAYS=90` is an inert configuration placeholder and does not constitute an automated deletion guarantee.
-
----
-
-## 5. Authoritative References
-
-- [Google Cloud Run — WebSockets](https://cloud.google.com/run/docs/triggering/websockets)
-- [Google Cloud Run — Configuring Request Timeout](https://cloud.google.com/run/docs/configuring/request-timeout)
-- [Google Cloud Run — Health Checks (Startup and Liveness Probes)](https://cloud.google.com/run/docs/configuring/healthchecks)
-- [Google Cloud Run — Container Runtime Contract](https://cloud.google.com/run/docs/container-contract)
+**SOURCE PASS / OWNER REAL-AUTH NOT RUN**
