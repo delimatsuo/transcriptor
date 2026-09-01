@@ -1,10 +1,12 @@
 # Task 07 source-readiness report
 
-## Current identity and verdict
+> **Historical snapshot — not current qualification.** This report records the dirty Task 07 source tree at `dc262e55f62771615102cef22667f21c3a52a219` and its recorded executable-source digest. Every identity, count, verdict, and statement below is scoped only to that snapshot. Later executable-source changes invalidate the applicable gates; do not use this document as exact-head proof for draft PR #41 or the split PR stack. Use the applicable PR description, exact-head CI, and review record for current evidence.
+
+## Historical identity and verdict
 
 **Verdict: SOURCE PASS / OWNER REAL-AUTH NOT RUN**
 
-The current executable-source digest is `1fd7c82b7164d7fb1d626df321fe5d9af6f426f93d616a7400ab873dbe4aa5f4`.
+The historical snapshot executable-source digest is `1fd7c82b7164d7fb1d626df321fe5d9af6f426f93d616a7400ab873dbe4aa5f4`.
 
 | Identity | Value |
 |---|---|
@@ -14,7 +16,7 @@ The current executable-source digest is `1fd7c82b7164d7fb1d626df321fe5d9af6f426f
 | `frontend/next-env.d.ts` prerequisite | `1862ac4bbbc5192d4bf562161df66ea547ed3e67173100656ab606ae9797db2b` |
 | Executable source | `1fd7c82b7164d7fb1d626df321fe5d9af6f426f93d616a7400ab873dbe4aa5f4` |
 
-The dirty Task 07 worktree is preserved. No paths are staged; no commit, push, or PR was made. `frontend/next-env.d.ts` and `AudioDeviceSelector.tsx` are prerequisite restorations, not builder-owned changed paths, subject to verifier checks.
+At the snapshot, the dirty Task 07 worktree was preserved. No paths are staged; no commit, push, or PR was made. `frontend/next-env.d.ts` and `AudioDeviceSelector.tsx` are prerequisite restorations, not builder-owned changed paths, subject to verifier checks.
 
 ## Changed-file inventory
 
