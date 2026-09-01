@@ -34,12 +34,13 @@ Task 10 owns the later empirical decision under a separate fresh authorization e
 6. **Notarize and staple**: `xcrun notarytool submit "dist/${APP_NAME}.dmg" --keychain-profile "$NOTARY_PROFILE" --wait`, then `xcrun stapler staple "dist/${APP_NAME}.dmg"` and `xcrun stapler validate "dist/${APP_NAME}.dmg"`. Capture the returned submission ID in `SUBMISSION_ID`. If notarytool reports `Invalid`, fetch and print the log (`xcrun notarytool log "$SUBMISSION_ID" --keychain-profile "$NOTARY_PROFILE"`) before exiting non-zero.
 7. Print a final summary: dmg path, its SHA-256, and the `spctl -a -vvv -t exec dist/TarsCompanion.app` result.
 
-**Create** `scripts/tests/release_menubar_app_test.sh` (bash, `set -euo pipefail`). It must create its isolated tree with `mktemp -d "${TMPDIR%/}/transcriptor-task09-release-test.XXXXXX"`, exercise the real release script through a PATH-shim directory containing synthetic `security`, `xcrun`, `codesign`, `hdiutil`, and `spctl` executables that append every invocation to a temporary log, and remove only that exact temporary tree in an exit trap without `rm -rf`. Use only synthetic identity/profile values. Prove all of these cases:
+**Create** `scripts/tests/release_menubar_app_test.sh` (bash, `set -euo pipefail`). It must create its isolated tree with `mktemp -d "${TMPDIR%/}/transcriptor-task09-release-test.XXXXXX"`, copy the exact release script into a synthetic repository inside that tree, invoke the copy with `/bin/bash`, and prepend a shim directory containing synthetic `security`, `xcrun`, `codesign`, `hdiutil`, and `spctl` executables plus a `bash` dispatcher that intercepts only the synthetic packaging-script call. Every protected invocation must append its complete argument vector to a temporary log. Remove only that exact temporary tree in an exit trap without `rm -rf`, and use only synthetic identity/profile values. Prove all of these cases:
 
 1. No arguments and malformed/extra arguments exit 64, print the authorization message, make zero shim calls, and create no artifact.
 2. `--live-release` with the fake certificate absent exits 2 with the actionable certificate message; no `xcrun`, packaging, signing, DMG, stapling, or assessment step occurs.
 3. `--live-release` with the fake certificate present and fake `notarytool history` failing exits 3 with the selected-profile recovery command and quoted synthetic credential placeholders; no packaging, signing, submission, stapling, or assessment step occurs.
-4. The test fails if any protected command (`security`, `xcrun`, `codesign`, `hdiutil`, or `spctl`) resolves outside the shim directory, if any unexpected protected shim is invoked, if `dist/` changes, or if either failure path continues after its protected preflight.
+4. A fully successful synthetic run exercises fake packaging, signing, DMG creation, notarization submission/stapling, assessment, and hashing in the temporary repository. Assert from the executed argv log—not source formatting—that every signing invocation containing `--force` or `--sign` omits `--entitlements`, while the required read-only invocation contains exactly `-d --entitlements :-`. This must remain effective when the release-script command is formatted across continuation lines.
+5. The test fails if any protected command or packaging script resolves outside the shim/temp tree, if any unexpected protected shim is invoked, if the real repository's `dist/` changes, if either failure path continues after its preflight, or if the exact temporary tree is not removed.
 
 The harness must not invoke the real release script with host commands or inspect any machine-local credential/config state.
 
@@ -50,7 +51,7 @@ The harness must not invoke the real release script with host commands or inspec
 - Do NOT modify any Swift source, the Info.plist, or anything under `backend/`, `frontend/`, `docs/` (other than your report).
 - Do NOT create an entitlements file or add an audio entitlement in Task 09. That least-privilege decision remains blocked on Task 10's separately authorized empirical signed-capture gate.
 - Never invent or hardcode an Apple ID, password, or app-specific password anywhere in the repo.
-- Builder verification must not inspect the real keychain/notarization profile, invoke the packaging script, sign, notarize, staple, assess, or contact Apple. Only the synthetic PATH-shim harness may execute release failure paths.
+- Builder verification must not inspect the real keychain/notarization profile, invoke the real packaging script, sign, notarize, staple, assess, or contact Apple. Only the synthetic PATH-shim harness may execute release paths.
 - `dist/` is gitignored — artifacts are not deliverables; the release and packaging scripts are.
 
 ## Verification (do what you can; report the rest honestly)
@@ -60,7 +61,6 @@ cd "/Volumes/Extreme Pro/MYPROJECTS/Transcriptor" && bash -n scripts/release_men
 cd "/Volumes/Extreme Pro/MYPROJECTS/Transcriptor" && bash -n scripts/tests/release_menubar_app_test.sh
 cd "/Volumes/Extreme Pro/MYPROJECTS/Transcriptor" && TMPDIR="${TMPDIR:-/private/tmp}" bash scripts/tests/release_menubar_app_test.sh
 cd "/Volumes/Extreme Pro/MYPROJECTS/Transcriptor" && test ! -e companion/native-macos/Resources/TarsCompanionApp.entitlements
-cd "/Volumes/Extreme Pro/MYPROJECTS/Transcriptor" && ! rg -n -- 'codesign .*--(force|sign).*--entitlements|codesign .*--entitlements.*--(force|sign)' scripts/release_menubar_app.sh
 cd "/Volumes/Extreme Pro/MYPROJECTS/Transcriptor/companion/native-macos" && swift test          # unchanged, 0 failures
 ```
 
@@ -70,4 +70,4 @@ Do not run the real release script merely because the certificate or profile exi
 
 ## Report
 
-`docs/builder/task-09-report.md`: files created, the synthetic preflight outputs, confirmation that no real keychain/profile or Apple operation was attempted, confirmation that Task 09 added no audio entitlement, and an explicit list of owner-only steps you did not execute. Record both the live release and Task 10 signed-capture matrix as deferred rather than passed.
+`docs/builder/task-09-report.md`: files created, the synthetic preflight and full-success outputs, the executed-argv entitlement assertions, confirmation that no real keychain/profile or Apple operation was attempted, confirmation that Task 09 added no audio entitlement, and an explicit list of owner-only steps you did not execute. Record both the live release and Task 10 signed-capture matrix as deferred rather than passed.
