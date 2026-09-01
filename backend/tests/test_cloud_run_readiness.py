@@ -320,6 +320,324 @@ def test_lifespan_ready_state_transition(monkeypatch):
     assert getattr(test_app.state, "ready", False) is False
 
 
+def test_lifespan_shutdown_drains_pipelines_before_clearing_state(monkeypatch):
+    """Lifespan teardown must mark readiness False, keep dependency globals live
+
+    while active pipelines drain and process final transcript callbacks, and
+    clear all globals only after pipeline stops finish.
+    """
+    fake_settings = config.Settings(
+        google_cloud_project="test-proj",
+        auth_allowed_emails="test@example.com",
+    )
+    monkeypatch.setattr(main, "get_settings", lambda: fake_settings)
+    monkeypatch.setattr(main, "resolve_settings_safely", lambda: fake_settings)
+    monkeypatch.setattr(main, "validate_raw_process_env", lambda *a, **kw: "local")
+    monkeypatch.setattr(main, "validate_auth_configuration", MagicMock())
+    monkeypatch.setattr(main, "validate_existing_firebase_app", MagicMock())
+    monkeypatch.setattr(main, "probe_application_default_credentials", AsyncMock())
+    monkeypatch.setattr(main, "initialize_firebase_admin", MagicMock())
+
+    class FakeSession:
+        def __init__(self, session_id: str):
+            self.id = session_id
+            self.mode = main.SessionMode.MEETING
+            self.status = main.SessionStatus.ACTIVE
+            self.owner_id = "test-owner"
+            self.org_id = "test-org"
+            self.transcript_durability = "durable"
+            self.transcript_failure_count = 0
+
+    class FakeSessionManager:
+        def __init__(self, settings):
+            self.settings = settings
+            self.sessions: dict[str, FakeSession] = {}
+            self.recorded_segments: dict[str, list[main.TranscriptSegment]] = {}
+
+        def detect_orphaned_sessions(self):
+            return []
+
+        def get_session(self, session_id: str):
+            return self.sessions.get(session_id)
+
+        def add_transcript_segment(self, session_id: str, segment: main.TranscriptSegment):
+            self.recorded_segments.setdefault(session_id, []).append(segment)
+
+        def get_transcript_word_count_since_index(self, session_id: str, from_index: int = 0):
+            return 0
+
+    class FakeFirestoreStorage:
+        def __init__(self, settings):
+            self.settings = settings
+            self.persisted_segments: list[tuple[str, main.TranscriptSegment, dict]] = []
+
+        async def save_transcript_segment(self, session_id: str, segment: main.TranscriptSegment, **kwargs):
+            self.persisted_segments.append((session_id, segment, kwargs))
+
+        async def save_session(self, session, **kwargs):
+            pass
+
+    class FakeGCSStorage:
+        def __init__(self, settings):
+            self.settings = settings
+
+    class FakeGeminiClient:
+        def __init__(self, settings):
+            self.settings = settings
+
+    created_sm: list[FakeSessionManager] = []
+    created_fs: list[FakeFirestoreStorage] = []
+    created_gcs: list[FakeGCSStorage] = []
+    created_gem: list[FakeGeminiClient] = []
+
+    def make_sm(s):
+        instance = FakeSessionManager(s)
+        created_sm.append(instance)
+        return instance
+
+    def make_fs(s):
+        instance = FakeFirestoreStorage(s)
+        created_fs.append(instance)
+        return instance
+
+    def make_gcs(s):
+        instance = FakeGCSStorage(s)
+        created_gcs.append(instance)
+        return instance
+
+    def make_gem(s):
+        instance = FakeGeminiClient(s)
+        created_gem.append(instance)
+        return instance
+
+    monkeypatch.setattr(main, "SessionManager", make_sm)
+    monkeypatch.setattr(main, "FirestoreStorage", make_fs)
+    monkeypatch.setattr(main, "GCSStorage", make_gcs)
+    monkeypatch.setattr(main, "GeminiClient", make_gem)
+
+    test_app = main.FastAPI(lifespan=main.lifespan)
+    test_app.state.ready = False
+
+    session_id = "test-active-session"
+    final_segment = main.TranscriptSegment(
+        speaker="Speaker 1",
+        text="Final segment during drain",
+        is_final=True,
+        start_time=0.0,
+        end_time=1.0,
+    )
+
+    stop_calls: list[str] = []
+    drain_invariants_verified: list[bool] = []
+
+    async def fake_stop_pipeline(sid: str) -> bool:
+        stop_calls.append(sid)
+        assert sid == session_id
+        main.pipeline_tasks.pop(sid, None)
+        # 1. Assert readiness is already False before pipeline drain
+        assert getattr(test_app.state, "ready", True) is False
+        # 2. Assert all published dependency globals are the exact live fake instances
+        assert main.settings is fake_settings
+        assert main.session_mgr is created_sm[0]
+        assert main.firestore_storage is created_fs[0]
+        assert main.gcs_storage is created_gcs[0]
+        assert main.gemini_client is created_gem[0]
+        assert main._context_window_for(sid) is not None
+
+        # 3. Invoke real _on_transcript with one final TranscriptSegment
+        await main._on_transcript(sid, final_segment)
+        drain_invariants_verified.append(True)
+        return True
+
+    monkeypatch.setattr(main, "_stop_pipeline", fake_stop_pipeline)
+
+    async def run_lifespan():
+        async with main.lifespan(test_app):
+            assert getattr(test_app.state, "ready", False) is True
+            # Seed one active pipeline session
+            sm = created_sm[0]
+            sm.sessions[session_id] = FakeSession(session_id)
+            monkeypatch.setitem(main.pipeline_tasks, session_id, object())
+            mock_cw = MagicMock()
+            mock_cw.should_summarize = lambda count: False
+            mock_cw.last_summary_seq = 0
+            main.context_windows[session_id] = mock_cw
+
+    asyncio.run(run_lifespan())
+
+    # Assert stop ran exactly once and invariants passed during drain
+    assert stop_calls == [session_id]
+    assert len(drain_invariants_verified) == 1
+
+    # Assert the final segment was recorded in session manager
+    sm = created_sm[0]
+    assert session_id in sm.recorded_segments
+    assert sm.recorded_segments[session_id] == [final_segment]
+
+    # Assert the final segment was persisted to Firestore
+    fs = created_fs[0]
+    assert len(fs.persisted_segments) == 1
+    assert fs.persisted_segments[0][0] == session_id
+    assert fs.persisted_segments[0][1] == final_segment
+
+    # Assert all globals and context were cleared after lifespan exit
+    assert main.settings is None
+    assert main.session_mgr is None
+    assert main.firestore_storage is None
+    assert main.gcs_storage is None
+    assert main.gemini_client is None
+    assert main.context_window is None
+    assert len(main.context_windows) == 0
+    assert getattr(test_app.state, "ready", False) is False
+
+
+def test_lifespan_shutdown_clears_state_and_propagates_on_drain_failure(monkeypatch):
+    """If stopping an active pipeline raises an exception during shutdown,
+
+    the exact exception must propagate and all globals and context state must
+    still be cleared in the inner finally.
+    """
+    fake_settings = config.Settings(
+        google_cloud_project="test-proj",
+        auth_allowed_emails="test@example.com",
+    )
+    monkeypatch.setattr(main, "get_settings", lambda: fake_settings)
+    monkeypatch.setattr(main, "resolve_settings_safely", lambda: fake_settings)
+    monkeypatch.setattr(main, "validate_raw_process_env", lambda *a, **kw: "local")
+    monkeypatch.setattr(main, "validate_auth_configuration", MagicMock())
+    monkeypatch.setattr(main, "validate_existing_firebase_app", MagicMock())
+    monkeypatch.setattr(main, "probe_application_default_credentials", AsyncMock())
+    monkeypatch.setattr(main, "initialize_firebase_admin", MagicMock())
+
+    class FakeSession:
+        def __init__(self, session_id: str):
+            self.id = session_id
+            self.mode = main.SessionMode.MEETING
+            self.status = main.SessionStatus.ACTIVE
+            self.owner_id = "test-owner"
+            self.org_id = "test-org"
+
+    class FakeSessionManager:
+        def __init__(self, settings):
+            self.settings = settings
+            self.sessions: dict[str, FakeSession] = {}
+
+        def detect_orphaned_sessions(self):
+            return []
+
+        def get_session(self, session_id: str):
+            return self.sessions.get(session_id)
+
+    class FakeFirestoreStorage:
+        def __init__(self, settings):
+            self.settings = settings
+
+    class FakeGCSStorage:
+        def __init__(self, settings):
+            self.settings = settings
+
+    class FakeGeminiClient:
+        def __init__(self, settings):
+            self.settings = settings
+
+    created_sm: list[FakeSessionManager] = []
+    created_fs: list[FakeFirestoreStorage] = []
+    created_gcs: list[FakeGCSStorage] = []
+    created_gem: list[FakeGeminiClient] = []
+
+    def make_sm(s):
+        instance = FakeSessionManager(s)
+        created_sm.append(instance)
+        return instance
+
+    def make_fs(s):
+        instance = FakeFirestoreStorage(s)
+        created_fs.append(instance)
+        return instance
+
+    def make_gcs(s):
+        instance = FakeGCSStorage(s)
+        created_gcs.append(instance)
+        return instance
+
+    def make_gem(s):
+        instance = FakeGeminiClient(s)
+        created_gem.append(instance)
+        return instance
+
+    monkeypatch.setattr(main, "SessionManager", make_sm)
+    monkeypatch.setattr(main, "FirestoreStorage", make_fs)
+    monkeypatch.setattr(main, "GCSStorage", make_gcs)
+    monkeypatch.setattr(main, "GeminiClient", make_gem)
+
+    class DrainPipelineSentinelError(RuntimeError):
+        pass
+
+    sentinel_error = DrainPipelineSentinelError("simulated pipeline drain failure")
+    observed_state: dict[str, object] = {}
+    stop_calls: list[str] = []
+
+    test_app = main.FastAPI(lifespan=main.lifespan)
+    test_app.state.ready = False
+    session_id = "test-failing-session"
+    later_session_id = "test-later-session"
+
+    async def failing_stop_pipeline(sid: str) -> bool:
+        stop_calls.append(sid)
+        main.pipeline_tasks.pop(sid, None)
+        if sid == later_session_id:
+            observed_state["later_ready"] = getattr(test_app.state, "ready", True)
+            observed_state["later_session_mgr"] = main.session_mgr
+            return True
+        observed_state["ready"] = getattr(test_app.state, "ready", True)
+        observed_state["settings"] = main.settings
+        observed_state["session_mgr"] = main.session_mgr
+        observed_state["firestore_storage"] = main.firestore_storage
+        observed_state["gcs_storage"] = main.gcs_storage
+        observed_state["gemini_client"] = main.gemini_client
+        observed_state["context"] = main._context_window_for(sid)
+        raise sentinel_error
+
+    monkeypatch.setattr(main, "_stop_pipeline", failing_stop_pipeline)
+
+    async def run_lifespan():
+        async with main.lifespan(test_app):
+            sm = created_sm[0]
+            sm.sessions[session_id] = FakeSession(session_id)
+            monkeypatch.setitem(main.pipeline_tasks, session_id, object())
+            monkeypatch.setitem(main.pipeline_tasks, later_session_id, object())
+            mock_cw = MagicMock()
+            main.context_windows[session_id] = mock_cw
+
+    with pytest.raises(DrainPipelineSentinelError) as exc_info:
+        asyncio.run(run_lifespan())
+
+    # Assert exact sentinel exception propagated
+    assert exc_info.value is sentinel_error
+    assert stop_calls == [session_id, later_session_id]
+
+    # Assert live-global invariant was observed during stop_pipeline
+    assert observed_state["ready"] is False
+    assert observed_state["settings"] is fake_settings
+    assert observed_state["session_mgr"] is created_sm[0]
+    assert observed_state["firestore_storage"] is created_fs[0]
+    assert observed_state["gcs_storage"] is created_gcs[0]
+    assert observed_state["gemini_client"] is created_gem[0]
+    assert observed_state["context"] is not None
+    assert observed_state["later_ready"] is False
+    assert observed_state["later_session_mgr"] is created_sm[0]
+
+    # Assert all globals and context state were still cleared in inner finally
+    assert main.settings is None
+    assert main.session_mgr is None
+    assert main.firestore_storage is None
+    assert main.gcs_storage is None
+    assert main.gemini_client is None
+    assert main.context_window is None
+    assert len(main.context_windows) == 0
+    assert getattr(test_app.state, "ready", False) is False
+
+
 # --- Section 6: Dockerfile & .dockerignore Static Contract ---
 
 def _parse_dockerfile_instructions(content: str) -> list[tuple[str, str]]:

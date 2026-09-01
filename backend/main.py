@@ -279,28 +279,32 @@ async def lifespan(app: FastAPI):
         logger.info("server_started", host=settings.fastapi_host, port=settings.fastapi_port)
         app.state.ready = True
         yield
-    except Exception:
-        app.state.ready = False
-        settings = None
-        session_mgr = None
-        firestore_storage = None
-        gcs_storage = None
-        gemini_client = None
-        context_windows.clear()
-        raise
     finally:
         app.state.ready = False
-        settings = None
-        session_mgr = None
-        firestore_storage = None
-        gcs_storage = None
-        gemini_client = None
-        context_window = None
-
-        # Cleanup: stop all active pipelines
-        for session_id in list(pipeline_tasks.keys()):
-            await _stop_pipeline(session_id)
-        context_windows.clear()
+        try:
+            # Cleanup: stop all active pipelines
+            first_drain_error: Exception | None = None
+            for session_id in list(pipeline_tasks.keys()):
+                try:
+                    await _stop_pipeline(session_id)
+                except Exception as exc:
+                    if first_drain_error is None:
+                        first_drain_error = exc
+                    else:
+                        logger.exception(
+                            "pipeline_shutdown_additional_error",
+                            session_id=session_id,
+                        )
+            if first_drain_error is not None:
+                raise first_drain_error
+        finally:
+            settings = None
+            session_mgr = None
+            firestore_storage = None
+            gcs_storage = None
+            gemini_client = None
+            context_window = None
+            context_windows.clear()
 
         logger.info("server_stopped")
 
