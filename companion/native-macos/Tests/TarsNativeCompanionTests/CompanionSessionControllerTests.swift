@@ -56,6 +56,122 @@ private final class FakeCaptureSource: CaptureSource, @unchecked Sendable {
     }
 }
 
+private final class ControllableCaptureSource: CaptureSource, @unchecked Sendable {
+    let source: AudioSource = .systemAudio
+    let configuration: CaptureSourceConfiguration
+
+    private let lock = NSLock()
+    private let shouldThrowAfterRelease: Bool
+    private var _status: CaptureSourceStatus = .idle
+    private var releaseContinuations: [CheckedContinuation<Void, Never>] = []
+    private var hasEnteredStart = false
+    private var isReleased = false
+    private var hasFinishedStart = false
+    private var _startCount = 0
+    private var _stopCount = 0
+    private var _postStartStopCount = 0
+
+    var startCount: Int {
+        lock.withLock { _startCount }
+    }
+
+    var stopCount: Int {
+        lock.withLock { _stopCount }
+    }
+
+    var postStartStopCount: Int {
+        lock.withLock { _postStartStopCount }
+    }
+
+    var status: CaptureSourceStatus {
+        lock.withLock { _status }
+    }
+
+    init(
+        configuration: CaptureSourceConfiguration,
+        shouldThrowAfterRelease: Bool = false
+    ) {
+        self.configuration = configuration
+        self.shouldThrowAfterRelease = shouldThrowAfterRelease
+    }
+
+    func waitForStartToEnter(timeoutMs: Int = 1_000) async -> Bool {
+        let deadline = Date().addingTimeInterval(Double(timeoutMs) / 1_000.0)
+        while Date() < deadline {
+            if lock.withLock({ hasEnteredStart }) {
+                return true
+            }
+            try? await Task.sleep(nanoseconds: 5_000_000)
+        }
+        return lock.withLock { hasEnteredStart }
+    }
+
+    func releaseStart() {
+        let waiters = lock.withLock { () -> [CheckedContinuation<Void, Never>] in
+            isReleased = true
+            let current = releaseContinuations
+            releaseContinuations.removeAll()
+            return current
+        }
+        waiters.forEach { $0.resume() }
+    }
+
+    func start() async throws {
+        lock.withLock {
+            _startCount += 1
+            hasEnteredStart = true
+        }
+
+        // Suspend until explicitly released, intentionally ignoring Task cancellation
+        await withCheckedContinuation { continuation in
+            let released = lock.withLock { () -> Bool in
+                if isReleased {
+                    return true
+                }
+                releaseContinuations.append(continuation)
+                return false
+            }
+            if released {
+                continuation.resume()
+            }
+        }
+
+        if shouldThrowAfterRelease {
+            throw CompanionError.invalid("late mock source start failure")
+        }
+
+        // Intentionally ignores Task cancellation and becomes running only after release
+        lock.withLock {
+            hasFinishedStart = true
+            _status = .running(SourceHealth(permission: .granted, route: .healthy))
+        }
+    }
+
+    func stop() async {
+        lock.withLock {
+            _stopCount += 1
+            if hasFinishedStart {
+                _postStartStopCount += 1
+            }
+            _status = .stopped(SourceHealth(permission: .granted, route: .unknown))
+        }
+    }
+}
+
+private final class AtomicFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _value = false
+
+    var value: Bool {
+        get { lock.withLock { _value } }
+        set { lock.withLock { _value = newValue } }
+    }
+
+    init(_ initial: Bool = false) {
+        self._value = initial
+    }
+}
+
 @MainActor
 private func waitForState(
     controller: CompanionSessionController,
@@ -185,5 +301,122 @@ final class CompanionSessionControllerTests: XCTestCase {
         XCTAssertEqual(sourceFactoryCount, 1, "Factory should not be called again")
         XCTAssertEqual(controller.activeSessionID, "sess-5")
         XCTAssertEqual(controller.state, .capturing)
+    }
+
+    // (f) stop awaits in-flight start and cleans up late-running source
+    func testStopAwaitsInFlightStartupAndEnsuresLateSourceIsStopped() async throws {
+        let fakeSource = ControllableCaptureSource(configuration: try dummyConfig())
+        let controller = CompanionSessionController(
+            transportFactory: { _ in FakeTransport() },
+            sourceFactory: { config, _ in fakeSource }
+        )
+
+        // 1. launch controller.start in one Task
+        let startTask = Task { @MainActor in
+            await controller.start(
+                sessionID: "race-sess",
+                streamKey: "race-key",
+                gatewayBase: "ws://127.0.0.1:8000/api"
+            )
+        }
+
+        // 2. wait until fake start is suspended
+        let startEntered = await fakeSource.waitForStartToEnter()
+        XCTAssertTrue(startEntered)
+
+        // 3. launch controller.stop in another Task
+        let stopCompleted = AtomicFlag(false)
+        let stopTask = Task { @MainActor in
+            await controller.stop()
+            stopCompleted.value = true
+        }
+
+        // 4. prove stop has begun and cannot report completion before the suspended start is released
+        let stopBegunDeadline = Date().addingTimeInterval(1.0)
+        while Date() < stopBegunDeadline && fakeSource.stopCount == 0 {
+            try await Task.sleep(nanoseconds: 5_000_000) // 5ms
+        }
+        XCTAssertGreaterThanOrEqual(fakeSource.stopCount, 1, "controller.stop should have begun")
+        XCTAssertFalse(stopCompleted.value, "controller.stop must not report completion before the suspended start is released")
+
+        // 5. release start and await both calls
+        fakeSource.releaseStart()
+        await startTask.value
+        await stopTask.value
+
+        XCTAssertTrue(stopCompleted.value, "controller.stop should have completed after start was released")
+
+        // 6. assert idle, nil activeSessionID, source status stopped, and a post-start stop occurred
+        XCTAssertEqual(controller.state, .idle)
+        XCTAssertNil(controller.activeSessionID)
+        XCTAssertEqual(
+            fakeSource.status,
+            .stopped(SourceHealth(permission: .granted, route: .unknown))
+        )
+        XCTAssertGreaterThanOrEqual(
+            fakeSource.postStartStopCount,
+            1,
+            "A stop call must occur after start settles so a source that becomes active late does not remain running"
+        )
+    }
+
+    // (g) invalidated generation cannot publish state or overwrite a newer session
+    func testInvalidatedGenerationCannotPublishStateOrOverwriteNewSession() async throws {
+        let staleSource = ControllableCaptureSource(
+            configuration: try dummyConfig(),
+            shouldThrowAfterRelease: true
+        )
+        let replacementSource = ControllableCaptureSource(configuration: try dummyConfig())
+        var sources = [staleSource, replacementSource]
+
+        let controller = CompanionSessionController(
+            transportFactory: { _ in FakeTransport() },
+            sourceFactory: { _, _ in
+                sources.removeFirst()
+            }
+        )
+
+        let staleStart = Task { @MainActor in
+            await controller.start(
+                sessionID: "stale-session",
+                streamKey: "stale-key",
+                gatewayBase: "ws://127.0.0.1:8000/api"
+            )
+        }
+        let staleStartEntered = await staleSource.waitForStartToEnter()
+        XCTAssertTrue(staleStartEntered)
+
+        let staleStop = Task { @MainActor in
+            await controller.stop()
+        }
+
+        let stopBegunDeadline = Date().addingTimeInterval(1.0)
+        while Date() < stopBegunDeadline && staleSource.stopCount == 0 {
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        XCTAssertGreaterThanOrEqual(staleSource.stopCount, 1)
+        XCTAssertEqual(controller.state, .idle)
+
+        replacementSource.releaseStart()
+        await controller.start(
+            sessionID: "replacement-session",
+            streamKey: "replacement-key",
+            gatewayBase: "ws://127.0.0.1:8000/api"
+        )
+        XCTAssertEqual(controller.state, .capturing)
+        XCTAssertEqual(controller.activeSessionID, "replacement-session")
+        XCTAssertEqual(replacementSource.stopCount, 0)
+
+        staleSource.releaseStart()
+        await staleStart.value
+        await staleStop.value
+
+        XCTAssertEqual(controller.state, .capturing)
+        XCTAssertEqual(controller.activeSessionID, "replacement-session")
+        XCTAssertEqual(replacementSource.stopCount, 0)
+        XCTAssertEqual(
+            replacementSource.status,
+            .running(SourceHealth(permission: .granted, route: .healthy))
+        )
     }
 }

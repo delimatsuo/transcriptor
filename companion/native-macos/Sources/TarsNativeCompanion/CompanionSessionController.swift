@@ -25,6 +25,9 @@ public final class CompanionSessionController: ObservableObject {
     private var source: (any CaptureSource)?
     private var sink: ReconnectingAudioSink?
 
+    private var currentGeneration: UInt64 = 0
+    private var startupTask: Task<Void, Never>?
+
     /// Defaults: URLSessionWebSocketTransport + ScreenCaptureKitSystemAudioSource.
     /// Both injectable so unit tests never touch real sockets or ScreenCaptureKit.
     public init(
@@ -45,25 +48,56 @@ public final class CompanionSessionController: ObservableObject {
             return
         }
 
+        currentGeneration &+= 1
+        let generation = currentGeneration
+
         state = .connecting
 
+        let startup = Task { @MainActor [weak self] in
+            guard let self = self else { return }
+            await self.performStart(
+                sessionID: sessionID,
+                streamKey: streamKey,
+                gatewayBase: gatewayBase,
+                generation: generation
+            )
+        }
+        self.startupTask = startup
+        await startup.value
+        if self.currentGeneration == generation && self.startupTask == startup {
+            self.startupTask = nil
+        }
+    }
+
+    private func performStart(
+        sessionID: String,
+        streamKey: String,
+        gatewayBase: String,
+        generation: UInt64
+    ) async {
         if !isCustomSourceFactory {
             if !CGPreflightScreenCaptureAccess() {
                 _ = CGRequestScreenCaptureAccess()
                 if !CGPreflightScreenCaptureAccess() {
-                    state = .error("Permissão ausente. Habilite em Ajustes do Sistema → Privacidade e Segurança → Gravação de Tela e Áudio do Sistema para o TarsCompanion, e tente novamente.")
+                    guard self.currentGeneration == generation else { return }
+                    self.state = .error("Permissão ausente. Habilite em Ajustes do Sistema → Privacidade e Segurança → Gravação de Tela e Áudio do Sistema para o TarsCompanion, e tente novamente.")
                     return
                 }
             }
         }
 
+        guard self.currentGeneration == generation else { return }
+
         let url: URL
         do {
             url = try makeGatewayURL(gatewayBase: gatewayBase, sessionID: sessionID, streamKey: streamKey)
         } catch {
-            state = .error("Falha ao iniciar a captura de áudio do sistema: \(error.localizedDescription)")
+            guard self.currentGeneration == generation else { return }
+            self.state = .error("Falha ao iniciar a captura de áudio do sistema: \(error.localizedDescription)")
             return
         }
+
+        guard self.currentGeneration == generation else { return }
 
         let tf = self.transportFactory
         let newSink = ReconnectingAudioSink(
@@ -75,6 +109,7 @@ public final class CompanionSessionController: ObservableObject {
         newSink.onStateChange = { [weak self] connected in
             Task { @MainActor [weak self] in
                 guard let self = self else { return }
+                guard self.currentGeneration == generation else { return }
                 guard self.state == .capturing || self.state == .reconnecting || self.state == .connecting else {
                     return
                 }
@@ -87,6 +122,7 @@ public final class CompanionSessionController: ObservableObject {
         }
         newSink.start()
 
+        var attemptedSource: (any CaptureSource)?
         do {
             let identity = try SourceIdentity(
                 sessionID: sessionID,
@@ -100,16 +136,36 @@ public final class CompanionSessionController: ObservableObject {
                 identity: identity,
                 deviceIdentity: "ScreenCaptureKit.SystemAudio"
             )
+
+            guard self.currentGeneration == generation else {
+                await newSink.stop()
+                return
+            }
+
             let newSource = sourceFactory(config, newSink)
+            attemptedSource = newSource
             self.source = newSource
 
             try await newSource.start()
+
+            guard self.currentGeneration == generation else {
+                await newSource.stop()
+                await newSink.stop()
+                return
+            }
+
             self.activeSessionID = sessionID
             if self.state == .connecting {
                 self.state = .capturing
             }
         } catch {
             await newSink.stop()
+            if let attemptedSource {
+                await attemptedSource.stop()
+            }
+            guard self.currentGeneration == generation else {
+                return
+            }
             self.sink = nil
             self.source = nil
             self.activeSessionID = nil
@@ -119,6 +175,12 @@ public final class CompanionSessionController: ObservableObject {
     }
 
     public func stop() async {
+        currentGeneration &+= 1
+        let stopGeneration = currentGeneration
+
+        let inFlightStartup = self.startupTask
+        inFlightStartup?.cancel()
+
         let currentSource = self.source
         let currentSink = self.sink
         self.source = nil
@@ -132,6 +194,26 @@ public final class CompanionSessionController: ObservableObject {
         if let currentSink {
             await currentSink.stop()
         }
+
+        if let inFlightStartup {
+            await inFlightStartup.value
+
+            // Stop the same source again after startup settles so a CaptureSource that
+            // ignores cancellation and becomes active late cannot remain active.
+            if let currentSource {
+                await currentSource.stop()
+            }
+        }
+
+        guard self.currentGeneration == stopGeneration else {
+            return
+        }
+
+        self.source = nil
+        self.sink = nil
+        self.activeSessionID = nil
+        self.state = .idle
+        self.startupTask = nil
     }
 
     private func isErrorState(_ state: CompanionState) -> Bool {
