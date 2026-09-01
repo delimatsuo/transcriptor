@@ -8,10 +8,8 @@ import {
   type FrameMetadata,
 } from "@/lib/browserPcmEncoder";
 import { buildStreamSocketConfig } from "@/lib/streamUrl";
+import { getPublicRuntimeConfig } from "@/lib/runtimeConfig";
 
-const WS_STREAM_BASE =
-  process.env.NEXT_PUBLIC_WS_STREAM_URL ||
-  "ws://127.0.0.1:8000/api/stream/native";
 const STORAGE_KEY_MIC = "tars_selected_mic_device_id";
 
 export interface AudioInputDevice {
@@ -348,7 +346,7 @@ export function useBrowserAudioCapture(): UseBrowserAudioCaptureReturn {
       let config;
       try {
         config = buildStreamSocketConfig(
-          WS_STREAM_BASE,
+          getPublicRuntimeConfig().wsStreamUrl,
           sessionId,
           streamKey,
           ["microphone"],

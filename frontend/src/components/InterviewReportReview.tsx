@@ -18,8 +18,7 @@ import type {
   TranscriptSegment,
 } from "@/types/ws";
 import { apiFetch } from "@/lib/auth";
-
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
+import { apiUrl } from "@/lib/runtimeConfig";
 const LEGACY_ALLOWED_ELEMENTS = [
   "p", "strong", "em", "h2", "h3", "h4", "ul", "ol", "li", "br", "hr",
 ];
@@ -114,7 +113,7 @@ export default function InterviewReportReview({
 
     const loadApprovedExport = async (next: InterviewReport) => {
       const response = await apiFetch(
-        `${API_BASE}/api/sessions/${encodeURIComponent(sessionId)}/report/client-export`,
+        apiUrl(`/api/sessions/${encodeURIComponent(sessionId)}/report/client-export`),
         { signal: controller.signal },
       );
       if (!response.ok) throw new Error("A versão aprovada não pôde ser carregada.");
@@ -130,7 +129,7 @@ export default function InterviewReportReview({
     const loadReport = async (attempt = 0): Promise<void> => {
       try {
         const response = await apiFetch(
-          `${API_BASE}/api/sessions/${encodeURIComponent(sessionId)}/report`,
+          apiUrl(`/api/sessions/${encodeURIComponent(sessionId)}/report`),
           { signal: controller.signal },
         );
         if (response.ok) {
@@ -189,7 +188,7 @@ export default function InterviewReportReview({
     const loadNotes = async () => {
       try {
         const response = await apiFetch(
-          `${API_BASE}/api/sessions/${encodeURIComponent(sessionId)}/notes`,
+          apiUrl(`/api/sessions/${encodeURIComponent(sessionId)}/notes`),
           { signal: controller.signal },
         );
         if (!response.ok) throw new Error();
@@ -220,7 +219,7 @@ export default function InterviewReportReview({
     setNotice(null);
     try {
       const response = await apiFetch(
-        `${API_BASE}/api/sessions/${encodeURIComponent(sessionId)}/report`,
+        apiUrl(`/api/sessions/${encodeURIComponent(sessionId)}/report`),
         {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
@@ -253,7 +252,7 @@ export default function InterviewReportReview({
     setNotice(null);
     try {
       const response = await apiFetch(
-        `${API_BASE}/api/sessions/${encodeURIComponent(sessionId)}/report/approve`,
+        apiUrl(`/api/sessions/${encodeURIComponent(sessionId)}/report/approve`),
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -266,7 +265,7 @@ export default function InterviewReportReview({
         throw new Error("A confirmação de aprovação é inválida.");
       }
       const exportResponse = await apiFetch(
-        `${API_BASE}/api/sessions/${encodeURIComponent(sessionId)}/report/client-export`,
+        apiUrl(`/api/sessions/${encodeURIComponent(sessionId)}/report/client-export`),
       );
       if (!exportResponse.ok) throw new Error("A versão aprovada não pôde ser carregada.");
       const approvedExport = parseApprovedClientReport(

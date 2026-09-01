@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { mergeTranscriptSegment } from "@/lib/transcript";
 import { apiFetch, authBypassEnabled } from "@/lib/auth";
+import { apiUrl, getPublicRuntimeConfig } from "@/lib/runtimeConfig";
 import type {
   CompanionHealthPayload,
   ConnectionHealth,
@@ -15,9 +16,6 @@ import type {
   TranscriptSegment,
   WSMessage,
 } from "@/types/ws";
-
-const WS_BASE_URL = process.env.NEXT_PUBLIC_WS_URL || "ws://127.0.0.1:8000/ws";
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
 
 // Exponential backoff: 1s, 2s, 4s, 8s, max 30s
 const INITIAL_RETRY_DELAY = 1000;
@@ -207,7 +205,7 @@ export function useWebSocket(): UseWebSocketReturn {
       const doConnect = async () => {
         try {
           const ticketResponse = await apiFetch(
-            `${API_BASE_URL}/api/sessions/${encodeURIComponent(sessionId)}/ws-ticket`,
+            apiUrl(`/api/sessions/${encodeURIComponent(sessionId)}/ws-ticket`),
             { method: "POST" },
           );
           if (!ticketResponse.ok) {
@@ -217,7 +215,7 @@ export function useWebSocket(): UseWebSocketReturn {
           if (!ticketPayload.ticket || intentionalCloseRef.current || sessionIdRef.current !== sessionId) {
             return;
           }
-          const url = `${WS_BASE_URL}/${sessionId}?last_seq=${lastSeqRef.current}`;
+          const url = `${getPublicRuntimeConfig().wsUrl}/${sessionId}?last_seq=${lastSeqRef.current}`;
           const ws = new WebSocket(url, ["tars-ticket", ticketPayload.ticket]);
 
           ws.onopen = () => {
