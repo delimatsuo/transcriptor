@@ -40,16 +40,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func handleGetURL(_ event: NSAppleEventDescriptor, withReplyEvent reply: NSAppleEventDescriptor) {
         guard let urlString = event.paramDescriptor(forKeyword: AEKeyword(keyDirectObject))?.stringValue else { return }
-        NSLog("TarsCompanion: URL recebida: %@", urlString)
-        guard let request = JoinLink.parse(urlString) else {
-            NSLog("TarsCompanion: link inválido")
-            return
-        }
-        if let handler = onJoinRequest {
-            handler(request)
-        } else {
-            NSLog("TarsCompanion: app iniciando — link armazenado para entrega")
-            pendingRequest = request
+        JoinLink.receive(urlString) { [weak self] request in
+            guard let self = self else { return }
+            if let handler = self.onJoinRequest {
+                handler(request)
+            } else {
+                NSLog("TarsCompanion: app iniciando — link armazenado para entrega")
+                self.pendingRequest = request
+            }
         }
     }
 }

@@ -1,7 +1,6 @@
 "use client";
 
 import { buildJoinLink } from "@/lib/joinLink";
-import { getPublicRuntimeConfig } from "@/lib/runtimeConfig";
 
 interface Props {
   sessionId: string;
@@ -13,8 +12,7 @@ export default function CompanionCommand({ sessionId, streamKey }: Props) {
     return null;
   }
 
-  const gatewayBase = getPublicRuntimeConfig().wsStreamUrl;
-  const joinHref = buildJoinLink(sessionId, streamKey, gatewayBase);
+  const joinHref = buildJoinLink(sessionId, streamKey);
 
   return (
     <div
