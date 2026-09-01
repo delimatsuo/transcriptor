@@ -27,6 +27,12 @@ from backend.sessions.reports import (
     update_report_content,
 )
 from backend.storage.firestore import FirestoreStorage
+from backend.workers.interview_report import (
+    ReportGenerationClaim,
+    ReportGenerationConflict,
+    ReportGenerationJob,
+    ReportGenerationStatus,
+)
 
 
 SESSION_ID = "report-session-001"
@@ -293,15 +299,25 @@ class FakeTransaction:
         document.data = next_data
         self.writes.append(document.id)
 
+    def create(self, document, data):
+        if document.data is not None:
+            raise AlreadyExists("exists")
+        document.data = copy.deepcopy(data)
+        self.writes.append(document.id)
+
 
 class FakeDB:
     def __init__(self):
         self.sessions = FakeSessions()
+        self.session_tombstones = FakeCollection()
         self.transactions = []
 
     def collection(self, name):
-        assert name == "sessions"
-        return self.sessions
+        if name == "sessions":
+            return self.sessions
+        if name == "session_tombstones":
+            return self.session_tombstones
+        raise AssertionError(name)
 
     def transaction(self):
         transaction = FakeTransaction()
@@ -323,6 +339,12 @@ def configure_storage(monkeypatch):
 
 def test_firestore_transactions_reject_stale_edit_and_approve_edit_race(monkeypatch):
     storage, db = configure_storage(monkeypatch)
+    db.sessions.document(SESSION_ID).data = {
+        "mode": "interview",
+        "status": "completed",
+        "ownerId": None,
+        "orgId": None,
+    }
     first = asyncio.run(storage.save_generated_report(parsed_report()))
     replay = asyncio.run(storage.save_generated_report(parsed_report()))
     assert replay == first
@@ -347,10 +369,92 @@ def test_firestore_transactions_reject_stale_edit_and_approve_edit_race(monkeypa
     assert exact_retry == approved
     with pytest.raises(InterviewReportConflict, match="immutable"):
         asyncio.run(storage.update_interview_report(SESSION_ID, update_request(version=2)))
+    stored_approved = copy.deepcopy(
+        db.sessions.document(SESSION_ID).collection("reports").document("current").data
+    )
+    differing_payload = generated_payload()
+    differing_payload["internal_sections"][0]["body"] = (
+        "A newly generated draft that must not replace reviewed content."
+    )
+    preserved = asyncio.run(
+        storage.save_generated_report(parsed_report(differing_payload))
+    )
+    assert preserved == approved
+    assert (
+        db.sessions.document(SESSION_ID).collection("reports").document("current").data
+        == stored_approved
+    )
     assert report_from_record(
         SESSION_ID,
         db.sessions.document(SESSION_ID).collection("reports").document("current").data,
     ) == approved
+
+
+def test_report_draft_transaction_cannot_cross_a_deletion_tombstone(monkeypatch):
+    storage, db = configure_storage(monkeypatch)
+    db.sessions.document(SESSION_ID).data = {
+        "mode": "interview",
+        "status": "completed",
+        "ownerId": None,
+        "orgId": None,
+    }
+    db.session_tombstones.document(SESSION_ID).data = {
+        "sessionId": SESSION_ID,
+        "ownerId": None,
+        "orgId": None,
+        "reason": "owner_request",
+    }
+
+    with pytest.raises(InterviewReportConflict, match="not found"):
+        asyncio.run(storage.save_generated_report(parsed_report()))
+    assert (
+        db.sessions.document(SESSION_ID).collection("reports").document("current").data
+        is None
+    )
+
+
+def test_report_draft_requires_exact_completed_parent_scope(monkeypatch):
+    storage, db = configure_storage(monkeypatch)
+    parent = db.sessions.document(SESSION_ID)
+    with pytest.raises(InterviewReportConflict, match="not found"):
+        asyncio.run(storage.save_generated_report(parsed_report()))
+    parent.data = {
+        "mode": "interview",
+        "status": "active",
+        "ownerId": None,
+        "orgId": None,
+    }
+    with pytest.raises(InterviewReportConflict, match="not found"):
+        asyncio.run(storage.save_generated_report(parsed_report()))
+    parent.data["status"] = "completed"
+    parent.data["ownerId"] = "different-owner"
+    with pytest.raises(InterviewReportConflict, match="not found"):
+        asyncio.run(storage.save_generated_report(parsed_report()))
+
+
+def test_existing_report_scope_must_match_completed_parent(monkeypatch):
+    storage, db = configure_storage(monkeypatch)
+    parent = db.sessions.document(SESSION_ID)
+    parent.data = {
+        "mode": "interview",
+        "status": "completed",
+        "ownerId": None,
+        "orgId": None,
+    }
+    cross_scope = parse_generated_report(
+        SESSION_ID,
+        json.dumps(generated_payload()),
+        transcript_ids={"seg-1"},
+        note_ids={"note-1"},
+        context_ids={"resume", "next_steps"},
+        owner_id="other-owner",
+        org_id="other-org",
+        now=NOW,
+    )
+    parent.collection("reports").document("current").data = report_to_record(cross_scope)
+
+    with pytest.raises(InterviewReportConflict, match="not found"):
+        asyncio.run(storage.save_generated_report(parsed_report()))
 
 
 def test_concurrent_edits_retry_on_storage_conflict_and_only_one_cas_wins(monkeypatch):
@@ -497,6 +601,23 @@ def test_terminal_report_sources_are_immutable_and_queue_is_atomic(monkeypatch):
         queued_ref.collection("reports").document("generation").data["status"]
         == "queued"
     )
+
+    deleted_session = Session(
+        id="report-session-deleted",
+        mode=SessionMode.INTERVIEW,
+        status=SessionStatus.COMPLETED,
+        ended_at=NOW,
+    )
+    db.session_tombstones.document(deleted_session.id).data = {
+        "sessionId": deleted_session.id,
+        "ownerId": None,
+        "orgId": None,
+    }
+    deleted_ref = db.sessions.document(deleted_session.id)
+    with pytest.raises(InterviewReportConflict, match="not found"):
+        asyncio.run(storage.save_session_and_queue_report(deleted_session))
+    assert deleted_ref.data is None
+    assert deleted_ref.collection("reports").document("generation").data is None
 
 
 def session_record():
@@ -708,18 +829,131 @@ class GenerationManager:
 class GenerationStorage:
     def __init__(self):
         self.report = None
-        self.state = None
+        self.state = {
+            "status": "queued",
+            "version": 0,
+            "attemptCount": 0,
+            "leaseToken": None,
+            "leaseExpiresAt": None,
+            "reasonCode": None,
+            "ownerId": None,
+            "orgId": None,
+            "updatedAt": NOW,
+        }
         self.states = []
 
-    async def get_interview_report(self, _session_id):
+    def _job(self):
+        return ReportGenerationJob(
+            session_id=SESSION_ID,
+            owner_id=self.state.get("ownerId"),
+            org_id=self.state.get("orgId"),
+            status=self.state["status"],
+            version=self.state.get("version", 0),
+            attempt_count=self.state.get("attemptCount", 0),
+            lease_token=self.state.get("leaseToken"),
+            lease_expires_at=self.state.get("leaseExpiresAt"),
+            reason_code=self.state.get("reasonCode"),
+            updated_at=self.state.get("updatedAt", NOW),
+        )
+
+    async def claim_report_generation(
+        self,
+        _session_id,
+        *,
+        owner_id,
+        org_id,
+        lease_token,
+        lease_expires_at,
+        updated_at,
+    ):
+        job = self._job()
+        if job.status == ReportGenerationStatus.FAILED:
+            raise ReportGenerationConflict("previously failed")
+        if job.status == ReportGenerationStatus.READY:
+            return ReportGenerationClaim(
+                job=job, current_report=self.report, idempotent_ready=True
+            )
+        if (
+            job.status == ReportGenerationStatus.GENERATING
+            and job.lease_expires_at is not None
+            and job.lease_expires_at > updated_at
+        ):
+            raise ReportGenerationConflict("active lease")
+        job = job.model_copy(
+            update={
+                "status": ReportGenerationStatus.GENERATING,
+                "version": job.version + 1,
+                "attempt_count": job.attempt_count + 1,
+                "lease_token": lease_token,
+                "lease_expires_at": lease_expires_at,
+                "updated_at": updated_at,
+            }
+        )
+        self.state = {
+            "status": job.status.value,
+            "version": job.version,
+            "attemptCount": job.attempt_count,
+            "leaseToken": job.lease_token,
+            "leaseExpiresAt": job.lease_expires_at,
+            "reasonCode": job.reason_code,
+            "ownerId": owner_id,
+            "orgId": org_id,
+            "updatedAt": updated_at,
+        }
+        self.states.append(("generating", None))
+        return ReportGenerationClaim(job=job, current_report=self.report)
+
+    async def fail_report_generation(
+        self,
+        _session_id,
+        *,
+        lease_token,
+        version,
+        reason_code,
+        updated_at,
+        **_scope,
+    ):
+        job = self._job()
+        if job.lease_token != lease_token or job.version != version:
+            raise ReportGenerationConflict("stale")
+        job = job.model_copy(
+            update={
+                "status": ReportGenerationStatus.FAILED,
+                "lease_token": None,
+                "lease_expires_at": None,
+                "reason_code": reason_code,
+                "updated_at": updated_at,
+            }
+        )
+        self.state.update(
+            status="failed",
+            leaseToken=None,
+            leaseExpiresAt=None,
+            reasonCode=reason_code,
+            updatedAt=updated_at,
+        )
+        self.states.append(("failed", reason_code))
+        return job
+
+    async def complete_report_generation(
+        self, report, *, lease_token, version, updated_at
+    ):
+        job = self._job()
+        if job.lease_token != lease_token or job.version != version:
+            raise ReportGenerationConflict("stale")
+        self.report = self.report or report
+        self.state.update(
+            status="ready",
+            leaseToken=None,
+            leaseExpiresAt=None,
+            reasonCode=None,
+            updatedAt=updated_at,
+        )
+        self.states.append(("ready", None))
         return self.report
 
-    async def get_report_generation_state(self, _session_id):
-        return self.state
-
-    async def save_report_generation_state(self, _session_id, status, reason_code=None):
-        self.state = {"status": status, "reasonCode": reason_code}
-        self.states.append((status, reason_code))
+    async def get_session_record(self, _session_id):
+        return {**session_record(), "ownerId": None, "orgId": None}
 
     async def get_session_transcript(self, _session_id):
         return [transcript_record()]
@@ -746,10 +980,6 @@ class GenerationStorage:
                 "text": "Conversa com Ana",
             },
         ]
-
-    async def save_generated_report(self, report):
-        self.report = report
-        return report
 
     save_session = AsyncMock()
     save_summary = AsyncMock()

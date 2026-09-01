@@ -55,6 +55,49 @@ export type NoteKind =
   | "follow_up";
 export type ReportStatus = "draft" | "approved";
 export type EvidenceSource = "transcript" | "recruiter_note" | "context";
+export type TranscriptImportStatus = "queued" | "leased" | "completed" | "failed";
+
+export interface GoogleMeetTranscriptEntry {
+  name: string;
+  participant: string;
+  participantName?: string | null;
+  text: string;
+  startTime?: string | null;
+  endTime?: string | null;
+  languageCode?: string | null;
+  confidence?: number | null;
+}
+
+export interface GoogleMeetTranscriptSession {
+  name: string;
+  entries: GoogleMeetTranscriptEntry[];
+}
+
+export interface GoogleMeetImportRequest {
+  sourceType: "GOOGLE_MEET";
+  sourceArtifactId: string;
+  title: string;
+  noticeGiven: boolean;
+  noticeProvenance: string;
+  transcriptSessions: GoogleMeetTranscriptSession[];
+  candidateId?: string | null;
+  candidateName?: string | null;
+  resumeArtifactId?: string | null;
+  resumeText?: string | null;
+  jobDescriptionArtifactId?: string | null;
+  jobDescriptionText?: string | null;
+  briefing?: string | null;
+}
+
+export interface GoogleMeetImportResult {
+  session_id: string;
+  source_key: string;
+  source_digest: string;
+  status: TranscriptImportStatus;
+  segment_count: number;
+  attempt_count: number;
+  idempotent_replay: boolean;
+}
 
 export interface TranscriptSegment {
   id: string;

@@ -20,7 +20,8 @@ async def delete_session_everywhere(
 ) -> dict:
     """Delete all artifacts for a session from Firestore and GCS.
 
-    Writes a tombstone audit record to `deletions/{auto_id}`.
+    Writes the deterministic deletion fence before touching session data, then
+    appends a content-free audit record to `deletions/{auto_id}`.
     Does NOT remove data from Vertex AI / Gemini context caches (these expire via TTL).
     """
     subs_deleted = 0
@@ -28,7 +29,27 @@ async def delete_session_everywhere(
     blobs_deleted = 0
 
     session_ref = db.collection("sessions").document(session_id)
+    tombstone_ref = db.collection("session_tombstones").document(session_id)
     subs_deleted, docs_deleted, blobs_deleted = 0, 0, 0
+
+    existing_tombstone = await tombstone_ref.get()
+    if existing_tombstone.exists:
+        tombstone_data = existing_tombstone.to_dict() or {}
+        if owner_id is not None and org_id is not None and (
+            tombstone_data.get("ownerId") != owner_id
+            or tombstone_data.get("orgId") != org_id
+        ):
+            raise PermissionError("deletion fence ownership is not authorized")
+    await tombstone_ref.set(
+        {
+            "sessionId": session_id,
+            "ownerId": owner_id,
+            "orgId": org_id,
+            "reason": reason,
+            "fencedAt": datetime.now(timezone.utc),
+        },
+        merge=True,
+    )
 
     async def delete_subcollections(document_ref) -> None:
         nonlocal subs_deleted, docs_deleted, blobs_deleted

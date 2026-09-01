@@ -1,6 +1,7 @@
 "use client";
 
 import BriefingDisplay from "@/components/BriefingDisplay";
+import MeetTranscriptImport from "@/components/MeetTranscriptImport";
 import RecentInterviews from "@/components/RecentInterviews";
 
 interface Props {
@@ -54,6 +55,7 @@ export default function PreSessionView({
             Configure a sessão acima e comece a gravar. O T.A.R.S. transcreve
             e ajuda em tempo real.
           </p>
+          <MeetTranscriptImport onOpenReview={onOpenReview} />
           <RecentInterviews onOpen={onOpenReview} />
         </>
       )}
