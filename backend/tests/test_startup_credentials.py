@@ -127,7 +127,7 @@ def test_lifespan_probes_adc_before_readiness(monkeypatch):
     def fake_validate_existing_app(s):
         events.append("validate_existing_app")
 
-    async def fake_probe(project=None):
+    async def fake_probe():
         events.append("adc_probe")
 
     def fake_initialize(google_project, firebase_project=None):
