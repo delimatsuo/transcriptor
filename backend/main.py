@@ -120,6 +120,19 @@ from backend.workers.google_meet_import import (
     TranscriptImportConflict,
     TranscriptImportNotFound,
 )
+from backend.workers.meet_transcript_automation import (
+    MAX_PUSH_BYTES,
+    MeetAutomationConflict,
+    MeetAutomationInvalid,
+    MeetAutomationNotFound,
+    MeetTranscriptAutomationOrchestrator,
+    WorkspacePushTokenVerifier,
+    parse_manual_sync_request,
+    parse_meet_transcript_push,
+    parse_push_bearer,
+    parse_reconciliation_request,
+    verify_push_token,
+)
 from backend.workers.interview_report import (
     DurableInterviewReportWorker,
     ReportGenerationConflict,
@@ -135,6 +148,10 @@ session_mgr: SessionManager | None = None
 firestore_storage: FirestoreStorage | None = None
 gcs_storage: GCSStorage | None = None
 gemini_client: GeminiClient | None = None
+# Offline injection seams only. This slice deliberately never initializes live
+# Workspace auth, provider, or webhook dependencies from settings/environment.
+workspace_push_token_verifier: WorkspacePushTokenVerifier | None = None
+meet_transcript_automation_orchestrator: MeetTranscriptAutomationOrchestrator | None = None
 # Kept only as a compatibility seam for direct unit callers that bypass the
 # session creation route. Production sessions use the per-session map below.
 context_window: ContextWindowManager | None = None
@@ -232,6 +249,7 @@ _analyze_semaphore = asyncio.Semaphore(2)
 async def lifespan(app: FastAPI):
     """Application lifespan — initialize and cleanup."""
     global settings, session_mgr, firestore_storage, gcs_storage, gemini_client, context_window
+    global workspace_push_token_verifier, meet_transcript_automation_orchestrator
 
     app.state.ready = False
     settings = None
@@ -239,6 +257,8 @@ async def lifespan(app: FastAPI):
     firestore_storage = None
     gcs_storage = None
     gemini_client = None
+    workspace_push_token_verifier = None
+    meet_transcript_automation_orchestrator = None
     context_window = None
     context_windows.clear()
 
@@ -311,6 +331,8 @@ async def lifespan(app: FastAPI):
             firestore_storage = None
             gcs_storage = None
             gemini_client = None
+            workspace_push_token_verifier = None
+            meet_transcript_automation_orchestrator = None
             context_window = None
             context_windows.clear()
 
@@ -1414,6 +1436,112 @@ async def _stop_pipeline(session_id: str) -> bool:
 
 
 # --- REST Endpoints ---
+
+async def _bounded_request_body(request: Request, *, maximum: int) -> bytes:
+    body = bytearray()
+    async for chunk in request.stream():
+        body.extend(chunk)
+        if len(body) > maximum:
+            raise HTTPException(status_code=422, detail="Request is invalid")
+    return bytes(body)
+
+
+def _require_json_content_type(request: Request) -> None:
+    content_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+    if content_type != "application/json":
+        raise HTTPException(status_code=415, detail="Content-Type must be application/json")
+
+
+@app.post("/webhooks/google-workspace/meet-transcripts")
+async def receive_google_workspace_meet_transcript(request: Request):
+    """Accept one authenticated, exact synthetic Pub/Sub CloudEvent envelope."""
+    verifier = workspace_push_token_verifier
+    orchestrator = meet_transcript_automation_orchestrator
+    if verifier is None or orchestrator is None:
+        raise HTTPException(status_code=503, detail="Service unavailable")
+    try:
+        token = parse_push_bearer(list(request.scope.get("headers", [])))
+        await verify_push_token(verifier, token)
+    except MeetAutomationInvalid:
+        raise HTTPException(status_code=401, detail="Push authentication failed") from None
+    _require_json_content_type(request)
+    body = await _bounded_request_body(request, maximum=MAX_PUSH_BYTES)
+    try:
+        event = parse_meet_transcript_push(body)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=422, detail="Push envelope is invalid") from None
+    try:
+        result = await orchestrator.process_webhook(event)
+    except MeetAutomationNotFound:
+        raise HTTPException(status_code=404, detail="Eligible Meet event not found") from None
+    except MeetAutomationConflict:
+        raise HTTPException(status_code=409, detail="Automation event conflict") from None
+    except MeetAutomationInvalid:
+        raise HTTPException(status_code=422, detail="Transcript automation failed") from None
+    except Exception:
+        logger.error("meet_transcript_webhook_failed", reason_code="automation_failed")
+        raise HTTPException(status_code=503, detail="Transcript automation unavailable") from None
+    return result.model_dump(mode="json")
+
+
+@app.post("/api/workspace/meet-transcripts/sync")
+async def sync_eligible_google_meet_transcript(request: Request):
+    """Synchronize one exact stored eligible Calendar event."""
+    user = _principal()
+    if user is None:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    orchestrator = meet_transcript_automation_orchestrator
+    if orchestrator is None:
+        raise HTTPException(status_code=503, detail="Service unavailable")
+    _require_json_content_type(request)
+    body = await _bounded_request_body(request, maximum=8_000)
+    try:
+        typed_request = parse_manual_sync_request(body)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=422, detail="Manual sync request is invalid") from None
+    try:
+        result = await orchestrator.process_manual(
+            typed_request, owner_id=user.uid, org_id=user.org_id
+        )
+    except MeetAutomationNotFound:
+        raise HTTPException(status_code=404, detail="Eligible Meet event not found") from None
+    except MeetAutomationConflict:
+        raise HTTPException(status_code=409, detail="Automation event conflict") from None
+    except MeetAutomationInvalid:
+        raise HTTPException(status_code=422, detail="Transcript automation failed") from None
+    except Exception:
+        logger.error("meet_transcript_manual_sync_failed", reason_code="automation_failed")
+        raise HTTPException(status_code=503, detail="Transcript automation unavailable") from None
+    return result.model_dump(mode="json")
+
+
+@app.post("/api/workspace/meet-transcripts/reconcile")
+async def reconcile_eligible_google_meet_transcripts(request: Request):
+    """Reconcile only a bounded set of explicitly stored eligible events."""
+    user = _principal()
+    if user is None:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    orchestrator = meet_transcript_automation_orchestrator
+    if orchestrator is None:
+        raise HTTPException(status_code=503, detail="Service unavailable")
+    _require_json_content_type(request)
+    body = await _bounded_request_body(request, maximum=8_000)
+    try:
+        typed_request = parse_reconciliation_request(body)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=422, detail="Reconciliation request is invalid") from None
+    try:
+        result = await orchestrator.reconcile(
+            typed_request, owner_id=user.uid, org_id=user.org_id
+        )
+    except MeetAutomationNotFound:
+        raise HTTPException(status_code=404, detail="Workspace authority not found") from None
+    except MeetAutomationConflict:
+        raise HTTPException(status_code=409, detail="Reconciliation conflict") from None
+    except Exception:
+        logger.error("meet_transcript_reconciliation_failed", reason_code="automation_failed")
+        raise HTTPException(status_code=503, detail="Transcript automation unavailable") from None
+    return result.model_dump(mode="json")
 
 @app.post("/api/transcript-imports/google-meet")
 async def import_google_meet_transcript(request: Request):

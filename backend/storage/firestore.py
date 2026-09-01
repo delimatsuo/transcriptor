@@ -43,6 +43,22 @@ from backend.workers.google_meet_import import (
     TranscriptImportDeleted,
     TranscriptImportNotFound,
 )
+from backend.workers.meet_transcript_automation import (
+    AUTOMATION_FAILURE_REASONS,
+    AutomationFailureReason,
+    AutomationEventClaim,
+    AutomationEventState,
+    AutomationEventStatus,
+    EligibleMeetEventBinding,
+    MeetAutomationConflict,
+    MeetAutomationNotFound,
+    ReconciliationLease,
+    WorkspaceGrant,
+    eligible_binding_key,
+    grant_identity_key,
+    manual_binding_lookup_key,
+    push_binding_lookup_key,
+)
 from backend.workers.interview_report import (
     ReportGenerationClaim,
     ReportGenerationConflict,
@@ -474,6 +490,636 @@ class FirestoreStorage:
         if job.owner_id != owner_id or job.org_id != org_id:
             raise TranscriptImportNotFound("transcript import not found")
         return job
+
+    @staticmethod
+    def _workspace_grant_record(grant: WorkspaceGrant) -> dict:
+        return {
+            "grantId": grant.grant_id,
+            "ownerId": grant.owner_id,
+            "orgId": grant.org_id,
+            "workspaceSubject": grant.workspace_subject,
+            "status": grant.status.value,
+            "scopes": sorted(grant.scopes),
+            "validFrom": grant.valid_from,
+            "expiresAt": grant.expires_at,
+            "updatedAt": grant.updated_at,
+        }
+
+    @staticmethod
+    def _workspace_grant(record: dict) -> WorkspaceGrant:
+        return WorkspaceGrant(
+            grant_id=record["grantId"],
+            owner_id=record["ownerId"],
+            org_id=record["orgId"],
+            workspace_subject=record["workspaceSubject"],
+            status=record["status"],
+            scopes=frozenset(record["scopes"]),
+            valid_from=record["validFrom"],
+            expires_at=record["expiresAt"],
+            updated_at=record["updatedAt"],
+        )
+
+    @staticmethod
+    def _eligible_meet_binding_record(binding: EligibleMeetEventBinding) -> dict:
+        return {
+            "bindingKey": eligible_binding_key(binding),
+            "grantId": binding.grant_id,
+            "ownerId": binding.owner_id,
+            "orgId": binding.org_id,
+            "workspaceSubject": binding.workspace_subject,
+            "calendarId": binding.calendar_id,
+            "calendarEventId": binding.calendar_event_id,
+            "meetTarget": binding.meet_target,
+            "workspaceSubscriptionSource": binding.workspace_subscription_source,
+            "pubsubSubscription": binding.pubsub_subscription,
+            "title": binding.title,
+            "noticeGiven": binding.notice_given,
+            "noticeProvenance": binding.notice_provenance,
+            "candidateId": binding.candidate_id,
+            "candidateName": binding.candidate_name,
+            "resumeArtifactId": binding.resume_artifact_id,
+            "resumeText": binding.resume_text,
+            "jobDescriptionArtifactId": binding.job_description_artifact_id,
+            "jobDescriptionText": binding.job_description_text,
+            "briefing": binding.briefing,
+            "createdAt": binding.created_at,
+        }
+
+    @staticmethod
+    def _eligible_meet_binding(record: dict) -> EligibleMeetEventBinding:
+        return EligibleMeetEventBinding(
+            grant_id=record["grantId"],
+            owner_id=record["ownerId"],
+            org_id=record["orgId"],
+            workspace_subject=record["workspaceSubject"],
+            calendar_id=record["calendarId"],
+            calendar_event_id=record["calendarEventId"],
+            meet_target=record["meetTarget"],
+            workspace_subscription_source=record["workspaceSubscriptionSource"],
+            pubsub_subscription=record["pubsubSubscription"],
+            title=record["title"],
+            notice_given=record["noticeGiven"],
+            notice_provenance=record["noticeProvenance"],
+            candidate_id=record.get("candidateId"),
+            candidate_name=record.get("candidateName"),
+            resume_artifact_id=record.get("resumeArtifactId"),
+            resume_text=record.get("resumeText"),
+            job_description_artifact_id=record.get("jobDescriptionArtifactId"),
+            job_description_text=record.get("jobDescriptionText"),
+            briefing=record.get("briefing"),
+            created_at=record["createdAt"],
+        )
+
+    @staticmethod
+    def _meet_automation_event_record(event: AutomationEventState) -> dict:
+        return {
+            "eventKey": event.event_key,
+            "eventId": event.event_id,
+            "trigger": event.trigger,
+            "ownerId": event.owner_id,
+            "orgId": event.org_id,
+            "grantId": event.grant_id,
+            "workspaceSubject": event.workspace_subject,
+            "calendarId": event.calendar_id,
+            "calendarEventId": event.calendar_event_id,
+            "meetTarget": event.meet_target,
+            "workspaceSubscriptionSource": event.workspace_subscription_source,
+            "pubsubSubscription": event.pubsub_subscription,
+            "transcriptName": event.transcript_name,
+            "status": event.status.value,
+            "version": event.version,
+            "attemptCount": event.attempt_count,
+            "leaseToken": event.lease_token,
+            "leaseExpiresAt": event.lease_expires_at,
+            "reasonCode": event.reason_code,
+            "importSessionId": event.import_session_id,
+            "importSourceKey": event.import_source_key,
+            "importSourceDigest": event.import_source_digest,
+            "importSegmentCount": event.import_segment_count,
+            "importAttemptCount": event.import_attempt_count,
+            "updatedAt": event.updated_at,
+        }
+
+    @staticmethod
+    def _meet_automation_event(record: dict) -> AutomationEventState:
+        return AutomationEventState(
+            event_key=record["eventKey"],
+            event_id=record["eventId"],
+            trigger=record["trigger"],
+            owner_id=record["ownerId"],
+            org_id=record["orgId"],
+            grant_id=record["grantId"],
+            workspace_subject=record["workspaceSubject"],
+            calendar_id=record["calendarId"],
+            calendar_event_id=record["calendarEventId"],
+            meet_target=record["meetTarget"],
+            workspace_subscription_source=record["workspaceSubscriptionSource"],
+            pubsub_subscription=record["pubsubSubscription"],
+            transcript_name=record["transcriptName"],
+            status=record["status"],
+            version=record["version"],
+            attempt_count=record["attemptCount"],
+            lease_token=record.get("leaseToken"),
+            lease_expires_at=record.get("leaseExpiresAt"),
+            reason_code=record.get("reasonCode"),
+            import_session_id=record.get("importSessionId"),
+            import_source_key=record.get("importSourceKey"),
+            import_source_digest=record.get("importSourceDigest"),
+            import_segment_count=record.get("importSegmentCount", 0),
+            import_attempt_count=record.get("importAttemptCount", 0),
+            updated_at=record["updatedAt"],
+        )
+
+    @staticmethod
+    def _same_automation_identity(
+        left: AutomationEventState, right: AutomationEventState
+    ) -> bool:
+        identity_fields = (
+            "event_key",
+            "event_id",
+            "trigger",
+            "owner_id",
+            "org_id",
+            "grant_id",
+            "workspace_subject",
+            "calendar_id",
+            "calendar_event_id",
+            "meet_target",
+            "workspace_subscription_source",
+            "pubsub_subscription",
+            "transcript_name",
+        )
+        return all(getattr(left, field) == getattr(right, field) for field in identity_fields)
+
+    async def store_workspace_grant(self, grant: WorkspaceGrant) -> WorkspaceGrant:
+        """Seed credential-free grant metadata through an exact identity transaction."""
+        db = await self._get_db()
+        ref = db.collection("workspace_grants").document(
+            grant_identity_key(
+                owner_id=grant.owner_id,
+                org_id=grant.org_id,
+                grant_id=grant.grant_id,
+            )
+        )
+
+        @firestore.async_transactional
+        async def store_in_transaction(transaction):
+            snapshot = await ref.get(transaction=transaction)
+            if snapshot.exists:
+                existing = self._workspace_grant(snapshot.to_dict() or {})
+                if existing != grant:
+                    raise MeetAutomationConflict("workspace grant identity conflict")
+                return existing
+            transaction.create(ref, self._workspace_grant_record(grant))
+            return grant
+
+        return await store_in_transaction(db.transaction())
+
+    async def get_workspace_grant(
+        self, grant_id: str, *, owner_id: str, org_id: str
+    ) -> WorkspaceGrant:
+        db = await self._get_db()
+        snapshot = await db.collection("workspace_grants").document(
+            grant_identity_key(owner_id=owner_id, org_id=org_id, grant_id=grant_id)
+        ).get()
+        if not snapshot.exists:
+            raise MeetAutomationNotFound("workspace authority not found")
+        grant = self._workspace_grant(snapshot.to_dict() or {})
+        if (
+            grant.grant_id != grant_id
+            or grant.owner_id != owner_id
+            or grant.org_id != org_id
+        ):
+            raise MeetAutomationNotFound("workspace authority not found")
+        return grant
+
+    async def store_eligible_meet_binding(
+        self, binding: EligibleMeetEventBinding
+    ) -> EligibleMeetEventBinding:
+        """Seed one exact eligible event and both exact lookup indexes."""
+        db = await self._get_db()
+        binding_id = eligible_binding_key(binding)
+        binding_ref = db.collection("workspace_meet_eligible_events").document(binding_id)
+        manual_id = manual_binding_lookup_key(
+            owner_id=binding.owner_id,
+            org_id=binding.org_id,
+            grant_id=binding.grant_id,
+            calendar_id=binding.calendar_id,
+            calendar_event_id=binding.calendar_event_id,
+        )
+        push_id = push_binding_lookup_key(
+            workspace_subscription_source=binding.workspace_subscription_source,
+            pubsub_subscription=binding.pubsub_subscription,
+            meet_target=binding.meet_target,
+        )
+        manual_ref = db.collection("workspace_meet_manual_index").document(manual_id)
+        push_ref = db.collection("workspace_meet_push_index").document(push_id)
+        scope_id = manual_binding_lookup_key(
+            owner_id=binding.owner_id,
+            org_id=binding.org_id,
+            grant_id=binding.grant_id,
+            calendar_id="reconciliation-scope",
+            calendar_event_id="eligible-events",
+        )
+        list_ref = (
+            db.collection("workspace_meet_grant_scopes")
+            .document(scope_id)
+            .collection("eligible_events")
+            .document(binding_id)
+        )
+
+        @firestore.async_transactional
+        async def store_in_transaction(transaction):
+            binding_snapshot = await binding_ref.get(transaction=transaction)
+            manual_snapshot = await manual_ref.get(transaction=transaction)
+            push_snapshot = await push_ref.get(transaction=transaction)
+            list_snapshot = await list_ref.get(transaction=transaction)
+            if binding_snapshot.exists:
+                existing = self._eligible_meet_binding(binding_snapshot.to_dict() or {})
+                if existing != binding:
+                    raise MeetAutomationConflict("eligible Meet event identity conflict")
+            for snapshot in (manual_snapshot, push_snapshot, list_snapshot):
+                if snapshot.exists and (snapshot.to_dict() or {}).get("bindingKey") != binding_id:
+                    raise MeetAutomationConflict("eligible Meet event identity conflict")
+            record = self._eligible_meet_binding_record(binding)
+            if not binding_snapshot.exists:
+                transaction.create(binding_ref, record)
+            if not manual_snapshot.exists:
+                transaction.create(manual_ref, {"bindingKey": binding_id})
+            if not push_snapshot.exists:
+                transaction.create(push_ref, {"bindingKey": binding_id})
+            if not list_snapshot.exists:
+                transaction.create(list_ref, record)
+            return binding
+
+        return await store_in_transaction(db.transaction())
+
+    async def get_eligible_meet_binding_manual(
+        self,
+        *,
+        owner_id: str,
+        org_id: str,
+        grant_id: str,
+        calendar_id: str,
+        calendar_event_id: str,
+    ) -> EligibleMeetEventBinding:
+        db = await self._get_db()
+        index_id = manual_binding_lookup_key(
+            owner_id=owner_id,
+            org_id=org_id,
+            grant_id=grant_id,
+            calendar_id=calendar_id,
+            calendar_event_id=calendar_event_id,
+        )
+        index = await db.collection("workspace_meet_manual_index").document(index_id).get()
+        if not index.exists:
+            raise MeetAutomationNotFound("eligible Meet event not found")
+        binding_id = (index.to_dict() or {}).get("bindingKey")
+        if not isinstance(binding_id, str):
+            raise MeetAutomationNotFound("eligible Meet event not found")
+        snapshot = await db.collection("workspace_meet_eligible_events").document(binding_id).get()
+        if not snapshot.exists:
+            raise MeetAutomationNotFound("eligible Meet event not found")
+        binding = self._eligible_meet_binding(snapshot.to_dict() or {})
+        if (
+            binding.owner_id != owner_id
+            or binding.org_id != org_id
+            or binding.grant_id != grant_id
+            or binding.calendar_id != calendar_id
+            or binding.calendar_event_id != calendar_event_id
+        ):
+            raise MeetAutomationNotFound("eligible Meet event not found")
+        return binding
+
+    async def get_eligible_meet_binding_push(
+        self,
+        *,
+        workspace_subscription_source: str,
+        pubsub_subscription: str,
+        meet_target: str,
+    ) -> EligibleMeetEventBinding:
+        db = await self._get_db()
+        index_id = push_binding_lookup_key(
+            workspace_subscription_source=workspace_subscription_source,
+            pubsub_subscription=pubsub_subscription,
+            meet_target=meet_target,
+        )
+        index = await db.collection("workspace_meet_push_index").document(index_id).get()
+        if not index.exists:
+            raise MeetAutomationNotFound("eligible Meet event not found")
+        binding_id = (index.to_dict() or {}).get("bindingKey")
+        if not isinstance(binding_id, str):
+            raise MeetAutomationNotFound("eligible Meet event not found")
+        snapshot = await db.collection("workspace_meet_eligible_events").document(binding_id).get()
+        if not snapshot.exists:
+            raise MeetAutomationNotFound("eligible Meet event not found")
+        binding = self._eligible_meet_binding(snapshot.to_dict() or {})
+        if (
+            binding.workspace_subscription_source != workspace_subscription_source
+            or binding.pubsub_subscription != pubsub_subscription
+            or binding.meet_target != meet_target
+        ):
+            raise MeetAutomationNotFound("eligible Meet event not found")
+        return binding
+
+    async def list_eligible_meet_bindings(
+        self, *, owner_id: str, org_id: str, grant_id: str, limit: int
+    ) -> list[EligibleMeetEventBinding]:
+        db = await self._get_db()
+        scope_id = manual_binding_lookup_key(
+            owner_id=owner_id,
+            org_id=org_id,
+            grant_id=grant_id,
+            calendar_id="reconciliation-scope",
+            calendar_event_id="eligible-events",
+        )
+        query = (
+            db.collection("workspace_meet_grant_scopes")
+            .document(scope_id)
+            .collection("eligible_events")
+            .order_by("bindingKey")
+            .limit(limit)
+        )
+        bindings: list[EligibleMeetEventBinding] = []
+        async for snapshot in query.stream():
+            binding = self._eligible_meet_binding(snapshot.to_dict() or {})
+            if (
+                binding.owner_id != owner_id
+                or binding.org_id != org_id
+                or binding.grant_id != grant_id
+            ):
+                raise MeetAutomationNotFound("eligible Meet event not found")
+            bindings.append(binding)
+        return bindings
+
+    async def queue_meet_automation_event(
+        self, event: AutomationEventState
+    ) -> AutomationEventState:
+        if (
+            event.status != AutomationEventStatus.QUEUED
+            or event.version != 1
+            or event.attempt_count != 0
+            or event.lease_token is not None
+            or event.lease_expires_at is not None
+            or event.reason_code is not None
+            or event.import_session_id is not None
+            or event.import_source_key is not None
+            or event.import_source_digest is not None
+            or event.import_segment_count != 0
+            or event.import_attempt_count != 0
+        ):
+            raise MeetAutomationConflict("automation event queue state is invalid")
+        db = await self._get_db()
+        ref = db.collection("workspace_meet_automation_events").document(event.event_key)
+
+        @firestore.async_transactional
+        async def queue_in_transaction(transaction):
+            snapshot = await ref.get(transaction=transaction)
+            if snapshot.exists:
+                existing = self._meet_automation_event(snapshot.to_dict() or {})
+                if not self._same_automation_identity(existing, event):
+                    raise MeetAutomationConflict("automation event identity conflict")
+                return existing
+            transaction.create(ref, self._meet_automation_event_record(event))
+            return event
+
+        return await queue_in_transaction(db.transaction())
+
+    async def claim_meet_automation_event(
+        self,
+        *,
+        event_key: str,
+        lease_token: str,
+        lease_expires_at: datetime,
+        updated_at: datetime,
+    ) -> AutomationEventClaim:
+        db = await self._get_db()
+        ref = db.collection("workspace_meet_automation_events").document(event_key)
+
+        @firestore.async_transactional
+        async def claim_in_transaction(transaction):
+            snapshot = await ref.get(transaction=transaction)
+            if not snapshot.exists:
+                raise MeetAutomationNotFound("automation event not found")
+            event = self._meet_automation_event(snapshot.to_dict() or {})
+            if event.event_key != event_key:
+                raise MeetAutomationConflict("automation event identity conflict")
+            if event.status == AutomationEventStatus.COMPLETED:
+                return AutomationEventClaim(event=event, idempotent_replay=True)
+            if (
+                event.status == AutomationEventStatus.LEASED
+                and event.lease_expires_at is not None
+                and event.lease_expires_at > updated_at
+            ):
+                raise MeetAutomationConflict("automation event has an active lease")
+            claimed = event.model_copy(
+                update={
+                    "status": AutomationEventStatus.LEASED,
+                    "version": event.version + 1,
+                    "attempt_count": event.attempt_count + 1,
+                    "lease_token": lease_token,
+                    "lease_expires_at": lease_expires_at,
+                    "reason_code": None,
+                    "updated_at": updated_at,
+                }
+            )
+            transaction.set(ref, self._meet_automation_event_record(claimed))
+            return AutomationEventClaim(event=claimed)
+
+        return await claim_in_transaction(db.transaction())
+
+    async def complete_meet_automation_event(
+        self,
+        result,
+        *,
+        event_key: str,
+        lease_token: str,
+        version: int,
+        updated_at: datetime,
+    ) -> AutomationEventState:
+        db = await self._get_db()
+        ref = db.collection("workspace_meet_automation_events").document(event_key)
+
+        @firestore.async_transactional
+        async def complete_in_transaction(transaction):
+            snapshot = await ref.get(transaction=transaction)
+            if not snapshot.exists:
+                raise MeetAutomationNotFound("automation event not found")
+            event = self._meet_automation_event(snapshot.to_dict() or {})
+            if (
+                event.status != AutomationEventStatus.LEASED
+                or event.version != version
+                or event.lease_token != lease_token
+                or event.lease_expires_at is None
+                or event.lease_expires_at <= updated_at
+                or result.status != ImportJobStatus.COMPLETED
+            ):
+                raise MeetAutomationConflict("automation event lease is stale")
+            completed = event.model_copy(
+                update={
+                    "status": AutomationEventStatus.COMPLETED,
+                    "lease_token": None,
+                    "lease_expires_at": None,
+                    "reason_code": None,
+                    "import_session_id": result.session_id,
+                    "import_source_key": result.source_key,
+                    "import_source_digest": result.source_digest,
+                    "import_segment_count": result.segment_count,
+                    "import_attempt_count": result.attempt_count,
+                    "updated_at": updated_at,
+                }
+            )
+            transaction.set(ref, self._meet_automation_event_record(completed))
+            return completed
+
+        return await complete_in_transaction(db.transaction())
+
+    async def fail_meet_automation_event(
+        self,
+        *,
+        event_key: str,
+        lease_token: str,
+        version: int,
+        reason_code: AutomationFailureReason,
+        updated_at: datetime,
+    ) -> AutomationEventState:
+        if reason_code not in AUTOMATION_FAILURE_REASONS:
+            raise MeetAutomationConflict("automation failure reason is invalid")
+        db = await self._get_db()
+        ref = db.collection("workspace_meet_automation_events").document(event_key)
+
+        @firestore.async_transactional
+        async def fail_in_transaction(transaction):
+            snapshot = await ref.get(transaction=transaction)
+            if not snapshot.exists:
+                raise MeetAutomationNotFound("automation event not found")
+            event = self._meet_automation_event(snapshot.to_dict() or {})
+            if (
+                event.status != AutomationEventStatus.LEASED
+                or event.version != version
+                or event.lease_token != lease_token
+                or event.lease_expires_at is None
+                or event.lease_expires_at <= updated_at
+            ):
+                raise MeetAutomationConflict("automation event lease is stale")
+            failed = event.model_copy(
+                update={
+                    "status": AutomationEventStatus.FAILED,
+                    "lease_token": None,
+                    "lease_expires_at": None,
+                    "reason_code": reason_code,
+                    "updated_at": updated_at,
+                }
+            )
+            transaction.set(ref, self._meet_automation_event_record(failed))
+            return failed
+
+        return await fail_in_transaction(db.transaction())
+
+    async def claim_meet_reconciliation(
+        self,
+        *,
+        owner_id: str,
+        org_id: str,
+        grant_id: str,
+        lease_token: str,
+        lease_expires_at: datetime,
+        updated_at: datetime,
+    ) -> ReconciliationLease:
+        db = await self._get_db()
+        scope_key = manual_binding_lookup_key(
+            owner_id=owner_id,
+            org_id=org_id,
+            grant_id=grant_id,
+            calendar_id="reconciliation-lease",
+            calendar_event_id="active",
+        )
+        ref = db.collection("workspace_meet_reconciliation_leases").document(scope_key)
+
+        @firestore.async_transactional
+        async def claim_in_transaction(transaction):
+            snapshot = await ref.get(transaction=transaction)
+            record = snapshot.to_dict() or {}
+            if snapshot.exists:
+                if (
+                    record.get("ownerId") != owner_id
+                    or record.get("orgId") != org_id
+                    or record.get("grantId") != grant_id
+                ):
+                    raise MeetAutomationNotFound("reconciliation scope not found")
+                if (
+                    record.get("leaseToken") is not None
+                    and record.get("leaseExpiresAt") is not None
+                    and record["leaseExpiresAt"] > updated_at
+                ):
+                    raise MeetAutomationConflict("reconciliation has an active lease")
+                version = int(record.get("version", 0)) + 1
+                attempt_count = int(record.get("attemptCount", 0)) + 1
+            else:
+                version = 1
+                attempt_count = 1
+            lease = ReconciliationLease(
+                scope_key=scope_key,
+                owner_id=owner_id,
+                org_id=org_id,
+                grant_id=grant_id,
+                version=version,
+                attempt_count=attempt_count,
+                lease_token=lease_token,
+                lease_expires_at=lease_expires_at,
+                updated_at=updated_at,
+            )
+            transaction.set(
+                ref,
+                {
+                    "scopeKey": scope_key,
+                    "ownerId": owner_id,
+                    "orgId": org_id,
+                    "grantId": grant_id,
+                    "version": version,
+                    "attemptCount": attempt_count,
+                    "leaseToken": lease_token,
+                    "leaseExpiresAt": lease_expires_at,
+                    "updatedAt": updated_at,
+                },
+            )
+            return lease
+
+        return await claim_in_transaction(db.transaction())
+
+    async def release_meet_reconciliation(
+        self,
+        *,
+        scope_key: str,
+        lease_token: str,
+        version: int,
+        updated_at: datetime,
+    ) -> None:
+        db = await self._get_db()
+        ref = db.collection("workspace_meet_reconciliation_leases").document(scope_key)
+
+        @firestore.async_transactional
+        async def release_in_transaction(transaction):
+            snapshot = await ref.get(transaction=transaction)
+            record = snapshot.to_dict() or {}
+            if (
+                not snapshot.exists
+                or record.get("scopeKey") != scope_key
+                or record.get("version") != version
+                or record.get("leaseToken") != lease_token
+            ):
+                raise MeetAutomationConflict("reconciliation lease is stale")
+            transaction.set(
+                ref,
+                {
+                    **record,
+                    "leaseToken": None,
+                    "leaseExpiresAt": None,
+                    "updatedAt": updated_at,
+                },
+            )
+
+        await release_in_transaction(db.transaction())
 
     async def save_transcript_segment(
         self,
