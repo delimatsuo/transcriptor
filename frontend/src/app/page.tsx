@@ -11,12 +11,11 @@ import PostSessionView from "@/components/views/PostSessionView";
 import { reviewWarning as getReviewWarning } from "@/lib/sessionReview";
 import { requestSessionStop } from "@/lib/sessionStop";
 import { apiFetch, useAuth } from "@/lib/auth";
+import { apiUrl } from "@/lib/runtimeConfig";
 import AuthControls from "@/components/AuthControls";
 import AudioDeviceSelector from "@/components/AudioDeviceSelector";
 import { useBrowserAudioCapture } from "@/hooks/useBrowserAudioCapture";
 import type { SessionMode, SessionReview } from "@/types/ws";
-
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
 
 function reviewLoadError(status: number): string {
   if (status === 404) {
@@ -111,7 +110,7 @@ function AuthenticatedHome({ auth }: { auth: AuthenticatedAuthState }) {
       setReviewError(null);
       try {
         const response = await apiFetch(
-          `${API_BASE}/api/sessions/${encodeURIComponent(id)}/review`,
+          apiUrl(`/api/sessions/${encodeURIComponent(id)}/review`),
           { signal: controller.signal },
         );
         if (!response.ok) {
@@ -190,7 +189,7 @@ function AuthenticatedHome({ auth }: { auth: AuthenticatedAuthState }) {
     try {
       const outcome = await requestSessionStop(
         apiFetch,
-        `${API_BASE}/api/sessions/${sessionId}/stop`,
+        apiUrl(`/api/sessions/${sessionId}/stop`),
         stopCapability,
       );
       setStopError(outcome.warning);
@@ -290,8 +289,11 @@ function AuthenticatedHome({ auth }: { auth: AuthenticatedAuthState }) {
           status={auth.status}
           user={auth.user}
           error={auth.error}
+          busy={auth.busy}
           onSignIn={auth.signIn}
           onSignOut={handleSignOut}
+          onUseAnotherAccount={auth.useAnotherAccount}
+          onRetry={auth.retry}
           disabled={isActive}
         />
       </header>
@@ -378,21 +380,51 @@ function AuthenticatedHome({ auth }: { auth: AuthenticatedAuthState }) {
 export default function Home() {
   const auth = useAuth();
   const admittedUser = auth.user;
+  const [hydrated, setHydrated] = useState(false);
+
+  useEffect(() => {
+    setHydrated(true);
+  }, []);
 
   if (auth.status === "initializing") {
-    return <main role="status" aria-live="polite" style={{ padding: 40 }}>Verificando acesso…</main>;
+    return (
+      <main
+        role="status"
+        aria-live="polite"
+        style={{ padding: 40 }}
+        data-client-hydrated={hydrated ? "true" : "false"}
+      >
+        Verificando acesso…
+      </main>
+    );
   }
   if (!admittedUser) {
     return (
-      <main style={{ minHeight: "100vh", display: "grid", placeItems: "center", padding: 24 }}>
+      <main
+        style={{ minHeight: "100vh", display: "grid", placeItems: "center", padding: 24 }}
+        data-client-hydrated={hydrated ? "true" : "false"}
+      >
         <section aria-labelledby="auth-title" style={{ maxWidth: 460, textAlign: "center" }}>
           <h1 id="auth-title">T.A.R.S.</h1>
           <p>Entre com sua conta Google autorizada para preparar entrevistas com aviso e controle de acesso.</p>
-          <AuthControls status={auth.status} user={auth.user} error={auth.error} onSignIn={auth.signIn} onSignOut={auth.signOut} />
+          <AuthControls
+            status={auth.status}
+            user={auth.user}
+            error={auth.error}
+            busy={auth.busy}
+            onSignIn={auth.signIn}
+            onSignOut={auth.signOut}
+            onUseAnotherAccount={auth.useAnotherAccount}
+            onRetry={auth.retry}
+          />
         </section>
       </main>
     );
   }
 
-  return <AuthenticatedHome key={admittedUser.uid} auth={{ ...auth, user: admittedUser }} />;
+  return (
+    <div data-client-hydrated={hydrated ? "true" : "false"}>
+      <AuthenticatedHome key={admittedUser.uid} auth={{ ...auth, user: admittedUser }} />
+    </div>
+  );
 }

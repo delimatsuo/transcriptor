@@ -3,10 +3,9 @@
 import { useRef, useState } from "react";
 import type { SessionMode } from "@/types/ws";
 import { apiFetch, authBypassEnabled } from "@/lib/auth";
+import { apiUrl } from "@/lib/runtimeConfig";
 import AudioDeviceSelector from "@/components/AudioDeviceSelector";
 import type { UseBrowserAudioCaptureReturn } from "@/hooks/useBrowserAudioCapture";
-
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
 
 interface Props {
   onSessionStart: (
@@ -78,7 +77,7 @@ export default function SessionControls({
         formData.append("file", resumeFile);
       }
 
-      const res = await apiFetch(`${API_BASE}/api/analyze`, {
+      const res = await apiFetch(apiUrl("/api/analyze"), {
         method: "POST",
         body: formData,
       });
@@ -106,7 +105,7 @@ export default function SessionControls({
     docType: string,
     text: string,
   ) => {
-    const response = await apiFetch(`${API_BASE}/api/sessions/${sid}/context`, {
+    const response = await apiFetch(apiUrl(`/api/sessions/${sid}/context`), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ doc_type: docType, text }),
@@ -121,7 +120,7 @@ export default function SessionControls({
     setLoading(true);
     try {
       const params = new URLSearchParams({ mode, title, notice_given: String(noticeGiven) });
-      const res = await apiFetch(`${API_BASE}/api/sessions?${params}`, {
+      const res = await apiFetch(apiUrl(`/api/sessions?${params}`), {
         method: "POST",
       });
       if (!res.ok) throw new Error("Falha ao iniciar sessão");
@@ -142,7 +141,7 @@ export default function SessionControls({
           formData.append("doc_type", "resume");
           uploads.push((async () => {
             const response = await apiFetch(
-              `${API_BASE}/api/sessions/${sid}/documents`,
+              apiUrl(`/api/sessions/${sid}/documents`),
               {
               method: "POST",
               body: formData,
@@ -320,19 +319,6 @@ export default function SessionControls({
         </button>
       </div>
 
-      {/* Microphone Selection & Live Audio VU Meter */}
-      {audioCapture && (
-        <AudioDeviceSelector
-          devices={audioCapture.devices}
-          selectedDeviceId={audioCapture.selectedDeviceId}
-          onSelectDevice={(id) => void audioCapture.selectDevice(id)}
-          audioLevel={audioCapture.audioLevel}
-          isStreaming={audioCapture.isStreaming}
-          permissionState={audioCapture.permissionState}
-          onRequestPermission={audioCapture.requestPermission}
-        />
-      )}
-
       {/* Interview prep panel */}
       {showInterviewPrep && (
         <div
@@ -344,6 +330,19 @@ export default function SessionControls({
             boxShadow: "0 1px 4px rgba(0, 0, 0, 0.04)",
           }}
         >
+          {/* Microphone Selection & Live Audio VU Meter */}
+          {audioCapture && (
+            <AudioDeviceSelector
+              devices={audioCapture.devices}
+              selectedDeviceId={audioCapture.selectedDeviceId}
+              onSelectDevice={(id) => void audioCapture.selectDevice(id)}
+              audioLevel={audioCapture.audioLevel}
+              isStreaming={audioCapture.isStreaming}
+              permissionState={audioCapture.permissionState}
+              onRequestPermission={audioCapture.requestPermission}
+            />
+          )}
+
           <h3
             style={{
               fontSize: 14,

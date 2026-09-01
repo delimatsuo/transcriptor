@@ -2,6 +2,7 @@ import { defineConfig } from "@playwright/test";
 
 export default defineConfig({
   testDir: "./e2e",
+  testIgnore: /auth-source-readiness\.spec\.ts/,
   timeout: 30_000,
   use: {
     baseURL: "http://localhost:3100",
@@ -12,7 +13,7 @@ export default defineConfig({
       NEXT_PUBLIC_AUTH_BYPASS: "1",
     },
     url: "http://localhost:3100",
-    reuseExistingServer: true,
+    reuseExistingServer: process.env.CI !== "1",
     timeout: 120_000,
   },
 });

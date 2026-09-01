@@ -1,6 +1,7 @@
 "use client";
 
 import { buildJoinLink } from "@/lib/joinLink";
+import { getPublicRuntimeConfig } from "@/lib/runtimeConfig";
 
 interface Props {
   sessionId: string;
@@ -12,9 +13,7 @@ export default function CompanionCommand({ sessionId, streamKey }: Props) {
     return null;
   }
 
-  const gatewayBase =
-    process.env.NEXT_PUBLIC_WS_STREAM_URL ||
-    "ws://127.0.0.1:8000/api/stream/native";
+  const gatewayBase = getPublicRuntimeConfig().wsStreamUrl;
   const joinHref = buildJoinLink(sessionId, streamKey, gatewayBase);
 
   return (
