@@ -1,14 +1,16 @@
 # Cloud Run pilot source readiness
 
-## Status
+> **Historical evidence snapshot — not current exact-head qualification.** The digest, counts, PASS verdicts, and browser evidence below belong only to the recorded pre-split Task 07 source snapshot. Later executable-source changes invalidate the applicable gates. Do not use those historical results as proof for draft PR #41 or the split PR stack; use the applicable PR description, exact-head CI, and review record. The prospective Task 08 safety contract in this document remains required and non-authorizing.
 
-**SOURCE PASS / OWNER REAL-AUTH NOT RUN**
+## Historical source status
+
+**HISTORICAL SNAPSHOT: SOURCE PASS / OWNER REAL-AUTH NOT RUN**
 
 Executable-source digest: `1fd7c82b7164d7fb1d626df321fe5d9af6f426f93d616a7400ab873dbe4aa5f4`.
 
 Task 07 has source, unit, syntax, compile, build, constrained Swift, controlled local/synthetic browser evidence, and separate owner-supplied PASS evidence for the two `.env*` example nodes. No Task 07 source gate remains unrun at the recorded evidence state.
 
-## Current verification
+## Historical verification
 
 | Area | Status | Result |
 |---|---|---|
@@ -41,4 +43,49 @@ Any known or suspected change to either relevant example after the owner run inv
 
 Task 08 separately owns project/provider selection, Firebase configuration and restrictions, Hosting/Cloud Run binding, deployment, production configuration, and live operational verification. This source-readiness document authorizes none of those actions.
 
-**SOURCE PASS / OWNER REAL-AUTH NOT RUN**
+The following prospective gates remain mandatory. They do not grant authority to access a provider, accept terms, spend money, deploy, or use real identities.
+
+### Deployment identity and mutation binding
+
+- Bind any deployment to one exact committed Git SHA, the designated GCP/Firebase project and region, the owner/operator identity, the runtime service account, and a verified rollback target and procedure.
+- Before mutation, require a separately owner-approved exhaustive manifest naming every target resource, operation, before/after value, responsible owner, rollback step, and evidence destination. Every unlisted mutation remains forbidden.
+
+### Pre-created infrastructure and least privilege
+
+- Pre-create the exact dedicated GCS bucket; the application must never create or administer buckets at runtime.
+- Grant only the required object read/write permissions to the runtime service account. Do not use downloaded service-account JSON keys.
+- Verify ingress, TLS, IAM, and cross-owner denial before traffic is admitted.
+
+### Cloud Run single-process and WebSocket contract
+
+- Run exactly one Uvicorn process with Cloud Run `min-instances=1` and `max-instances=1`; process-local session state is not safe under horizontal fan-out.
+- Set the request timeout to `3600` seconds.
+- Configure the startup probe as HTTP `GET /readyz` and the liveness probe as HTTP `GET /healthz`.
+- Use HTTP/1.1 WebSocket support; do not enable an end-to-end HTTP/2 WebSocket path.
+- Verify cold-start probe behavior, WebSocket ticket renewal and expiration, reconnection, exact revision routing, and 100% traffic allocation to the intended revision.
+
+### Runtime configuration containment
+
+- Set `AUTH_BYPASS=false`, the owner-verified allowlist, explicit project/org/region/bucket/CORS values, host capture disabled, and audio backup disabled.
+- Prove that no local `.env`, `.env.local`, credential database, access token, or machine-local configuration enters the build context, image, runtime environment, logs, or evidence.
+- Preserve content-free health endpoints and verify that failures do not echo secrets, identity material, raw URLs, or stream keys.
+
+### Clean frontend production binding
+
+- Build in a clean environment with explicit production `https://` API and `wss://` WebSocket/native-stream URLs bound to the selected Cloud Run host.
+- Provide the required Firebase public web configuration, keep `NEXT_PUBLIC_AUTH_BYPASS=0`, and verify authorized-domain and API-key restrictions under the owner gate.
+- Prove the deployed frontend revision and configuration correspond to the same exact commit as the backend.
+
+### Hosted verification evidence
+
+- Record the exact commit and deployed revision, project/region, operator, UTC timestamp, rollback target, and privacy-safe command results.
+- Verify allowed and denied account behavior, cross-owner denial, path/header mismatch rejection, cold-start readiness/liveness behavior, WebSocket renewal/expiration/reconnect behavior, TLS/ingress/IAM, and rollback.
+- Keep all evidence free of emails, tokens, claims, credentials, raw join links, and personal audio or transcript content.
+
+### Pilot operational invariants
+
+- A `3600`-second request timeout is a platform ceiling, not a continuity guarantee. Clients must reconnect; browser microphone streaming has no automatic reconnect and requires a verified operator recovery path.
+- `min=max=1` avoids multi-instance routing conflicts but does not make process-local stream keys, WebSockets, session locks, or in-flight state durable across restart.
+- Session affinity is not state durability, and `DATA_RETENTION_DAYS=90` is only an inert configuration value until a separately verified deletion mechanism exists.
+
+**HISTORICAL SNAPSHOT: SOURCE PASS / OWNER REAL-AUTH NOT RUN**

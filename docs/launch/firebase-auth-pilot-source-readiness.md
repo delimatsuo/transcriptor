@@ -1,8 +1,10 @@
 # Firebase auth pilot source readiness
 
-## Source status
+> **Historical evidence snapshot — not current exact-head qualification.** The digest, counts, PASS verdicts, and browser evidence below belong only to the recorded pre-split Task 07 source snapshot. Later executable-source changes invalidate the applicable gates. Do not use those historical results as proof for draft PR #41 or the split PR stack; use the applicable PR description, exact-head CI, and review record.
 
-**SOURCE PASS / OWNER REAL-AUTH NOT RUN**
+## Historical source status
+
+**HISTORICAL SNAPSHOT: SOURCE PASS / OWNER REAL-AUTH NOT RUN**
 
 Executable-source digest: `1fd7c82b7164d7fb1d626df321fe5d9af6f426f93d616a7400ab873dbe4aa5f4`.
 
@@ -14,7 +16,7 @@ The source contract keeps authentication fail-closed: a local development bypass
 
 The source also separates public build configuration from owner-only real authentication. Source/unit/compile evidence and the controlled local/synthetic browser replay support those boundaries; real identity and deployed-tenant behavior remain outside this evidence.
 
-## Current metrics
+## Historical metrics
 
 | Evidence | Status | Result |
 |---|---|---|
@@ -50,6 +52,21 @@ Any known or suspected change to either relevant example after the owner run inv
 
 Real identity, login, tokens, Firebase/provider/GCP/cloud access, authorized domains, API-key restrictions, Hosting, Cloud Run, deployment, Docker daemon/image, device or live-audio proof, production verification, and owner real-auth are Task 08 requirements and remain NOT RUN. Nothing here authorizes cloud or provider action.
 
+## Owner real-auth completion gate
+
+This gate remains **NOT RUN** and cannot be completed under this document. It requires a fresh, explicit owner authorization envelope for provider access and real identities. A single successful login is insufficient.
+
+Under that separate authorization, completion requires privacy-safe proof of all of the following on one exact committed and deployed revision:
+
+- one owner-approved allowlisted real account signs in and reaches protected admission;
+- one owner-approved non-allowlisted real account is denied without protected data or side effects;
+- account switching, same-principal retry, logout, token refresh, and revocation each preserve fail-closed admission;
+- a real `/api/me` response matches the authenticated principal and allowlist decision, and protected HTTP and WebSocket access fail closed after logout or revocation;
+- the frontend and backend are bound to the same intended Firebase tenant/project, authorized domains, API-key restrictions, and exact deployed revision; and
+- the evidence record binds the Git SHA, deployed revision, non-secret project/tenant identifier, operator, UTC timestamp, test/command version, and pass/fail result.
+
+Evidence must exclude or irreversibly redact email addresses, UIDs, tokens, claims, credentials, cookies, raw provider responses, and any other personal or secret value. No personal data may be committed to Git or posted to the PR. Provider access, terms acceptance, spend, deployment, and real-identity testing remain separately authorized actions.
+
 ## Truthful outcome
 
-**SOURCE PASS / OWNER REAL-AUTH NOT RUN**
+**HISTORICAL SNAPSHOT: SOURCE PASS / OWNER REAL-AUTH NOT RUN**
