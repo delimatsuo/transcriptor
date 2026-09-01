@@ -14,7 +14,14 @@ from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import Any, Awaitable, Callable, Literal, Protocol, TypeVar
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictBool,
+    field_validator,
+    model_validator,
+)
 
 from backend.sessions.workspace_imports import (
     GoogleMeetImportRequest,
@@ -44,6 +51,8 @@ MAX_PROVIDER_PAGES = 4
 MAX_PROVIDER_ENTRIES = 400
 PROVIDER_PAGE_SIZE = 100
 AUTOMATION_DEADLINE_SECONDS = 30.0
+MAX_PENDING_PROVIDER_TASKS = 25
+MAX_BINDING_CONTEXT_BYTES = 900_000
 AUTOMATION_LEASE_DURATION = timedelta(minutes=5)
 RECONCILIATION_LEASE_DURATION = timedelta(minutes=5)
 AUTOMATION_FAILURE_REASONS = frozenset({"automation_failed"})
@@ -307,6 +316,18 @@ class EligibleMeetEventBinding(BaseModel):
             self.job_description_text is None
         ):
             raise ValueError("job description context is incomplete")
+        context_bytes = sum(
+            len((value or "").encode("utf-8"))
+            for value in (
+                self.resume_text,
+                self.job_description_text,
+                self.briefing,
+            )
+        )
+        if context_bytes > MAX_BINDING_CONTEXT_BYTES:
+            raise ValueError(
+                f"binding context exceeds {MAX_BINDING_CONTEXT_BYTES} UTF-8 bytes"
+            )
         return self
 
 
@@ -349,7 +370,7 @@ class PushTokenClaims(BaseModel):
 
     audience: str
     email: str
-    email_verified: bool
+    email_verified: StrictBool
 
 
 class WorkspacePushTokenVerifier(Protocol):
@@ -479,6 +500,14 @@ class ReconciliationLease(BaseModel):
     lease_token: str
     lease_expires_at: datetime
     updated_at: datetime
+    cursor_binding_key: str | None = None
+
+    @field_validator("cursor_binding_key")
+    @classmethod
+    def canonical_cursor(cls, value: str | None) -> str | None:
+        if value is not None and re.fullmatch(r"[0-9a-f]{64}", value) is None:
+            raise ValueError("reconciliation cursor is invalid")
+        return value
 
 
 class ReconciliationResult(BaseModel):
@@ -515,7 +544,13 @@ class MeetTranscriptAutomationStorage(Protocol):
     ) -> EligibleMeetEventBinding: ...
 
     async def list_eligible_meet_bindings(
-        self, *, owner_id: str, org_id: str, grant_id: str, limit: int
+        self,
+        *,
+        owner_id: str,
+        org_id: str,
+        grant_id: str,
+        limit: int,
+        after_binding_key: str | None,
     ) -> list[EligibleMeetEventBinding]: ...
 
     async def queue_meet_automation_event(
@@ -569,6 +604,7 @@ class MeetTranscriptAutomationStorage(Protocol):
         lease_token: str,
         version: int,
         updated_at: datetime,
+        last_considered_binding_key: str | None,
     ) -> None: ...
 
 
@@ -769,6 +805,16 @@ class MeetTranscriptAutomationOrchestrator:
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._monotonic = monotonic or time.monotonic
         self._deadline_seconds = float(deadline_seconds)
+        self._pending_provider_tasks: set[asyncio.Task[Any]] = set()
+
+    def _provider_task_done(self, task: asyncio.Task[Any]) -> None:
+        self._pending_provider_tasks.discard(task)
+        if task.cancelled():
+            return
+        try:
+            task.exception()
+        except BaseException:
+            pass
 
     async def _await_provider(
         self,
@@ -779,10 +825,22 @@ class MeetTranscriptAutomationOrchestrator:
         remaining = deadline - self._monotonic()
         if remaining <= 0:
             raise MeetAutomationInvalid("workspace provider deadline exceeded")
+        if len(self._pending_provider_tasks) >= MAX_PENDING_PROVIDER_TASKS:
+            raise MeetAutomationInvalid("workspace provider capacity exceeded")
+        task = asyncio.create_task(operation())
+        self._pending_provider_tasks.add(task)
+        task.add_done_callback(self._provider_task_done)
         try:
-            return await asyncio.wait_for(operation(), timeout=remaining)
-        except TimeoutError:
-            raise MeetAutomationInvalid("workspace provider deadline exceeded") from None
+            done, _pending = await asyncio.wait({task}, timeout=remaining)
+        except asyncio.CancelledError:
+            task.cancel()
+            raise
+        if not done:
+            task.cancel()
+            raise MeetAutomationInvalid("workspace provider deadline exceeded")
+        if task.cancelled():
+            raise MeetAutomationInvalid("workspace provider failed")
+        return task.result()
 
     async def _authorized_grant(
         self, binding: EligibleMeetEventBinding, *, owner_id: str, org_id: str
@@ -942,6 +1000,7 @@ class MeetTranscriptAutomationOrchestrator:
         event_id: str,
         transcript_name: str,
         deadline: float,
+        resolve_after_claim: bool = False,
     ) -> AutomationRunResult:
         queued = self._queued_event(
             binding=binding,
@@ -962,6 +1021,14 @@ class MeetTranscriptAutomationOrchestrator:
         if claim.event.status == AutomationEventStatus.COMPLETED:
             return self._replay_result(claim.event)
         try:
+            if resolve_after_claim:
+                resolution = await self._await_provider(
+                    lambda: self._provider.resolve_transcript(grant, binding),
+                    deadline=deadline,
+                )
+                self._assert_resolution(binding, resolution)
+                if resolution.transcript_name != transcript_name:
+                    raise MeetAutomationInvalid("webhook transcript identity mismatch")
             entries = await self._fetch_entries(
                 grant, binding, transcript_name, deadline=deadline
             )
@@ -1036,6 +1103,7 @@ class MeetTranscriptAutomationOrchestrator:
             event_id=event.event_id,
             transcript_name=event.transcript_name,
             deadline=deadline,
+            resolve_after_claim=True,
         )
 
     async def process_manual(
@@ -1096,6 +1164,7 @@ class MeetTranscriptAutomationOrchestrator:
             updated_at=now,
         )
         considered = completed = replayed = failed = 0
+        last_considered_binding_key: str | None = None
         reasons: set[str] = set()
         try:
             bindings = await self._storage.list_eligible_meet_bindings(
@@ -1103,12 +1172,14 @@ class MeetTranscriptAutomationOrchestrator:
                 org_id=org_id,
                 grant_id=request.grant_id,
                 limit=request.max_events,
+                after_binding_key=lease.cursor_binding_key,
             )
             for binding in bindings:
                 if considered >= request.max_events or self._monotonic() >= deadline:
                     reasons.add("deadline_reached")
                     break
                 considered += 1
+                last_considered_binding_key = eligible_binding_key(binding)
                 try:
                     binding_grant = await self._authorized_grant(
                         binding, owner_id=owner_id, org_id=org_id
@@ -1152,4 +1223,5 @@ class MeetTranscriptAutomationOrchestrator:
                 lease_token=lease.lease_token,
                 version=lease.version,
                 updated_at=self._clock(),
+                last_considered_binding_key=last_considered_binding_key,
             )

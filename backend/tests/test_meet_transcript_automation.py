@@ -96,6 +96,21 @@ def binding(**overrides):
     return EligibleMeetEventBinding(**values)
 
 
+def numbered_binding(index: int, **overrides):
+    values = {
+        "calendar_event_id": f"event-{index}",
+        "meet_target": f"//meet.googleapis.com/spaces/space-{index}",
+        "workspace_subscription_source": (
+            f"//workspaceevents.googleapis.com/subscriptions/workspace-sub-{index}"
+        ),
+        "pubsub_subscription": (
+            f"projects/tars-test-project/subscriptions/push-sub-{index}"
+        ),
+    }
+    values.update(overrides)
+    return binding(**values)
+
+
 def resolution(item=None, **overrides):
     item = item or binding()
     values = {
@@ -191,14 +206,26 @@ class MemoryAutomationStorage:
                 return item
         raise MeetAutomationNotFound("eligible Meet event not found")
 
-    async def list_eligible_meet_bindings(self, *, owner_id, org_id, grant_id, limit):
-        return [
+    async def list_eligible_meet_bindings(
+        self, *, owner_id, org_id, grant_id, limit, after_binding_key
+    ):
+        eligible = sorted(
+            [
             item
             for item in self.bindings
             if item.owner_id == owner_id
             and item.org_id == org_id
             and item.grant_id == grant_id
-        ][:limit]
+            ],
+            key=eligible_binding_key,
+        )
+        if after_binding_key is not None:
+            eligible = [
+                item for item in eligible if eligible_binding_key(item) > after_binding_key
+            ] + [
+                item for item in eligible if eligible_binding_key(item) <= after_binding_key
+            ]
+        return eligible[:limit]
 
     async def queue_meet_automation_event(self, event):
         self.queue_calls += 1
@@ -331,6 +358,7 @@ class MemoryAutomationStorage:
             "attempt_count": attempts,
             "lease_token": lease_token,
             "lease_expires_at": lease_expires_at,
+            "cursor_binding_key": (existing or {}).get("cursor_binding_key"),
         }
         return ReconciliationLease(
             scope_key=key,
@@ -342,16 +370,25 @@ class MemoryAutomationStorage:
             lease_token=lease_token,
             lease_expires_at=lease_expires_at,
             updated_at=updated_at,
+            cursor_binding_key=(existing or {}).get("cursor_binding_key"),
         )
 
     async def release_meet_reconciliation(
-        self, *, scope_key, lease_token, version, updated_at
+        self,
+        *,
+        scope_key,
+        lease_token,
+        version,
+        updated_at,
+        last_considered_binding_key,
     ):
         existing = self.reconciliation[scope_key]
         if existing["version"] != version or existing["lease_token"] != lease_token:
             raise MeetAutomationConflict("stale reconciliation")
         existing["lease_token"] = None
         existing["lease_expires_at"] = None
+        if last_considered_binding_key is not None:
+            existing["cursor_binding_key"] = last_considered_binding_key
 
 
 class FakeProvider:
@@ -405,6 +442,41 @@ class FakeProvider:
         if not self.pages:
             pytest.fail("unexpected provider request")
         return self.pages.pop(0)
+
+
+class CancellationResistantProvider(FakeProvider):
+    def __init__(self, *, resist_on):
+        super().__init__()
+        self.resist_on = resist_on
+        self.started = asyncio.Event()
+        self.cancel_seen = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def _resist_once(self):
+        self.started.set()
+        try:
+            await self.release.wait()
+        except asyncio.CancelledError:
+            self.cancel_seen.set()
+            await self.release.wait()
+
+    async def resolve_transcript(self, grant_item, item):
+        self.assert_authority(grant_item, item)
+        self.resolve_calls.append((grant_item, item))
+        if self.resist_on == "resolve":
+            await self._resist_once()
+        return resolution(item)
+
+    async def fetch_transcript_entries_page(
+        self, grant_item, item, transcript_name, *, page_size, page_token
+    ):
+        self.assert_authority(grant_item, item)
+        self.fetch_calls.append(
+            (grant_item, item, transcript_name, page_size, page_token)
+        )
+        if self.resist_on == "fetch":
+            await self._resist_once()
+        return page([entry(1)])
 
 
 class SpyImportWorker(GoogleMeetImportWorker):
@@ -467,6 +539,33 @@ def test_grants_forbid_credentials_unknown_fields_and_require_aware_validity():
             WorkspaceGrant(**{**grant().model_dump(), forbidden: "sensitive"})
     with pytest.raises(ValidationError, match="timezone"):
         grant(expires_at=datetime(2026, 9, 2, 16, 0))
+
+
+def test_binding_context_cumulative_utf8_ceiling_is_exactly_900000_bytes():
+    accepted = binding(
+        resume_artifact_id="resume-1",
+        resume_text="r" * 500_000,
+        job_description_artifact_id="jd-1",
+        job_description_text="j" * 400_000,
+    )
+    assert len(accepted.resume_text.encode()) + len(
+        accepted.job_description_text.encode()
+    ) == 900_000
+    with pytest.raises(ValidationError, match="900000 UTF-8 bytes"):
+        binding(
+            resume_artifact_id="resume-1",
+            resume_text="r" * 500_000,
+            job_description_artifact_id="jd-1",
+            job_description_text="j" * 400_000,
+            briefing="x",
+        )
+    with pytest.raises(ValidationError, match="900000 UTF-8 bytes"):
+        binding(
+            resume_artifact_id="resume-1",
+            resume_text=("r" * 499_999) + "é",
+            job_description_artifact_id="jd-1",
+            job_description_text="j" * 400_000,
+        )
 
 
 @pytest.mark.parametrize(
@@ -581,6 +680,22 @@ def test_push_bearer_and_verified_claim_identity_are_exact():
     ):
         with pytest.raises(MeetAutomationInvalid):
             asyncio.run(verify_push_token(FakeVerifier(claims), "token"))
+    for invalid_verified in ("true", "yes", 1):
+        with pytest.raises(MeetAutomationInvalid):
+            asyncio.run(
+                verify_push_token(
+                    FakeVerifier(
+                        {
+                            "audience": FakeVerifier.expected_audience,
+                            "email": FakeVerifier.expected_service_account_email,
+                            "email_verified": invalid_verified,
+                        }
+                    ),
+                    "token",
+                )
+            )
+    accepted = asyncio.run(verify_push_token(FakeVerifier(), "token"))
+    assert accepted.email_verified is True
 
 
 @pytest.mark.parametrize(
@@ -659,11 +774,32 @@ def test_webhook_first_delivery_calls_worker_once_and_completion_replays_without
     assert first.status == replay.status == ImportJobStatus.COMPLETED
     assert replay.automation_replay is True
     assert len(worker.calls) == 1
+    assert len(provider.resolve_calls) == 1
     assert len(provider.fetch_calls) == 1
     stored = next(iter(storage.events.values())).model_dump(mode="json")
     serialized = json.dumps(stored)
     for forbidden in ("Synthetic transcript", "Bearer", "raw", "provider exception"):
         assert forbidden not in serialized
+
+
+def test_webhook_resolved_transcript_mismatch_fails_claim_before_fetch_or_import():
+    storage = MemoryAutomationStorage([grant()], [binding()])
+    provider = FakeProvider(
+        resolved=resolution(
+            transcript_name="conferenceRecords/record-1/transcripts/other"
+        )
+    )
+    worker = SpyImportWorker()
+    with pytest.raises(MeetAutomationInvalid, match="identity"):
+        asyncio.run(
+            orchestrator(storage, provider, worker).process_webhook(parsed_event())
+        )
+    assert len(provider.resolve_calls) == 1
+    assert provider.fetch_calls == []
+    assert worker.calls == []
+    event_state = next(iter(storage.events.values()))
+    assert event_state.status == AutomationEventStatus.FAILED
+    assert event_state.reason_code == "automation_failed"
 
 
 def test_failed_after_queue_is_immediately_reclaimable_and_active_lease_blocks():
@@ -811,6 +947,119 @@ def test_reconciliation_provider_timeout_releases_durable_lease():
     assert lease["lease_token"] is None
 
 
+def test_cancellation_resistant_webhook_provider_detaches_and_fails_within_deadline():
+    async def exercise():
+        storage = MemoryAutomationStorage([grant()], [binding()])
+        provider = CancellationResistantProvider(resist_on="fetch")
+        worker = SpyImportWorker()
+        runner = orchestrator(
+            storage,
+            provider,
+            worker,
+            monotonic=time.monotonic,
+            deadline_seconds=0.01,
+        )
+        started = time.monotonic()
+        try:
+            with pytest.raises(MeetAutomationInvalid, match="deadline"):
+                await runner.process_webhook(parsed_event())
+            assert time.monotonic() - started < 0.06
+            await asyncio.wait_for(provider.cancel_seen.wait(), timeout=0.05)
+            event_state = next(iter(storage.events.values()))
+            assert event_state.status == AutomationEventStatus.FAILED
+            assert event_state.reason_code == "automation_failed"
+            assert worker.calls == []
+            assert len(runner._pending_provider_tasks) == 1
+        finally:
+            provider.release.set()
+            for _ in range(20):
+                if not runner._pending_provider_tasks:
+                    break
+                await asyncio.sleep(0)
+        assert runner._pending_provider_tasks == set()
+
+    asyncio.run(exercise())
+
+
+def test_cancellation_resistant_reconciliation_releases_lease_within_deadline():
+    async def exercise():
+        storage = MemoryAutomationStorage([grant()], [binding()])
+        provider = CancellationResistantProvider(resist_on="resolve")
+        worker = SpyImportWorker()
+        runner = orchestrator(
+            storage,
+            provider,
+            worker,
+            monotonic=time.monotonic,
+            deadline_seconds=0.01,
+        )
+        started = time.monotonic()
+        try:
+            result = await runner.reconcile(
+                MeetTranscriptReconcileRequest(grantId="grant-1", maxEvents=1),
+                owner_id="owner-1",
+                org_id="org-1",
+            )
+            assert time.monotonic() - started < 0.06
+            await asyncio.wait_for(provider.cancel_seen.wait(), timeout=0.05)
+            assert result.considered == result.failed == 1
+            assert result.completed == 0
+            assert worker.calls == []
+            lease = next(iter(storage.reconciliation.values()))
+            assert lease["lease_token"] is None
+            assert len(runner._pending_provider_tasks) == 1
+        finally:
+            provider.release.set()
+            for _ in range(20):
+                if not runner._pending_provider_tasks:
+                    break
+                await asyncio.sleep(0)
+        assert runner._pending_provider_tasks == set()
+
+    asyncio.run(exercise())
+
+
+def test_pending_provider_task_cap_is_25_and_fails_closed():
+    async def exercise():
+        storage = MemoryAutomationStorage([grant()], [binding()])
+        runner = orchestrator(
+            storage,
+            FakeProvider(),
+            SpyImportWorker(),
+            monotonic=time.monotonic,
+        )
+        release = asyncio.Event()
+
+        async def hostile_provider_call():
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                await release.wait()
+
+        try:
+            for _ in range(25):
+                with pytest.raises(MeetAutomationInvalid, match="deadline"):
+                    await runner._await_provider(
+                        hostile_provider_call,
+                        deadline=time.monotonic() + 0.001,
+                    )
+            assert len(runner._pending_provider_tasks) == 25
+            with pytest.raises(MeetAutomationInvalid, match="capacity"):
+                await runner._await_provider(
+                    hostile_provider_call,
+                    deadline=time.monotonic() + 1,
+                )
+        finally:
+            release.set()
+            for _ in range(50):
+                if not runner._pending_provider_tasks:
+                    break
+                await asyncio.sleep(0)
+        assert runner._pending_provider_tasks == set()
+
+    asyncio.run(exercise())
+
+
 @pytest.mark.parametrize(
     "pages",
     [
@@ -918,8 +1167,31 @@ def test_reconciliation_active_lease_conflicts_and_expired_lease_recovers():
     assert storage.reconciliation[scope]["version"] == 2
 
 
+def test_reconciliation_cursor_prevents_starvation_across_two_max_25_runs():
+    items = [numbered_binding(index) for index in range(1, 27)]
+    storage = MemoryAutomationStorage([grant()], items)
+    provider = FakeProvider(pages=[page([entry(index)]) for index in range(26)])
+    worker = SpyImportWorker()
+    runner = orchestrator(storage, provider, worker)
+    request = MeetTranscriptReconcileRequest(grantId="grant-1", maxEvents=25)
+    first = asyncio.run(
+        runner.reconcile(request, owner_id="owner-1", org_id="org-1")
+    )
+    second = asyncio.run(
+        runner.reconcile(request, owner_id="owner-1", org_id="org-1")
+    )
+    assert first.considered == second.considered == 25
+    resolved_event_ids = {
+        call[1].calendar_event_id for call in provider.resolve_calls
+    }
+    assert resolved_event_ids == {item.calendar_event_id for item in items}
+    assert len(worker.calls) == 26
+    assert second.replayed == 24
+
+
 class AtomicSnapshot:
     def __init__(self, ref):
+        self.id = ref.path[-1]
         self.exists = ref.path in ref.db.data
         self._value = copy.deepcopy(ref.db.data.get(ref.path, {}))
 
@@ -940,12 +1212,73 @@ class AtomicDocument:
 
 
 class AtomicCollection:
-    def __init__(self, db, path):
+    def __init__(self, db, path, *, after=None, through=None, maximum=None):
         self.db = db
         self.path = path
+        self.after = after
+        self.through = through
+        self.maximum = maximum
 
     def document(self, item):
         return AtomicDocument(self.db, self.path + (item,))
+
+    def order_by(self, field):
+        assert field == "bindingKey"
+        return AtomicCollection(self.db, self.path)
+
+    def start_after(self, value):
+        return AtomicCollection(
+            self.db,
+            self.path,
+            after=value["bindingKey"],
+            through=self.through,
+            maximum=self.maximum,
+        )
+
+    def end_at(self, value):
+        return AtomicCollection(
+            self.db,
+            self.path,
+            after=self.after,
+            through=value["bindingKey"],
+            maximum=self.maximum,
+        )
+
+    def limit(self, maximum):
+        return AtomicCollection(
+            self.db,
+            self.path,
+            after=self.after,
+            through=self.through,
+            maximum=maximum,
+        )
+
+    def stream(self):
+        collection = self
+
+        async def generate():
+            paths = [
+                path
+                for path in collection.db.data
+                if len(path) == len(collection.path) + 1
+                and path[: len(collection.path)] == collection.path
+            ]
+            paths.sort(
+                key=lambda path: collection.db.data[path].get("bindingKey", "")
+            )
+            yielded = 0
+            for path in paths:
+                binding_key = collection.db.data[path].get("bindingKey", "")
+                if collection.after is not None and binding_key <= collection.after:
+                    continue
+                if collection.through is not None and binding_key > collection.through:
+                    continue
+                if collection.maximum is not None and yielded >= collection.maximum:
+                    break
+                yielded += 1
+                yield AtomicSnapshot(AtomicDocument(collection.db, path))
+
+        return generate()
 
 
 class AtomicTransaction:
@@ -994,6 +1327,249 @@ def firestore_storage(monkeypatch):
     monkeypatch.setattr(storage, "_get_db", get_db)
     monkeypatch.setattr("backend.storage.firestore.firestore.async_transactional", transactional)
     return storage, db
+
+
+def test_firestore_binding_indexes_are_identity_only_and_canonical(monkeypatch):
+    storage, db = firestore_storage(monkeypatch)
+    item = numbered_binding(1)
+    asyncio.run(storage.store_eligible_meet_binding(item))
+    binding_id = eligible_binding_key(item)
+    canonical = db.data[("workspace_meet_eligible_events", binding_id)]
+    assert canonical["bindingKey"] == binding_id
+    assert canonical["title"] == item.title
+    scope_records = [
+        value
+        for path, value in db.data.items()
+        if len(path) == 4
+        and path[0] == "workspace_meet_grant_scopes"
+        and path[2] == "eligible_events"
+    ]
+    assert scope_records == [{"bindingKey": binding_id}]
+    assert all(
+        set(value) == {"bindingKey"}
+        for path, value in db.data.items()
+        if path[0] in {"workspace_meet_manual_index", "workspace_meet_push_index"}
+    )
+
+
+def test_firestore_corrupt_indexes_and_noncanonical_binding_ids_fail_closed(monkeypatch):
+    storage, db = firestore_storage(monkeypatch)
+    first = numbered_binding(1)
+    other = numbered_binding(2, owner_id="owner-2")
+    asyncio.run(storage.store_eligible_meet_binding(first))
+    asyncio.run(storage.store_eligible_meet_binding(other))
+    first_push_id = push_binding_lookup_key(
+        workspace_subscription_source=first.workspace_subscription_source,
+        pubsub_subscription=first.pubsub_subscription,
+        meet_target=first.meet_target,
+    )
+    db.data[("workspace_meet_push_index", first_push_id)] = {
+        "bindingKey": eligible_binding_key(other)
+    }
+    with pytest.raises(MeetAutomationNotFound):
+        asyncio.run(
+            storage.get_eligible_meet_binding_push(
+                workspace_subscription_source=first.workspace_subscription_source,
+                pubsub_subscription=first.pubsub_subscription,
+                meet_target=first.meet_target,
+            )
+        )
+
+    first_manual_id = manual_binding_lookup_key(
+        owner_id=first.owner_id,
+        org_id=first.org_id,
+        grant_id=first.grant_id,
+        calendar_id=first.calendar_id,
+        calendar_event_id=first.calendar_event_id,
+    )
+    noncanonical_id = "f" * 64
+    corrupt_record = copy.deepcopy(
+        db.data[("workspace_meet_eligible_events", eligible_binding_key(first))]
+    )
+    corrupt_record["bindingKey"] = noncanonical_id
+    db.data[("workspace_meet_eligible_events", noncanonical_id)] = corrupt_record
+    db.data[("workspace_meet_manual_index", first_manual_id)] = {
+        "bindingKey": noncanonical_id
+    }
+    with pytest.raises(MeetAutomationNotFound):
+        asyncio.run(
+            storage.get_eligible_meet_binding_manual(
+                owner_id=first.owner_id,
+                org_id=first.org_id,
+                grant_id=first.grant_id,
+                calendar_id=first.calendar_id,
+                calendar_event_id=first.calendar_event_id,
+            )
+        )
+
+
+def test_firestore_raw_unknown_sensitive_and_heuristic_fields_are_rejected(monkeypatch):
+    storage, db = firestore_storage(monkeypatch)
+    authority = grant()
+    item = numbered_binding(1)
+    asyncio.run(storage.store_workspace_grant(authority))
+    asyncio.run(storage.store_eligible_meet_binding(item))
+
+    grant_path = (
+        "workspace_grants",
+        grant_identity_key(
+            owner_id=authority.owner_id,
+            org_id=authority.org_id,
+            grant_id=authority.grant_id,
+        ),
+    )
+    db.data[grant_path]["accessToken"] = "must-not-project"
+    with pytest.raises(MeetAutomationNotFound):
+        asyncio.run(
+            storage.get_workspace_grant(
+                authority.grant_id,
+                owner_id=authority.owner_id,
+                org_id=authority.org_id,
+            )
+        )
+
+    binding_id = eligible_binding_key(item)
+    db.data[("workspace_meet_eligible_events", binding_id)][
+        "meetingTitleHeuristic"
+    ] = "must-not-project"
+    with pytest.raises(MeetAutomationNotFound):
+        asyncio.run(
+            storage.get_eligible_meet_binding_push(
+                workspace_subscription_source=item.workspace_subscription_source,
+                pubsub_subscription=item.pubsub_subscription,
+                meet_target=item.meet_target,
+            )
+        )
+
+    event_state = orchestrator()._queued_event(
+        binding=binding(),
+        trigger="webhook",
+        event_id="push-event-1",
+        transcript_name=TRANSCRIPT,
+        updated_at=NOW,
+    )
+    asyncio.run(storage.queue_meet_automation_event(event_state))
+    event_path = ("workspace_meet_automation_events", event_state.event_key)
+    db.data[event_path]["rawPayload"] = "must-not-project"
+    with pytest.raises(MeetAutomationConflict, match="record"):
+        asyncio.run(
+            storage.claim_meet_automation_event(
+                event_key=event_state.event_key,
+                lease_token="lease-token",
+                lease_expires_at=NOW + timedelta(minutes=5),
+                updated_at=NOW,
+            )
+        )
+
+
+def test_firestore_reconciliation_cursor_preserves_advances_and_wraps(monkeypatch):
+    storage, db = firestore_storage(monkeypatch)
+    items = [numbered_binding(index) for index in range(1, 4)]
+    for item in items:
+        asyncio.run(storage.store_eligible_meet_binding(item))
+    ordered = sorted(items, key=eligible_binding_key)
+
+    async def exercise():
+        first_lease = await storage.claim_meet_reconciliation(
+            owner_id="owner-1",
+            org_id="org-1",
+            grant_id="grant-1",
+            lease_token="lease-1",
+            lease_expires_at=NOW + timedelta(minutes=5),
+            updated_at=NOW,
+        )
+        assert first_lease.cursor_binding_key is None
+        first_page = await storage.list_eligible_meet_bindings(
+            owner_id="owner-1",
+            org_id="org-1",
+            grant_id="grant-1",
+            limit=2,
+            after_binding_key=first_lease.cursor_binding_key,
+        )
+        assert first_page == ordered[:2]
+        cursor = eligible_binding_key(first_page[-1])
+        await storage.release_meet_reconciliation(
+            scope_key=first_lease.scope_key,
+            lease_token=first_lease.lease_token,
+            version=first_lease.version,
+            updated_at=NOW + timedelta(seconds=1),
+            last_considered_binding_key=cursor,
+        )
+        second_lease = await storage.claim_meet_reconciliation(
+            owner_id="owner-1",
+            org_id="org-1",
+            grant_id="grant-1",
+            lease_token="lease-2",
+            lease_expires_at=NOW + timedelta(minutes=5),
+            updated_at=NOW + timedelta(seconds=2),
+        )
+        assert second_lease.cursor_binding_key == cursor
+        wrapped = await storage.list_eligible_meet_bindings(
+            owner_id="owner-1",
+            org_id="org-1",
+            grant_id="grant-1",
+            limit=3,
+            after_binding_key=second_lease.cursor_binding_key,
+        )
+        assert wrapped == [ordered[2], ordered[0], ordered[1]]
+        await storage.release_meet_reconciliation(
+            scope_key=second_lease.scope_key,
+            lease_token=second_lease.lease_token,
+            version=second_lease.version,
+            updated_at=NOW + timedelta(seconds=3),
+            last_considered_binding_key=None,
+        )
+        third_lease = await storage.claim_meet_reconciliation(
+            owner_id="owner-1",
+            org_id="org-1",
+            grant_id="grant-1",
+            lease_token="lease-3",
+            lease_expires_at=NOW + timedelta(minutes=5),
+            updated_at=NOW + timedelta(seconds=4),
+        )
+        return cursor, third_lease
+
+    cursor, third_lease = asyncio.run(exercise())
+    assert third_lease.cursor_binding_key == cursor
+    lease_record = db.data[
+        ("workspace_meet_reconciliation_leases", third_lease.scope_key)
+    ]
+    assert set(lease_record) == {
+        "scopeKey",
+        "ownerId",
+        "orgId",
+        "grantId",
+        "version",
+        "attemptCount",
+        "leaseToken",
+        "leaseExpiresAt",
+        "updatedAt",
+        "cursorBindingKey",
+    }
+
+
+def test_firestore_corrupt_reconciliation_scope_entry_is_rejected(monkeypatch):
+    storage, db = firestore_storage(monkeypatch)
+    item = numbered_binding(1)
+    asyncio.run(storage.store_eligible_meet_binding(item))
+    scope_path = next(
+        path
+        for path in db.data
+        if len(path) == 4
+        and path[0] == "workspace_meet_grant_scopes"
+        and path[2] == "eligible_events"
+    )
+    db.data[scope_path]["rawTranscript"] = "must-not-project"
+    with pytest.raises(MeetAutomationNotFound):
+        asyncio.run(
+            storage.list_eligible_meet_bindings(
+                owner_id="owner-1",
+                org_id="org-1",
+                grant_id="grant-1",
+                limit=1,
+                after_binding_key=None,
+            )
+        )
 
 
 def test_failure_reason_allowlist_rejects_hostile_text_before_firestore_access(monkeypatch):

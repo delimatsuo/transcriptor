@@ -69,6 +69,89 @@ from backend.workers.interview_report import (
 
 logger = structlog.get_logger()
 
+_WORKSPACE_GRANT_RECORD_KEYS = frozenset(
+    {
+        "grantId",
+        "ownerId",
+        "orgId",
+        "workspaceSubject",
+        "status",
+        "scopes",
+        "validFrom",
+        "expiresAt",
+        "updatedAt",
+    }
+)
+_ELIGIBLE_MEET_BINDING_RECORD_KEYS = frozenset(
+    {
+        "bindingKey",
+        "grantId",
+        "ownerId",
+        "orgId",
+        "workspaceSubject",
+        "calendarId",
+        "calendarEventId",
+        "meetTarget",
+        "workspaceSubscriptionSource",
+        "pubsubSubscription",
+        "title",
+        "noticeGiven",
+        "noticeProvenance",
+        "candidateId",
+        "candidateName",
+        "resumeArtifactId",
+        "resumeText",
+        "jobDescriptionArtifactId",
+        "jobDescriptionText",
+        "briefing",
+        "createdAt",
+    }
+)
+_MEET_AUTOMATION_EVENT_RECORD_KEYS = frozenset(
+    {
+        "eventKey",
+        "eventId",
+        "trigger",
+        "ownerId",
+        "orgId",
+        "grantId",
+        "workspaceSubject",
+        "calendarId",
+        "calendarEventId",
+        "meetTarget",
+        "workspaceSubscriptionSource",
+        "pubsubSubscription",
+        "transcriptName",
+        "status",
+        "version",
+        "attemptCount",
+        "leaseToken",
+        "leaseExpiresAt",
+        "reasonCode",
+        "importSessionId",
+        "importSourceKey",
+        "importSourceDigest",
+        "importSegmentCount",
+        "importAttemptCount",
+        "updatedAt",
+    }
+)
+_RECONCILIATION_LEASE_RECORD_KEYS = frozenset(
+    {
+        "scopeKey",
+        "ownerId",
+        "orgId",
+        "grantId",
+        "version",
+        "attemptCount",
+        "leaseToken",
+        "leaseExpiresAt",
+        "updatedAt",
+        "cursorBindingKey",
+    }
+)
+_BINDING_INDEX_RECORD_KEYS = frozenset({"bindingKey"})
+
 
 class FirestoreStorage:
     """Firestore persistence for sessions and transcripts."""
@@ -507,6 +590,8 @@ class FirestoreStorage:
 
     @staticmethod
     def _workspace_grant(record: dict) -> WorkspaceGrant:
+        if set(record) != _WORKSPACE_GRANT_RECORD_KEYS:
+            raise MeetAutomationNotFound("workspace authority not found")
         return WorkspaceGrant(
             grant_id=record["grantId"],
             owner_id=record["ownerId"],
@@ -547,6 +632,8 @@ class FirestoreStorage:
 
     @staticmethod
     def _eligible_meet_binding(record: dict) -> EligibleMeetEventBinding:
+        if set(record) != _ELIGIBLE_MEET_BINDING_RECORD_KEYS:
+            raise MeetAutomationNotFound("eligible Meet event not found")
         return EligibleMeetEventBinding(
             grant_id=record["grantId"],
             owner_id=record["ownerId"],
@@ -602,6 +689,8 @@ class FirestoreStorage:
 
     @staticmethod
     def _meet_automation_event(record: dict) -> AutomationEventState:
+        if set(record) != _MEET_AUTOMATION_EVENT_RECORD_KEYS:
+            raise MeetAutomationConflict("automation event record is invalid")
         return AutomationEventState(
             event_key=record["eventKey"],
             event_id=record["eventId"],
@@ -629,6 +718,29 @@ class FirestoreStorage:
             import_attempt_count=record.get("importAttemptCount", 0),
             updated_at=record["updatedAt"],
         )
+
+    @staticmethod
+    def _binding_index(record: dict) -> str:
+        if set(record) != _BINDING_INDEX_RECORD_KEYS:
+            raise MeetAutomationNotFound("eligible Meet event not found")
+        binding_key = record["bindingKey"]
+        if (
+            not isinstance(binding_key, str)
+            or len(binding_key) != 64
+            or any(char not in "0123456789abcdef" for char in binding_key)
+        ):
+            raise MeetAutomationNotFound("eligible Meet event not found")
+        return binding_key
+
+    @classmethod
+    def _canonical_binding(cls, record: dict, *, document_id: str) -> EligibleMeetEventBinding:
+        binding = cls._eligible_meet_binding(record)
+        if (
+            record["bindingKey"] != document_id
+            or eligible_binding_key(binding) != document_id
+        ):
+            raise MeetAutomationNotFound("eligible Meet event not found")
+        return binding
 
     @staticmethod
     def _same_automation_identity(
@@ -666,7 +778,12 @@ class FirestoreStorage:
         async def store_in_transaction(transaction):
             snapshot = await ref.get(transaction=transaction)
             if snapshot.exists:
-                existing = self._workspace_grant(snapshot.to_dict() or {})
+                try:
+                    existing = self._workspace_grant(snapshot.to_dict() or {})
+                except (KeyError, TypeError, ValueError):
+                    raise MeetAutomationConflict(
+                        "workspace grant identity conflict"
+                    ) from None
                 if existing != grant:
                     raise MeetAutomationConflict("workspace grant identity conflict")
                 return existing
@@ -684,7 +801,10 @@ class FirestoreStorage:
         ).get()
         if not snapshot.exists:
             raise MeetAutomationNotFound("workspace authority not found")
-        grant = self._workspace_grant(snapshot.to_dict() or {})
+        try:
+            grant = self._workspace_grant(snapshot.to_dict() or {})
+        except (KeyError, TypeError, ValueError):
+            raise MeetAutomationNotFound("workspace authority not found") from None
         if (
             grant.grant_id != grant_id
             or grant.owner_id != owner_id
@@ -735,12 +855,28 @@ class FirestoreStorage:
             push_snapshot = await push_ref.get(transaction=transaction)
             list_snapshot = await list_ref.get(transaction=transaction)
             if binding_snapshot.exists:
-                existing = self._eligible_meet_binding(binding_snapshot.to_dict() or {})
+                try:
+                    existing = self._canonical_binding(
+                        binding_snapshot.to_dict() or {}, document_id=binding_id
+                    )
+                except (KeyError, TypeError, ValueError):
+                    raise MeetAutomationConflict(
+                        "eligible Meet event identity conflict"
+                    ) from None
                 if existing != binding:
                     raise MeetAutomationConflict("eligible Meet event identity conflict")
             for snapshot in (manual_snapshot, push_snapshot, list_snapshot):
-                if snapshot.exists and (snapshot.to_dict() or {}).get("bindingKey") != binding_id:
-                    raise MeetAutomationConflict("eligible Meet event identity conflict")
+                if snapshot.exists:
+                    try:
+                        existing_index = self._binding_index(snapshot.to_dict() or {})
+                    except (KeyError, TypeError, ValueError):
+                        raise MeetAutomationConflict(
+                            "eligible Meet event identity conflict"
+                        ) from None
+                    if existing_index != binding_id:
+                        raise MeetAutomationConflict(
+                            "eligible Meet event identity conflict"
+                        )
             record = self._eligible_meet_binding_record(binding)
             if not binding_snapshot.exists:
                 transaction.create(binding_ref, record)
@@ -749,7 +885,7 @@ class FirestoreStorage:
             if not push_snapshot.exists:
                 transaction.create(push_ref, {"bindingKey": binding_id})
             if not list_snapshot.exists:
-                transaction.create(list_ref, record)
+                transaction.create(list_ref, {"bindingKey": binding_id})
             return binding
 
         return await store_in_transaction(db.transaction())
@@ -774,13 +910,19 @@ class FirestoreStorage:
         index = await db.collection("workspace_meet_manual_index").document(index_id).get()
         if not index.exists:
             raise MeetAutomationNotFound("eligible Meet event not found")
-        binding_id = (index.to_dict() or {}).get("bindingKey")
-        if not isinstance(binding_id, str):
+        try:
+            binding_id = self._binding_index(index.to_dict() or {})
+        except (KeyError, TypeError, ValueError):
             raise MeetAutomationNotFound("eligible Meet event not found")
         snapshot = await db.collection("workspace_meet_eligible_events").document(binding_id).get()
         if not snapshot.exists:
             raise MeetAutomationNotFound("eligible Meet event not found")
-        binding = self._eligible_meet_binding(snapshot.to_dict() or {})
+        try:
+            binding = self._canonical_binding(
+                snapshot.to_dict() or {}, document_id=binding_id
+            )
+        except (KeyError, TypeError, ValueError):
+            raise MeetAutomationNotFound("eligible Meet event not found") from None
         if (
             binding.owner_id != owner_id
             or binding.org_id != org_id
@@ -807,13 +949,19 @@ class FirestoreStorage:
         index = await db.collection("workspace_meet_push_index").document(index_id).get()
         if not index.exists:
             raise MeetAutomationNotFound("eligible Meet event not found")
-        binding_id = (index.to_dict() or {}).get("bindingKey")
-        if not isinstance(binding_id, str):
+        try:
+            binding_id = self._binding_index(index.to_dict() or {})
+        except (KeyError, TypeError, ValueError):
             raise MeetAutomationNotFound("eligible Meet event not found")
         snapshot = await db.collection("workspace_meet_eligible_events").document(binding_id).get()
         if not snapshot.exists:
             raise MeetAutomationNotFound("eligible Meet event not found")
-        binding = self._eligible_meet_binding(snapshot.to_dict() or {})
+        try:
+            binding = self._canonical_binding(
+                snapshot.to_dict() or {}, document_id=binding_id
+            )
+        except (KeyError, TypeError, ValueError):
+            raise MeetAutomationNotFound("eligible Meet event not found") from None
         if (
             binding.workspace_subscription_source != workspace_subscription_source
             or binding.pubsub_subscription != pubsub_subscription
@@ -823,8 +971,19 @@ class FirestoreStorage:
         return binding
 
     async def list_eligible_meet_bindings(
-        self, *, owner_id: str, org_id: str, grant_id: str, limit: int
+        self,
+        *,
+        owner_id: str,
+        org_id: str,
+        grant_id: str,
+        limit: int,
+        after_binding_key: str | None,
     ) -> list[EligibleMeetEventBinding]:
+        if after_binding_key is not None and (
+            len(after_binding_key) != 64
+            or any(char not in "0123456789abcdef" for char in after_binding_key)
+        ):
+            raise MeetAutomationNotFound("eligible Meet event not found")
         db = await self._get_db()
         scope_id = manual_binding_lookup_key(
             owner_id=owner_id,
@@ -833,23 +992,62 @@ class FirestoreStorage:
             calendar_id="reconciliation-scope",
             calendar_event_id="eligible-events",
         )
-        query = (
+        collection = (
             db.collection("workspace_meet_grant_scopes")
             .document(scope_id)
             .collection("eligible_events")
-            .order_by("bindingKey")
-            .limit(limit)
         )
+        ordered = collection.order_by("bindingKey")
         bindings: list[EligibleMeetEventBinding] = []
-        async for snapshot in query.stream():
-            binding = self._eligible_meet_binding(snapshot.to_dict() or {})
-            if (
-                binding.owner_id != owner_id
-                or binding.org_id != org_id
-                or binding.grant_id != grant_id
-            ):
-                raise MeetAutomationNotFound("eligible Meet event not found")
-            bindings.append(binding)
+        seen: set[str] = set()
+
+        async def append_query(query) -> None:
+            async for scope_snapshot in query.stream():
+                try:
+                    binding_id = self._binding_index(
+                        scope_snapshot.to_dict() or {}
+                    )
+                except (KeyError, TypeError, ValueError):
+                    raise MeetAutomationNotFound(
+                        "eligible Meet event not found"
+                    ) from None
+                if scope_snapshot.id != binding_id or binding_id in seen:
+                    raise MeetAutomationNotFound("eligible Meet event not found")
+                canonical_snapshot = await db.collection(
+                    "workspace_meet_eligible_events"
+                ).document(binding_id).get()
+                if not canonical_snapshot.exists:
+                    raise MeetAutomationNotFound("eligible Meet event not found")
+                try:
+                    binding = self._canonical_binding(
+                        canonical_snapshot.to_dict() or {}, document_id=binding_id
+                    )
+                except (KeyError, TypeError, ValueError):
+                    raise MeetAutomationNotFound(
+                        "eligible Meet event not found"
+                    ) from None
+                if (
+                    binding.owner_id != owner_id
+                    or binding.org_id != org_id
+                    or binding.grant_id != grant_id
+                ):
+                    raise MeetAutomationNotFound("eligible Meet event not found")
+                seen.add(binding_id)
+                bindings.append(binding)
+
+        if after_binding_key is None:
+            await append_query(ordered.limit(limit))
+        else:
+            await append_query(
+                ordered.start_after({"bindingKey": after_binding_key}).limit(limit)
+            )
+            remaining = limit - len(bindings)
+            if remaining > 0:
+                await append_query(
+                    ordered.end_at({"bindingKey": after_binding_key}).limit(
+                        remaining
+                    )
+                )
         return bindings
 
     async def queue_meet_automation_event(
@@ -1041,23 +1239,48 @@ class FirestoreStorage:
             snapshot = await ref.get(transaction=transaction)
             record = snapshot.to_dict() or {}
             if snapshot.exists:
+                if set(record) != _RECONCILIATION_LEASE_RECORD_KEYS:
+                    raise MeetAutomationNotFound("reconciliation scope not found")
+                cursor_binding_key = record["cursorBindingKey"]
                 if (
-                    record.get("ownerId") != owner_id
-                    or record.get("orgId") != org_id
-                    or record.get("grantId") != grant_id
+                    record["scopeKey"] != scope_key
+                    or record["ownerId"] != owner_id
+                    or record["orgId"] != org_id
+                    or record["grantId"] != grant_id
+                    or (
+                        cursor_binding_key is not None
+                        and (
+                            not isinstance(cursor_binding_key, str)
+                            or len(cursor_binding_key) != 64
+                            or any(
+                                char not in "0123456789abcdef"
+                                for char in cursor_binding_key
+                            )
+                        )
+                    )
                 ):
                     raise MeetAutomationNotFound("reconciliation scope not found")
                 if (
-                    record.get("leaseToken") is not None
-                    and record.get("leaseExpiresAt") is not None
+                    record["leaseToken"] is not None
+                    and record["leaseExpiresAt"] is not None
                     and record["leaseExpiresAt"] > updated_at
                 ):
                     raise MeetAutomationConflict("reconciliation has an active lease")
-                version = int(record.get("version", 0)) + 1
-                attempt_count = int(record.get("attemptCount", 0)) + 1
+                if (
+                    not isinstance(record["version"], int)
+                    or isinstance(record["version"], bool)
+                    or record["version"] < 1
+                    or not isinstance(record["attemptCount"], int)
+                    or isinstance(record["attemptCount"], bool)
+                    or record["attemptCount"] < 1
+                ):
+                    raise MeetAutomationNotFound("reconciliation scope not found")
+                version = record["version"] + 1
+                attempt_count = record["attemptCount"] + 1
             else:
                 version = 1
                 attempt_count = 1
+                cursor_binding_key = None
             lease = ReconciliationLease(
                 scope_key=scope_key,
                 owner_id=owner_id,
@@ -1068,6 +1291,7 @@ class FirestoreStorage:
                 lease_token=lease_token,
                 lease_expires_at=lease_expires_at,
                 updated_at=updated_at,
+                cursor_binding_key=cursor_binding_key,
             )
             transaction.set(
                 ref,
@@ -1081,6 +1305,7 @@ class FirestoreStorage:
                     "leaseToken": lease_token,
                     "leaseExpiresAt": lease_expires_at,
                     "updatedAt": updated_at,
+                    "cursorBindingKey": cursor_binding_key,
                 },
             )
             return lease
@@ -1094,7 +1319,16 @@ class FirestoreStorage:
         lease_token: str,
         version: int,
         updated_at: datetime,
+        last_considered_binding_key: str | None,
     ) -> None:
+        if last_considered_binding_key is not None and (
+            len(last_considered_binding_key) != 64
+            or any(
+                char not in "0123456789abcdef"
+                for char in last_considered_binding_key
+            )
+        ):
+            raise MeetAutomationConflict("reconciliation cursor is invalid")
         db = await self._get_db()
         ref = db.collection("workspace_meet_reconciliation_leases").document(scope_key)
 
@@ -1104,9 +1338,17 @@ class FirestoreStorage:
             record = snapshot.to_dict() or {}
             if (
                 not snapshot.exists
-                or record.get("scopeKey") != scope_key
-                or record.get("version") != version
-                or record.get("leaseToken") != lease_token
+                or set(record) != _RECONCILIATION_LEASE_RECORD_KEYS
+                or record["scopeKey"] != scope_key
+                or record["version"] != version
+                or record["leaseToken"] != lease_token
+            ):
+                raise MeetAutomationConflict("reconciliation lease is stale")
+            prior_cursor = record["cursorBindingKey"]
+            if prior_cursor is not None and (
+                not isinstance(prior_cursor, str)
+                or len(prior_cursor) != 64
+                or any(char not in "0123456789abcdef" for char in prior_cursor)
             ):
                 raise MeetAutomationConflict("reconciliation lease is stale")
             transaction.set(
@@ -1116,6 +1358,11 @@ class FirestoreStorage:
                     "leaseToken": None,
                     "leaseExpiresAt": None,
                     "updatedAt": updated_at,
+                    "cursorBindingKey": (
+                        last_considered_binding_key
+                        if last_considered_binding_key is not None
+                        else prior_cursor
+                    ),
                 },
             )
 

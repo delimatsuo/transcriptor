@@ -93,6 +93,13 @@ more than 100 entries, an entry outside the exact transcript parent, duplicate
 entry identity with different content, or a nonterminal token at any bound
 fails closed before import publication.
 
+The finite 30-second bound is enforced by the offline orchestrator seam. If
+provider work resists cancellation, the orchestrator cancels and detaches that
+work without waiting for it to settle, retains it only for exception cleanup,
+and caps detached or pending provider tasks at 25 per orchestrator. Reaching
+that cap fails closed. This is an offline lifecycle contract only; no live
+provider transport is implemented.
+
 ## Durable event and import flow
 
 1. Authenticate the webhook and persist a content-free event envelope keyed by
@@ -137,11 +144,14 @@ provider authorization is available.
 
 The implemented reconciliation contract processes only stored eligible
 bindings, at most 25 per run and for at most 30 seconds, under a durable scoped
-lease. It never lists Calendar or Drive. The authenticated manual-sync request
-names the exact grant ID, Calendar ID, and Calendar event ID; resolution must
-echo that binding plus its Meet target before the transcript resource is
-accepted. Webhook, reconciliation, and manual sync all call the same automation
-orchestrator and then the existing `GoogleMeetImportWorker`.
+lease. A durable canonical binding-key cursor rotates each run past the last
+binding actually considered and wraps once, instead of rescanning a fixed
+prefix that could starve later eligible bindings. It never lists Calendar or
+Drive. The authenticated manual-sync request names the exact grant ID, Calendar
+ID, and Calendar event ID; resolution must echo that binding plus its Meet
+target before the transcript resource is accepted. Webhook, reconciliation,
+and manual sync all call the same automation orchestrator and then the existing
+`GoogleMeetImportWorker`.
 
 Synthetic HTTP seams:
 
