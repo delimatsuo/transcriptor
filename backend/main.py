@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import secrets
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
+from typing import Any, Mapping
 from uuid import uuid4
 
 import structlog
@@ -18,6 +20,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 
 from backend.audio.buffer import AudioBuffer
 from backend.audio.capture import AudioCapture
+import os
 from backend.auth import (
     AuthenticationError,
     AuthContext,
@@ -28,9 +31,21 @@ from backend.auth import (
     reset_auth_enforced,
     set_auth_enforced,
     set_current_auth,
+    validate_auth_configuration,
+    validate_existing_firebase_app,
     verify_bearer_token,
 )
-from backend.config import CorsSettings, Settings, get_settings, parse_cors_allowed_origins
+from backend import config
+from backend.config import (
+    AuthConfigurationError,
+    CorsSettings,
+    Settings,
+    get_settings,
+    parse_cors_allowed_origins,
+    resolve_cors_settings_safely,
+    resolve_settings_safely,
+    validate_raw_process_env,
+)
 from backend.documents.parser import MAX_FILE_SIZE, DocumentParseError, parse_document
 from backend.llm.context_window import ContextWindowManager
 from backend.llm.gemini import GeminiClient
@@ -211,27 +226,76 @@ async def lifespan(app: FastAPI):
     global settings, session_mgr, firestore_storage, gcs_storage, gemini_client, context_window
 
     app.state.ready = False
-    settings = get_settings()
-    await probe_application_default_credentials()
-    initialize_firebase_admin(settings)
-    session_mgr = SessionManager(settings)
-    firestore_storage = FirestoreStorage(settings)
-    gcs_storage = GCSStorage(settings)
-    gemini_client = GeminiClient(settings)
+    settings = None
+    session_mgr = None
+    firestore_storage = None
+    gcs_storage = None
+    gemini_client = None
     context_window = None
     context_windows.clear()
 
-    # Detect orphaned sessions from previous crash
-    orphaned = session_mgr.detect_orphaned_sessions()
-    if orphaned:
-        logger.warning("orphaned_sessions_found", count=len(orphaned))
-
-    logger.info("server_started", host=settings.fastapi_host, port=settings.fastapi_port)
-    app.state.ready = True
     try:
+        # 1. Raw environment gate
+        validate_raw_process_env(os.environ)
+
+        # 2. Sanitized Settings resolution
+        resolved_settings = resolve_settings_safely()
+
+        # 3. Raw-versus-resolved binding gate
+        validate_raw_process_env(os.environ, resolved_settings)
+
+        # 4. Pure runtime auth configuration gate
+        validate_auth_configuration(resolved_settings)
+
+        # 5. Existing Firebase app explicit local project-binding gate
+        validate_existing_firebase_app(resolved_settings)
+
+        # 6. ADC probe
+        await probe_application_default_credentials(resolved_settings.google_cloud_project)
+
+        # 7. Firebase initialization
+        initialize_firebase_admin(resolved_settings.google_cloud_project, resolved_settings.firebase_project_id)
+
+        # 8. Provider / storage constructors
+        _session_mgr = SessionManager(resolved_settings)
+        _firestore_storage = FirestoreStorage(resolved_settings)
+        _gcs_storage = GCSStorage(resolved_settings)
+        _gemini_client = GeminiClient(resolved_settings)
+
+        # Detect orphaned sessions from previous crash
+        orphaned = _session_mgr.detect_orphaned_sessions()
+        if orphaned:
+            logger.warning("orphaned_sessions_found", count=len(orphaned))
+
+        # Publish initialized globals only after all constructors and orphan detection succeed
+        settings = resolved_settings
+        session_mgr = _session_mgr
+        firestore_storage = _firestore_storage
+        gcs_storage = _gcs_storage
+        gemini_client = _gemini_client
+        context_window = None
+        context_windows.clear()
+
+        logger.info("server_started", host=settings.fastapi_host, port=settings.fastapi_port)
+        app.state.ready = True
         yield
+    except Exception:
+        app.state.ready = False
+        settings = None
+        session_mgr = None
+        firestore_storage = None
+        gcs_storage = None
+        gemini_client = None
+        context_windows.clear()
+        raise
     finally:
         app.state.ready = False
+        settings = None
+        session_mgr = None
+        firestore_storage = None
+        gcs_storage = None
+        gemini_client = None
+        context_window = None
 
         # Cleanup: stop all active pipelines
         for session_id in list(pipeline_tasks.keys()):
@@ -241,15 +305,37 @@ async def lifespan(app: FastAPI):
         logger.info("server_stopped")
 
 
+get_settings = config.get_settings
+resolve_settings_safely = config.resolve_settings_safely
+
 app = FastAPI(title="T.A.R.S.", lifespan=lifespan)
 app.state.ready = False
+
 
 @app.middleware("http")
 async def authenticate_api_requests(request: Request, call_next):
     """Authenticate every API request before route code can touch data."""
-    if request.method == "OPTIONS" or not request.url.path.startswith("/api/"):
+    if not request.url.path.startswith("/api/"):
         return await call_next(request)
-    request_settings = settings or get_settings()
+
+    # Check for actual CORS preflight
+    is_cors_preflight = (
+        request.method == "OPTIONS"
+        and "origin" in request.headers
+        and "access-control-request-method" in request.headers
+    )
+    if is_cors_preflight:
+        return await call_next(request)
+
+    app = getattr(request, "app", None)
+    app_ready = getattr(getattr(app, "state", None), "ready", None) is True if app is not None else False
+    if not app_ready or settings is None:
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "Service unavailable"},
+        )
+
+    request_settings = settings
     if request_settings.auth_bypass:
         user = AuthContext(
             uid="local-recruiter-dev",
@@ -293,18 +379,97 @@ async def authenticate_api_requests(request: Request, call_next):
         reset_auth_enforced(enforced_token)
 
 
-# Keep CORS outermost so even auth rejection responses carry browser-readable
-# CORS headers instead of surfacing as opaque network failures.
-_cors_settings = CorsSettings()
-_allowed_origins = parse_cors_allowed_origins(_cors_settings.cors_allowed_origins)
+def configure_cors(
+    app_instance,
+    raw_env: dict[str, str] | None = None,
+    secondary_source: dict[str, Any] | None = None,
+) -> list[str]:
+    """Validate environment, resolve CORS settings, parse origins, and install CORSMiddleware."""
+    env = os.environ if raw_env is None else raw_env
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=_allowed_origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+    # Ordered fixed-error seam:
+    # 1. Raw environment gate
+    stage1_ok = False
+    try:
+        validate_raw_process_env(env)
+        stage1_ok = True
+    except BaseException:
+        stage1_ok = False
+    if not stage1_ok:
+        err = AuthConfigurationError("Configuration validation failed during CORS initialization")
+        err.__cause__ = None
+        err.__context__ = None
+        err.__suppress_context__ = True
+        raise err
+
+    # 2. Safe CorsSettings resolution
+    stage2_ok = False
+    cors_settings = None
+    try:
+        cors_settings = resolve_cors_settings_safely(secondary_source=secondary_source)
+        if cors_settings is not None and isinstance(cors_settings, CorsSettings):
+            stage2_ok = True
+    except BaseException:
+        stage2_ok = False
+    if not stage2_ok or cors_settings is None:
+        err = AuthConfigurationError("Configuration validation failed during CORS initialization")
+        err.__cause__ = None
+        err.__context__ = None
+        err.__suppress_context__ = True
+        raise err
+
+    # 3. Origin parser
+    stage3_ok = False
+    allowed_origins = None
+    try:
+        raw_origins = getattr(cors_settings, "cors_allowed_origins", None)
+        if raw_origins is None or isinstance(raw_origins, str):
+            allowed_origins = parse_cors_allowed_origins(raw_origins)
+            if isinstance(allowed_origins, list) and all(isinstance(x, str) for x in allowed_origins):
+                stage3_ok = True
+    except BaseException:
+        stage3_ok = False
+    if not stage3_ok or allowed_origins is None:
+        err = AuthConfigurationError("Configuration validation failed during CORS initialization")
+        err.__cause__ = None
+        err.__context__ = None
+        err.__suppress_context__ = True
+        raise err
+
+    # 4. CORSMiddleware installation
+    stage4_ok = False
+    try:
+        app_instance.add_middleware(
+            CORSMiddleware,
+            allow_origins=allowed_origins,
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
+        stage4_ok = True
+    except BaseException:
+        stage4_ok = False
+    if not stage4_ok:
+        err = AuthConfigurationError("Configuration validation failed during CORS initialization")
+        err.__cause__ = None
+        err.__context__ = None
+        err.__suppress_context__ = True
+        raise err
+
+    return list(allowed_origins)
+
+
+# Validate raw environment before evaluating CORS settings and mounting middleware
+_cors_init_success = False
+_allowed_origins: list[str] = []
+try:
+    _allowed_origins = configure_cors(app)
+    _cors_init_success = True
+except Exception:
+    _cors_init_success = False
+
+if not _cors_init_success:
+    raise AuthConfigurationError("Configuration validation failed during CORS initialization") from None
 
 
 @app.get("/healthz")
@@ -316,7 +481,9 @@ async def healthz():
 @app.get("/readyz")
 async def readyz(request: Request, response: Response):
     """Readiness probe checking full service initialization."""
-    if getattr(request.app.state, "ready", False):
+    app = getattr(request, "app", None)
+    app_ready = getattr(getattr(app, "state", None), "ready", None) is True if app is not None else False
+    if app_ready and settings is not None:
         return {"status": "ready"}
     response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
     return {"status": "not_ready"}
@@ -360,11 +527,13 @@ def _assert_session_access(session) -> AuthContext | None:
     return user
 
 
-def _assert_persisted_session_access(record: dict) -> AuthContext | None:
+def _assert_persisted_session_access(record: Any) -> AuthContext | None:
     """Authorize raw persisted scope before parsing untrusted session fields."""
     user = _principal()
     if user is None:
         return None
+    if not isinstance(record, Mapping):
+        raise HTTPException(status_code=404, detail="Session not found")
     if record.get("ownerId") != user.uid or record.get("orgId") != user.org_id:
         raise HTTPException(status_code=404, detail="Session not found")
     return user
@@ -1793,6 +1962,8 @@ async def list_sessions():
     user = _principal()
     list_kwargs = {"owner_id": user.uid, "org_id": user.org_id} if user else {}
     sessions = await firestore_storage.list_sessions(**list_kwargs)
+    for record in sessions:
+        _assert_persisted_session_access(record)
     return {"sessions": sessions}
 
 
@@ -1849,6 +2020,7 @@ async def list_recent_interviews():
     records = await firestore_storage.list_sessions(**list_kwargs)
     interviews = []
     for record in records:
+        _assert_persisted_session_access(record)
         if record.get("mode") != SessionMode.INTERVIEW.value:
             continue
         session_id = str(record.get("id", ""))
@@ -2355,13 +2527,56 @@ async def extension_heartbeat(
 
 # --- WebSocket ---
 
+async def _settle_task(task: asyncio.Task | None) -> None:
+    """Cancel and deterministically settle an owned background task."""
+    if task is None:
+        return
+    task.cancel()
+    settle = asyncio.gather(task, return_exceptions=True)
+    parent_cancel_exc: asyncio.CancelledError | None = None
+    while True:
+        try:
+            results = await asyncio.shield(settle)
+            break
+        except asyncio.CancelledError as exc:
+            parent_cancel_exc = exc
+
+    res = results[0]
+    if isinstance(res, asyncio.CancelledError):
+        pass
+    elif isinstance(res, BaseException):
+        if parent_cancel_exc is not None:
+            logger.warning("ws_cleanup_task_error")
+        else:
+            raise res
+
+    if parent_cancel_exc is not None:
+        raise parent_cancel_exc
+
+
 @app.websocket("/ws/{session_id}")
 async def websocket_endpoint(websocket: WebSocket, session_id: str):
     """WebSocket endpoint for real-time transcript and suggestion streaming."""
+    app = getattr(websocket, "app", None)
+    app_ready = getattr(getattr(app, "state", None), "ready", None) is True if app is not None else False
+    if not app_ready or settings is None:
+        if hasattr(websocket, "send_denial_response"):
+            await websocket.send_denial_response(
+                Response(
+                    content=b'{"detail":"Service unavailable"}',
+                    status_code=503,
+                    media_type="application/json",
+                )
+            )
+        else:
+            await websocket.close(code=1008)
+        return
+
     # Browser WebSocket cannot set Authorization headers. It receives a
     # short-lived, single-use ticket from the authenticated HTTP API instead.
-    offered = [item.strip() for item in websocket.headers.get("sec-websocket-protocol", "").split(",") if item.strip()]
-    if len(offered) != 2 or offered[0] != "tars-ticket":
+    raw_subprotocol = websocket.headers.get("sec-websocket-protocol")
+    offered = [item.strip() for item in raw_subprotocol.split(",")] if raw_subprotocol is not None else []
+    if len(offered) != 2 or offered[0] != "tars-ticket" or not offered[1]:
         await websocket.close(code=1008)
         return
     ticket = offered[1]
@@ -2372,50 +2587,94 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
         return
     user = entry[0]
     token = set_current_auth(user)
+    connection_attempted = False
+    expiry_task: asyncio.Task | None = None
+    primary_exc: BaseException | None = None
     try:
-        session = await _read_session(session_id)
-        if session.owner_id != user.uid or session.org_id != user.org_id:
+        try:
+            session = await _read_session(session_id)
+            if session.owner_id != user.uid or session.org_id != user.org_id:
+                await websocket.close(code=1008)
+                return
+        except HTTPException:
             await websocket.close(code=1008)
             return
-    except HTTPException:
-        await websocket.close(code=1008)
-        return
 
-    # Check for last_seq query param for reconnection
-    last_seq = 0
-    query_params = websocket.query_params
-    if "last_seq" in query_params:
+        # Check for last_seq query param for reconnection
+        last_seq = 0
+        query_params = websocket.query_params
+        if "last_seq" in query_params:
+            try:
+                last_seq = int(query_params["last_seq"])
+            except ValueError:
+                pass
+
+        connection_attempted = True
+        await ws_manager.connect(websocket, session_id, last_seq=last_seq, subprotocol="tars-ticket")
+        expiry_coro = _close_ws_at_expiry(websocket, entry[2])
         try:
-            last_seq = int(query_params["last_seq"])
-        except ValueError:
+            expiry_task = asyncio.create_task(expiry_coro)
+        except BaseException:
+            expiry_coro.close()
+            raise
+
+        try:
+            while True:
+                # Keep connection alive; handle client messages if any
+                data = await websocket.receive_json()
+
+                # Handle client commands
+                msg_type = data.get("type")
+                if msg_type == "ping":
+                    await websocket.send_json({"type": "pong"})
+
+        except WebSocketDisconnect:
             pass
-
-    await ws_manager.connect(websocket, session_id, last_seq=last_seq, subprotocol="tars-ticket")
-    expiry_task = asyncio.create_task(_close_ws_at_expiry(websocket, entry[2]))
-
-    try:
-        while True:
-            # Keep connection alive; handle client messages if any
-            data = await websocket.receive_json()
-
-            # Handle client commands
-            msg_type = data.get("type")
-            if msg_type == "ping":
-                await websocket.send_json({"type": "pong"})
-
-    except WebSocketDisconnect:
-        ws_manager.disconnect(websocket, session_id)
-    except Exception:
-        logger.exception("ws_error", session_id=session_id)
-        ws_manager.disconnect(websocket, session_id)
+        except Exception:
+            logger.exception("ws_error", session_id=session_id)
+    except BaseException as exc:
+        primary_exc = exc
+        raise
     finally:
-        expiry_task.cancel()
-        reset_current_auth(token)
+        try:
+            if expiry_task is not None:
+                try:
+                    await _settle_task(expiry_task)
+                except asyncio.CancelledError:
+                    raise
+                except BaseException as child_exc:
+                    if primary_exc is None:
+                        raise child_exc
+                    else:
+                        logger.warning("ws_cleanup_task_error")
+        finally:
+            try:
+                if connection_attempted:
+                    ws_manager.disconnect(websocket, session_id)
+            except Exception:
+                logger.warning("ws_cleanup_disconnect_error")
+            finally:
+                reset_current_auth(token)
 
 
 @app.websocket("/api/stream/native/{session_id}")
 async def native_stream_endpoint(websocket: WebSocket, session_id: str):
     """Ingest dual-channel audio from the native macOS companion over WebSocket."""
+    app = getattr(websocket, "app", None)
+    app_ready = getattr(getattr(app, "state", None), "ready", None) is True if app is not None else False
+    if not app_ready or settings is None:
+        if hasattr(websocket, "send_denial_response"):
+            await websocket.send_denial_response(
+                Response(
+                    content=b'{"detail":"Service unavailable"}',
+                    status_code=503,
+                    media_type="application/json",
+                )
+            )
+        else:
+            await websocket.close(code=1008)
+        return
+
     raw_subprotocol = websocket.headers.get("sec-websocket-protocol")
     offered = [item.strip() for item in raw_subprotocol.split(",")] if raw_subprotocol is not None else []
     presented = ""
@@ -2445,7 +2704,7 @@ async def native_stream_endpoint(websocket: WebSocket, session_id: str):
         return
     await websocket.accept(subprotocol="tars-stream")
     logger.info("native_companion_connected", session_id=session_id)
-    app_settings = settings or get_settings()
+    app_settings = settings
 
     # --- companion_health / coverage_gap emission -------------------------
     # Session-scoped (not connection-scoped): native_stream_endpoint serves
@@ -2825,7 +3084,7 @@ async def native_stream_endpoint(websocket: WebSocket, session_id: str):
 # --- Entry point ---
 
 def main() -> None:
-    s = get_settings()
+    s = resolve_settings_safely()
     uvicorn.run(
         "backend.main:app",
         host=s.fastapi_host,
