@@ -4,8 +4,10 @@ import test from "node:test";
 import {
   MAX_MEET_IMPORT_BYTES,
   MeetTranscriptImportError,
+  buildMeetTranscriptSyncRequest,
   parseMeetImportFixture,
   parseMeetImportResult,
+  parseMeetTranscriptAutomationResult,
   validateMeetImportFile,
 } from "./meetTranscriptImport";
 
@@ -71,5 +73,57 @@ test("result parser accepts only content-free import status", () => {
   assert.throws(
     () => parseMeetImportResult({ ...valid, status: "running" }),
     /resposta/i,
+  );
+});
+
+test("eligible-event sync request uses only the three exact identity keys", () => {
+  const request = buildMeetTranscriptSyncRequest({
+    grantId: "grant-1",
+    calendarId: "recruiter@example.com",
+    calendarEventId: "event-1",
+  });
+  assert.deepEqual(request, {
+    grantId: "grant-1",
+    calendarId: "recruiter@example.com",
+    calendarEventId: "event-1",
+  });
+  assert.equal(
+    JSON.stringify(request),
+    '{"grantId":"grant-1","calendarId":"recruiter@example.com","calendarEventId":"event-1"}',
+  );
+  assert.throws(
+    () => buildMeetTranscriptSyncRequest({ ...request, grantId: " grant-1" }),
+    /autorização/i,
+  );
+  assert.throws(
+    () => buildMeetTranscriptSyncRequest({ ...request, calendarId: "calendar id" }),
+    /calendário/i,
+  );
+  assert.throws(
+    () => buildMeetTranscriptSyncRequest({ ...request, calendarEventId: "event 1" }),
+    /evento/i,
+  );
+});
+
+test("automation response parser requires the strict import shape and replay bit", () => {
+  const valid = {
+    session_id: `meet-import-${"1".repeat(32)}`,
+    source_key: "2".repeat(64),
+    source_digest: "3".repeat(64),
+    status: "completed",
+    segment_count: 3,
+    attempt_count: 1,
+    idempotent_replay: false,
+    automation_replay: true,
+  };
+  assert.deepEqual(parseMeetTranscriptAutomationResult(valid), valid);
+  assert.throws(
+    () => parseMeetTranscriptAutomationResult({ ...valid, transcriptText: "leak" }),
+    /sincronização/i,
+  );
+  const { automation_replay: _replay, ...missingReplay } = valid;
+  assert.throws(
+    () => parseMeetTranscriptAutomationResult(missingReplay),
+    /sincronização/i,
   );
 });
