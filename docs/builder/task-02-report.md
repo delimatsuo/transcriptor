@@ -41,7 +41,7 @@ Command: `cd "/Volumes/Extreme Pro/MYPROJECTS/Transcriptor" && bash scripts/pack
 
 ```
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  T.A.R.S. macOS Companion App Bundle Packaging (.app)     
+  T.A.R.S. macOS Companion App Bundle Packaging (.app)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 1. Building TarsCompanionApp release binary...
 [0/1] Planning build
@@ -122,4 +122,3 @@ Result: `290 passed in 5.60s` (untouched).
 3. **Cold-Start Deep Link Execution**:
    - Verified that terminating the app (`pkill -x TarsCompanionApp`) and executing `open "tars-companion://join?session=cold-start-test&key=cold-key"` launched `dist/TarsCompanion.app` directly via LaunchServices, buffered and delivered the link upon `onJoinRequest` binding, and initiated session startup.
    - Foundation log entries confirmed event receipt and storage (`TarsCompanion: URL recebida`, `TarsCompanion: app iniciando — link armazenado para entrega`), followed immediately by controller startup triggering `(TCC) TCCAccessRequest()` during screen capture preflight.
-
