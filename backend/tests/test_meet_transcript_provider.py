@@ -4,6 +4,7 @@ import asyncio
 import base64
 import json
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from urllib.parse import parse_qs, quote, urlparse
 
 import httpx
@@ -139,10 +140,13 @@ def test_runtime_factory_requires_explicit_dependencies_and_ignores_env(monkeypa
     )
 
 
-def test_main_lifespan_still_leaves_workspace_seams_unset(monkeypatch):
+def test_main_does_not_import_or_install_the_provider_adapter(monkeypatch):
     from backend import main as backend_main
 
     monkeypatch.setenv("GOOGLE_WORKSPACE_ACCESS_TOKEN", "secret-token")
+    source = Path("backend/main.py").read_text(encoding="utf-8")
+    assert "meet_transcript_provider" not in source
+    assert "create_meet_transcript_provider_runtime" not in source
     assert backend_main.workspace_push_token_verifier is None
     assert backend_main.meet_transcript_automation_orchestrator is None
 
@@ -217,12 +221,18 @@ def test_fetch_uses_exact_entries_url_and_returns_raw_bytes():
             assert raw == body
 
     asyncio.run(scenario())
-    parsed = urlparse(str(handler.requests[0].url))
+    request = handler.requests[0]
+    parsed = urlparse(str(request.url))
+    assert request.method == "GET"
+    assert parsed.netloc == "meet.googleapis.com"
     assert parsed.path == f"/v2/{TRANSCRIPT}/entries"
     assert parse_qs(parsed.query, strict_parsing=True) == {
         "pageSize": ["100"],
         "pageToken": ["page-2"],
     }
+    assert request.headers["authorization"] == f"Bearer {ACCESS_TOKEN}"
+    assert request.headers["accept"] == "application/json"
+    assert request.extensions.get("timeout") is not None
 
 
 def test_provider_does_not_retry_server_errors_and_hides_bodies():
@@ -340,6 +350,18 @@ def test_push_jwt_accepts_signed_google_claims_and_rejects_forgeries():
             string_verified = signed_jwt(private_key, {**claims, "email_verified": "true"})
             with pytest.raises(MeetAutomationInvalid):
                 await verify_push_token(verifier, string_verified)
+            other_key, _pem = rsa_material()
+            forged = signed_jwt(other_key, claims)
+            with pytest.raises(MeetAutomationInvalid):
+                await verify_push_token(verifier, forged)
+            wrong_iss = signed_jwt(private_key, {**claims, "iss": "https://accounts.example.test"})
+            with pytest.raises(MeetAutomationInvalid):
+                await verify_push_token(verifier, wrong_iss)
+            wrong_email = signed_jwt(
+                private_key, {**claims, "email": "other@example.iam.gserviceaccount.com"}
+            )
+            with pytest.raises(MeetAutomationInvalid):
+                await verify_push_token(verifier, wrong_email)
 
     asyncio.run(scenario())
     assert len(handler.requests) == 1
