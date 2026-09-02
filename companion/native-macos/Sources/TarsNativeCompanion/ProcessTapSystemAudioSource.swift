@@ -5,6 +5,7 @@ import TarsRealtimeAudioBridge
 @available(macOS 14.2, *)
 public final class ProcessTapSystemAudioSource: CaptureSource, @unchecked Sendable {
     public let source: AudioSource = .systemAudio
+    public let engineIdentity: ResolvedSystemAudioEngine? = .processTap
     public let configuration: CaptureSourceConfiguration
     private static let permissionDeniedStartupMarker = "permission-denied"
     public var sink: CaptureFrameSink? {
