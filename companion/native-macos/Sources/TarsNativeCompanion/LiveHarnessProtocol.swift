@@ -1275,16 +1275,15 @@ public final class LiveHarnessControlConnection: @unchecked Sendable {
                 }
             }
         }
-        let deadline = Self.monotonicDeadline(after: readTimeoutNanoseconds)
+        // Waiting for the stop request is post-command liveness: a healthy
+        // peer may remain quiet across any number of read timeouts while
+        // capture/TCC is still in progress.  The absolute deadline applies
+        // only after a request is decoded, to bound the trailing-byte check.
         var decodedRequest: LiveHarnessShutdownRequest?
         while decodedRequest == nil {
             do {
-                guard let remaining = Self.remainingNanoseconds(until: deadline) else {
-                    retireControlLoss()
-                    throw LiveHarnessProtocolError.timeout
-                }
                 #if canImport(Darwin)
-                try Self.setSocketTimeout(descriptor: descriptor, option: SO_RCVTIMEO, nanoseconds: remaining)
+                try Self.setSocketTimeout(descriptor: descriptor, option: SO_RCVTIMEO, nanoseconds: readTimeoutNanoseconds)
                 var bytes = [UInt8](repeating: 0, count: 8192)
                 let count = Darwin.recv(descriptor, &bytes, bytes.count, 0)
                 if count == 0 {
@@ -1293,10 +1292,6 @@ public final class LiveHarnessControlConnection: @unchecked Sendable {
                 }
                 if count < 0 {
                     if errno == EAGAIN || errno == EWOULDBLOCK {
-                        guard Self.remainingNanoseconds(until: deadline) != nil else {
-                            retireControlLoss()
-                            throw LiveHarnessProtocolError.timeout
-                        }
                         continue
                     }
                     retireControlLoss()
@@ -1330,8 +1325,7 @@ public final class LiveHarnessControlConnection: @unchecked Sendable {
                 throw LiveHarnessProtocolError.controlLost
                 #endif
             } catch LiveHarnessProtocolError.timeout {
-                retireControlLoss()
-                throw LiveHarnessProtocolError.timeout
+                continue
             } catch {
                 retireControlLoss()
                 throw error
@@ -1341,6 +1335,7 @@ public final class LiveHarnessControlConnection: @unchecked Sendable {
             retireControlLoss()
             throw LiveHarnessProtocolError.controlLost
         }
+        let deadline = Self.monotonicDeadline(after: readTimeoutNanoseconds)
         while true {
             do {
                 guard let remaining = Self.remainingNanoseconds(until: deadline) else {

@@ -1068,6 +1068,63 @@ final class LiveHarnessTests: XCTestCase {
         XCTAssertNoThrow(try connection.sendShutdownAcknowledgement(request))
     }
 
+    func testShutdownWaiterPollsPastOneReadTimeoutThenAdmitsTheRequest() throws {
+        var descriptors: [Int32] = [0, 0]
+        XCTAssertEqual(socketpair(AF_UNIX, SOCK_STREAM, 0, &descriptors), 0)
+        let connection = try LiveHarnessControlConnection(
+            descriptor: descriptors[0],
+            readTimeoutNanoseconds: 20_000_000,
+            writeTimeoutNanoseconds: 500_000_000
+        )
+        defer {
+            connection.close()
+            if descriptors[1] >= 0 { _ = Darwin.close(descriptors[1]) }
+        }
+
+        let command = try LiveHarnessSessionCommand(
+            sessionID: "session-1",
+            streamKey: harnessStreamKey,
+            gateway: "ws://127.0.0.1",
+            launchNonce: "nonce-1"
+        )
+        let commandWire = try command.framed()
+        commandWire.withUnsafeBytes { raw in
+            _ = Darwin.send(descriptors[1], raw.baseAddress!, commandWire.count, 0)
+        }
+        XCTAssertEqual(try connection.receiveOneCommand(), command)
+
+        let nonce = "sn1_0123456789abcdef0123456789abcdef"
+        let sessionRef = LiveHarnessControlBinding.sessionBinding(sessionID: "session-1", launchNonce: "nonce-1")
+        let request = try LiveHarnessShutdownRequest(
+            shutdownNonce: nonce,
+            shutdownBinding: LiveHarnessControlBinding.shutdownBinding(
+                sessionBinding: sessionRef,
+                shutdownNonce: nonce
+            )
+        )
+        let requestWire = try request.framed()
+        let ready = DispatchSemaphore(value: 0)
+        let finished = DispatchSemaphore(value: 0)
+        let result = RequestBox()
+        DispatchQueue.global().async {
+            do {
+                result.set(request: try connection.waitForShutdownRequest(onReady: { ready.signal() }))
+            } catch {
+                result.set(error: error)
+            }
+            finished.signal()
+        }
+        XCTAssertEqual(ready.wait(timeout: .now() + .seconds(1)), .success)
+        XCTAssertEqual(finished.wait(timeout: .now() + .milliseconds(50)), .timedOut)
+        requestWire.withUnsafeBytes { raw in
+            _ = Darwin.send(descriptors[1], raw.baseAddress!, requestWire.count, 0)
+        }
+        _ = Darwin.shutdown(descriptors[1], SHUT_WR)
+        XCTAssertEqual(finished.wait(timeout: .now() + .seconds(1)), .success)
+        XCTAssertNil(result.error)
+        XCTAssertEqual(result.request, request)
+    }
+
     func testShutdownAcknowledgementWriteIsBoundedAndRetiresAuthority() throws {
         var descriptors: [Int32] = [0, 0]
         XCTAssertEqual(socketpair(AF_UNIX, SOCK_STREAM, 0, &descriptors), 0)

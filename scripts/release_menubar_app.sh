@@ -172,6 +172,23 @@ run_signed_app_only() {
     # The sealed digest is a field of the canonical payload and is checked
     # independently by the Python preflight; it is not a caller-selected flag.
     printf '%s' "{\"bundle_id\":\"${BUNDLE_ID}\",\"dirty\":false,\"entitlements\":[\"com.apple.security.device.audio-input\"],\"executable_sha256\":\"${executable_digest}\",\"head\":\"${supplied_head}\",\"hardened_runtime\":true,\"provenance_sha256\":\"${provenance_digest}\",\"strict_signature\":true,\"team_id\":\"${TEAM_ID}\",\"tree\":\"${supplied_tree}\"}" >"${provenance_tmp}"
+    python3 - "${provenance_tmp}" <<'PY'
+import json
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+payload = json.loads(path.read_text(encoding="utf-8"))
+path.write_bytes(
+    json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+)
+PY
     mv -f "${provenance_tmp}" "${provenance_json}"
     run_release_command codesign --force --options runtime --entitlements "${ENTITLEMENTS}" --sign "${SIGN_IDENTITY}" "${APP_BUNDLE}"
     run_release_command codesign --verify --deep --strict --verbose=2 "${APP_BUNDLE}"
