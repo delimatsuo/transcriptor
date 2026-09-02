@@ -76,6 +76,7 @@ class HttpxWorkspaceTransport:
                 url,
                 headers=headers,
                 timeout=timeout_seconds,
+                follow_redirects=False,
             )
         except Exception as exc:
             raise MeetAutomationInvalid("workspace provider failed") from exc
