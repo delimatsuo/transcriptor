@@ -215,7 +215,9 @@ class RecordingFakeSocket:
             self.real_sock.close()
 
 
-TEST_STATIC_IDENTITY = StaticCodeIdentity(b"\x01" * 32, b"designated-requirement")
+TEST_STATIC_IDENTITY = StaticCodeIdentity(
+    b"\x01" * 32, b"designated-requirement", b"lightweight-requirement"
+)
 _UNSET_ATTESTOR_RESULT = object()
 
 
@@ -410,7 +412,7 @@ class HarnessTests(unittest.TestCase):
         self.peer = PeerIdentity(501, 4242, self.audit_token, "/Applications/TarsCompanion.app/Contents/MacOS/TarsCompanionApp")
 
     def test_exact_identity_and_peer_subclasses_are_rejected_before_any_wire_bytes(self) -> None:
-        forged_identity = ForgedStaticCodeIdentity(b"forged-cdhash", b"forged-requirement")
+        forged_identity = ForgedStaticCodeIdentity(b"forged-cdhash", b"forged-requirement", b"forged-lwcr")
         forged_peer = ForgedPeerIdentity(
             self.peer.euid,
             self.peer.pid,
@@ -481,7 +483,7 @@ class HarnessTests(unittest.TestCase):
         facts = valid_artifact_facts()
         with self.assertRaises(HarnessProtocolError):
             validate_artifact(
-                dataclasses_replace(facts, static_identity=ForgedStaticCodeIdentity(b"x", b"y")),
+                dataclasses_replace(facts, static_identity=ForgedStaticCodeIdentity(b"x", b"y", b"z")),
                 expected_head="a" * 40,
                 expected_tree="b" * 40,
                 expected_digest="a" * 64,
@@ -6631,6 +6633,7 @@ class HarnessTests(unittest.TestCase):
             self.assertEqual(executable.read_bytes(), unsigned + b"|FINAL-SIGNATURE")
             resource_json = json.loads(resource.read_text(encoding="utf-8"))
             unsigned_digest = hashlib.sha256(unsigned).hexdigest()
+            self.assertEqual(resource.read_bytes(), canonical_json(resource_json))
             self.assertEqual(resource_json["executable_sha256"], unsigned_digest)
             self.assertNotEqual(hashlib.sha256(executable.read_bytes()).hexdigest(), unsigned_digest)
 
@@ -6734,16 +6737,23 @@ class HarnessTests(unittest.TestCase):
     def test_static_identity_is_raw_bounded_and_required_before_listener(self) -> None:
         """Static identity absence/length errors cannot reach launch or SCRATCH."""
 
-        for unique, requirement in (
-            (b"", b"dr"),
-            (b"u" * 65, b"dr"),
-            (b"u", b""),
-            (b"u", b"r" * 65_537),
-            (bytearray(b"u"), b"dr"),
+        for unique, requirement, lightweight in (
+            (b"", b"dr", b"lw"),
+            (b"u" * 65, b"dr", b"lw"),
+            (b"u", b"", b"lw"),
+            (b"u", b"r" * 65_537, b"lw"),
+            (bytearray(b"u"), b"dr", b"lw"),
+            (b"u", b"dr", b""),
+            (b"u", b"dr", b"r" * 65_537),
+            (b"u", b"dr", bytearray(b"lw")),
         ):
-            with self.subTest(unique_length=len(unique), requirement_length=len(requirement)):
+            with self.subTest(
+                unique_length=len(unique),
+                requirement_length=len(requirement),
+                lightweight_length=len(lightweight),
+            ):
                 with self.assertRaises(ValueError):
-                    StaticCodeIdentity(unique, requirement)
+                    StaticCodeIdentity(unique, requirement, lightweight)
 
         previous_scratch = verifier.SCRATCH
         with tempfile.TemporaryDirectory() as root:
@@ -6841,6 +6851,7 @@ class HarnessTests(unittest.TestCase):
                 self.length_overrides: dict[int, int] = {}
                 self.wrong_unique_type = False
                 self.null_unique = False
+                self.null_lwcr = False
                 self.null_data_pointer = False
                 self.guest_status = 0
                 self.requirement_status = 0
@@ -6935,6 +6946,8 @@ class HarnessTests(unittest.TestCase):
                 self.calls.append(("CFDictionaryGetValue", dictionary_id, key_id))
                 if self.null_unique and key_id == self.unique_key:
                     return None
+                if self.null_lwcr and key_id == self.lwcr_key:
+                    return None
                 return self.objects[dictionary_id][1].get(key_id)  # type: ignore[union-attr]
 
             def cf_url_create(self, *_args: object) -> int:
@@ -6960,7 +6973,16 @@ class HarnessTests(unittest.TestCase):
                     unique = self.new(unique_kind, self.dynamic_unique, name="dynamic_unique")
                 else:
                     unique = self.new("data", TEST_STATIC_IDENTITY.unique_cdhash, name="static_unique")
-                info = self.new("dict", {self.unique_key: unique}, name="dynamic_signing_info" if guest else "static_signing_info")
+                    lwcr = self.new("requirement", None, name="lightweight_requirement")
+                info = self.new(
+                    "dict",
+                    (
+                        {self.unique_key: unique, self.lwcr_key: lwcr}
+                        if not guest
+                        else {self.unique_key: unique}
+                    ),
+                    name="dynamic_signing_info" if guest else "static_signing_info",
+                )
                 self.out(output, info)
                 return 0
 
@@ -6975,7 +6997,17 @@ class HarnessTests(unittest.TestCase):
                 self.calls.append(("SecRequirementCopyData", flags))
                 if flags != 0:
                     return 1
-                self.out(output, self.new("data", TEST_STATIC_IDENTITY.designated_requirement, name="static_requirement_data"))
+                payload = (
+                    TEST_STATIC_IDENTITY.lightweight_requirement
+                    if self.handle(_requirement) == self.named.get("lightweight_requirement")
+                    else TEST_STATIC_IDENTITY.designated_requirement
+                )
+                name = (
+                    "static_lightweight_data"
+                    if payload is TEST_STATIC_IDENTITY.lightweight_requirement
+                    else "static_requirement_data"
+                )
+                self.out(output, self.new("data", payload, name=name))
                 return 0
 
             def sec_requirement_create_data(self, _data: object, flags: int, output: object) -> int:
@@ -7003,6 +7035,10 @@ class HarnessTests(unittest.TestCase):
                 return 2
 
             @property
+            def lwcr_key(self) -> int:
+                return 4
+
+            @property
             def guest_audit_key(self) -> int:
                 return 3
 
@@ -7013,6 +7049,7 @@ class HarnessTests(unittest.TestCase):
                 bridge._cf_type_dictionary_key_callbacks = CFDictionaryKeyCallBacks()  # type: ignore[attr-defined]
                 bridge._cf_type_dictionary_value_callbacks = CFDictionaryValueCallBacks()  # type: ignore[attr-defined]
                 bridge._unique_key = ctypes.c_void_p(self.unique_key)  # type: ignore[attr-defined]
+                bridge._lwcr_key = ctypes.c_void_p(self.lwcr_key)  # type: ignore[attr-defined]
                 bridge._guest_audit_key = ctypes.c_void_p(self.guest_audit_key)  # type: ignore[attr-defined]
                 bridge._cf_release = self.cf_release  # type: ignore[attr-defined]
                 bridge._cf_get_type_id = self.cf_get_type_id  # type: ignore[attr-defined]
@@ -7050,15 +7087,19 @@ class HarnessTests(unittest.TestCase):
                 "CFDictionaryGetValue",
                 "SecCodeCopyDesignatedRequirement",
                 "SecRequirementCopyData",
+                "CFDictionaryGetValue",
+                "SecRequirementCopyData",
             ],
         )
         self.assertEqual(fake.calls[2][1:], (0x19, None))
+        self.assertEqual(fake.calls[3][1:], ("static", 1 << 2))
         self.assertEqual(fake.calls[-1], ("SecRequirementCopyData", 0))
         self.assertTrue(fake.allocator_values)
         self.assertTrue(all(value is None for value in fake.allocator_values))
         self.assertEqual(
             fake.releases,
             [
+                fake.named["static_lightweight_data"],
                 fake.named["static_requirement_data"],
                 fake.named["designated_requirement"],
                 fake.named["static_signing_info"],
@@ -7067,6 +7108,14 @@ class HarnessTests(unittest.TestCase):
             ],
         )
         self.assertNotIn(fake.named["static_unique"], fake.releases)
+        self.assertNotIn(fake.named["lightweight_requirement"], fake.releases)
+
+        fake = RawCF(audit_token=self.audit_token)
+        fake.null_lwcr = True
+        bridge = object.__new__(DarwinSecurityBridge)
+        fake.bind(bridge)
+        with self.assertRaises(HarnessProtocolError):
+            bridge.read_static_identity(Path("/Applications/TarsCompanion.app"))
 
         fake = RawCF(audit_token=self.audit_token)
         bridge = object.__new__(DarwinSecurityBridge)
@@ -7088,7 +7137,11 @@ class HarnessTests(unittest.TestCase):
             ],
         )
         self.assertEqual(fake.calls[0][2], bytes.fromhex(self.audit_token))
-        self.assertEqual(fake.calls[2][2], TEST_STATIC_IDENTITY.designated_requirement)
+        self.assertEqual(fake.calls[2][2], TEST_STATIC_IDENTITY.lightweight_requirement)
+        self.assertNotEqual(
+            TEST_STATIC_IDENTITY.lightweight_requirement,
+            TEST_STATIC_IDENTITY.designated_requirement,
+        )
         self.assertEqual(fake.calls[1][1], fake.guest_audit_key)
         self.assertEqual(fake.assert_count, 1)
         self.assertEqual(len(fake.callback_values), 1)
@@ -7169,6 +7222,8 @@ class HarnessTests(unittest.TestCase):
         self.assertNotIn("peer.pid", bridge_source)
         self.assertNotIn("os.kill", bridge_source)
         self.assertIn("self._sec_copy_guest(\n                None,", bridge_source)
+        self.assertIn("expected.lightweight_requirement", bridge_source)
+        self.assertIn("kSecCodeInfoDefaultDesignatedLightweightCodeRequirement", inspect.getsource(DarwinSecurityBridge))
         validity_start = bridge_source.index("status = self._sec_check_validity")
         self.assertNotIn("None", bridge_source[validity_start:])
         unique_index = bridge_source.index("dynamic_unique =")
@@ -7334,7 +7389,11 @@ class HarnessTests(unittest.TestCase):
             # unchanged; only the audit-token guest's dynamic B hash can close
             # that gap.  Exercise the causal zero-byte edge repeatedly.
             for iteration in range(30):
-                dynamic_b = StaticCodeIdentity(b"\x02" * 32, TEST_STATIC_IDENTITY.designated_requirement)
+                dynamic_b = StaticCodeIdentity(
+                    b"\x02" * 32,
+                    TEST_STATIC_IDENTITY.designated_requirement,
+                    TEST_STATIC_IDENTITY.lightweight_requirement,
+                )
                 run, received, signals, client = run_attempt(
                     f"swap-restore-{iteration}",
                     attestor=FakeRunningCodeAttestor(result=dynamic_b),

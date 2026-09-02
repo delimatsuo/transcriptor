@@ -597,6 +597,7 @@ class StaticCodeIdentity:
 
     unique_cdhash: bytes
     designated_requirement: bytes
+    lightweight_requirement: bytes
 
     def __post_init__(self) -> None:
         if (
@@ -609,6 +610,11 @@ class StaticCodeIdentity:
             or not 1 <= len(self.designated_requirement) <= 65_536
         ):
             raise ValueError("designated requirement must contain 1..65536 raw bytes")
+        if (
+            type(self.lightweight_requirement) is not bytes
+            or not 1 <= len(self.lightweight_requirement) <= 65_536
+        ):
+            raise ValueError("lightweight requirement must contain 1..65536 raw bytes")
 
 
 def require_exact_static_code_identity(
@@ -636,6 +642,11 @@ def require_exact_static_code_identity(
         or not 1 <= len(identity.designated_requirement) <= 65_536
     ):
         raise HarnessProtocolError(f"{label} designated requirement is malformed")
+    if (
+        type(identity.lightweight_requirement) is not bytes
+        or not 1 <= len(identity.lightweight_requirement) <= 65_536
+    ):
+        raise HarnessProtocolError(f"{label} lightweight requirement is malformed")
     if expected is not None:
         if type(expected) is not StaticCodeIdentity:
             raise HarnessProtocolError("expected static code identity is not exact")
@@ -644,6 +655,8 @@ def require_exact_static_code_identity(
             or not 1 <= len(expected.unique_cdhash) <= 64
             or type(expected.designated_requirement) is not bytes
             or not 1 <= len(expected.designated_requirement) <= 65_536
+            or type(expected.lightweight_requirement) is not bytes
+            or not 1 <= len(expected.lightweight_requirement) <= 65_536
         ):
             raise HarnessProtocolError("expected static code identity is malformed")
         if not hmac.compare_digest(identity.unique_cdhash, expected.unique_cdhash):
@@ -653,6 +666,11 @@ def require_exact_static_code_identity(
             expected.designated_requirement,
         ):
             raise HarnessProtocolError(f"{label} designated requirement mismatch")
+        if not hmac.compare_digest(
+            identity.lightweight_requirement,
+            expected.lightweight_requirement,
+        ):
+            raise HarnessProtocolError(f"{label} lightweight requirement mismatch")
     return identity
 
 
@@ -1324,6 +1342,7 @@ class DarwinSecurityBridge:
 
     STATIC_VALIDITY_FLAGS = 0x19  # CheckAllArchitectures|CheckNestedCode|StrictValidate
     GUEST_REQUIREMENT_FLAGS = 1 << 23  # kSecCSMatchGuestRequirementInKernel
+    REQUIREMENT_INFORMATION_FLAGS = 1 << 2  # kSecCSRequirementInformation
 
     def __init__(self) -> None:
         if sys.platform != "darwin":
@@ -1348,6 +1367,9 @@ class DarwinSecurityBridge:
             # based and the keys themselves are unowned framework constants.
             self._unique_key = self._export_pointer(
                 self._security, "kSecCodeInfoUnique"
+            )
+            self._lwcr_key = self._export_pointer(
+                self._security, "kSecCodeInfoDefaultDesignatedLightweightCodeRequirement"
             )
             self._guest_audit_key = self._export_pointer(
                 self._security, "kSecGuestAttributeAudit"
@@ -1555,6 +1577,7 @@ class DarwinSecurityBridge:
         signing_info: ctypes.c_void_p | None = None
         designated_requirement: ctypes.c_void_p | None = None
         requirement_data: ctypes.c_void_p | None = None
+        lightweight_data: ctypes.c_void_p | None = None
         try:
             url = self._app_url(app_path)
             static_code = ctypes.c_void_p()
@@ -1577,7 +1600,7 @@ class DarwinSecurityBridge:
             signing_info = ctypes.c_void_p()
             status = self._sec_copy_signing(
                 static_code,
-                0,
+                self.REQUIREMENT_INFORMATION_FLAGS,
                 ctypes.byref(signing_info),
             )
             if status != 0 or not signing_info.value:
@@ -1612,17 +1635,35 @@ class DarwinSecurityBridge:
                 maximum=65_536,
                 label="static designated requirement",
             )
+            lwcr_requirement = self._cf_dictionary_get_value(signing_info, self._lwcr_key)
+            if not lwcr_requirement:
+                raise HarnessProtocolError("static lightweight requirement is unavailable")
+            lightweight_data = ctypes.c_void_p()
+            status = self._sec_requirement_copy_data(
+                ctypes.c_void_p(lwcr_requirement),
+                0,
+                ctypes.byref(lightweight_data),
+            )
+            if status != 0 or not lightweight_data.value:
+                raise HarnessProtocolError("static lightweight requirement data is unavailable")
+            lightweight = self._copy_cfdata(
+                lightweight_data,
+                maximum=65_536,
+                label="static lightweight requirement",
+            )
             return StaticCodeIdentity(
                 unique_cdhash=unique_cdhash,
                 designated_requirement=requirement,
+                lightweight_requirement=lightweight,
             )
         except HarnessProtocolError:
             raise
         except (OSError, AttributeError, TypeError, ValueError, OverflowError) as exc:
             raise HarnessProtocolError("static Security.framework identity read failed") from exc
         finally:
-            # Reverse the Create/Copy acquisition order.  The dictionary's
-            # unique value is borrowed and therefore deliberately absent.
+            # Reverse the Create/Copy acquisition order.  Dictionary unique
+            # and lightweight-requirement values are borrowed.
+            self._release(lightweight_data)
             self._release(requirement_data)
             self._release(designated_requirement)
             self._release(signing_info)
@@ -1678,25 +1719,25 @@ class DarwinSecurityBridge:
                 self._cf_dictionary_get_type_id(),
                 "guest attributes",
             )
-            requirement_buffer = (ctypes.c_ubyte * len(expected.designated_requirement)).from_buffer_copy(
-                expected.designated_requirement
+            requirement_buffer = (ctypes.c_ubyte * len(expected.lightweight_requirement)).from_buffer_copy(
+                expected.lightweight_requirement
             )
             requirement_data_raw = self._cf_data_create(
                 self._allocator,
                 requirement_buffer,
-                len(expected.designated_requirement),
+                len(expected.lightweight_requirement),
             )
             if not requirement_data_raw:
-                raise HarnessProtocolError("designated requirement CFData creation failed")
+                raise HarnessProtocolError("lightweight requirement CFData creation failed")
             requirement_data = ctypes.c_void_p(requirement_data_raw)
             if len(
                 self._copy_cfdata(
                     requirement_data,
                     maximum=65_536,
-                    label="designated requirement",
+                    label="lightweight requirement",
                 )
-            ) != len(expected.designated_requirement):
-                raise HarnessProtocolError("designated requirement CFData length changed")
+            ) != len(expected.lightweight_requirement):
+                raise HarnessProtocolError("lightweight requirement CFData length changed")
             requirement = ctypes.c_void_p()
             status = self._sec_requirement_create_data(
                 requirement_data,
@@ -1752,6 +1793,7 @@ class DarwinSecurityBridge:
             return StaticCodeIdentity(
                 unique_cdhash=dynamic_unique,
                 designated_requirement=expected.designated_requirement,
+                lightweight_requirement=expected.lightweight_requirement,
             )
         except HarnessProtocolError:
             raise
