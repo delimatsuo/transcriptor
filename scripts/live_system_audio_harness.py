@@ -15,6 +15,7 @@ import hashlib
 import hmac
 import json
 import os
+import plistlib
 import re
 import secrets
 import signal
@@ -583,6 +584,84 @@ def _typed_contains_secret_material(value: Any, sentinel: str | None, *, top_lev
 
 class HarnessProtocolError(ValueError):
     """A fail-closed protocol, policy, or liveness rejection."""
+
+
+def _der_length(size: int) -> bytes:
+    if size < 0:
+        raise HarnessProtocolError("DER length is negative")
+    if size < 0x80:
+        return bytes((size,))
+    raw = size.to_bytes((size.bit_length() + 7) // 8, "big")
+    if len(raw) > 126:
+        raise HarnessProtocolError("DER length is outside bounds")
+    return bytes((0x80 | len(raw),)) + raw
+
+
+def _der_tlv(tag: int, content: bytes) -> bytes:
+    if type(content) is not bytes:
+        raise HarnessProtocolError("DER content must be exact bytes")
+    return bytes((tag,)) + _der_length(len(content)) + content
+
+
+def _der_integer(value: int) -> bytes:
+    if type(value) is not int or value < 0 or value > (1 << 63) - 1:
+        raise HarnessProtocolError("LWCR integer is outside bounds")
+    raw = value.to_bytes((value.bit_length() + 7) // 8 or 1, "big")
+    if raw[0] & 0x80:
+        raw = b"\x00" + raw
+    return _der_tlv(0x02, raw)
+
+
+def _der_utf8(value: str) -> bytes:
+    if type(value) is not str or "\x00" in value:
+        raise HarnessProtocolError("LWCR string is malformed")
+    encoded = value.encode("utf-8")
+    if not 1 <= len(encoded) <= 1024:
+        raise HarnessProtocolError("LWCR string length is outside bounds")
+    return _der_tlv(0x0C, encoded)
+
+
+def _der_dictionary(items: Mapping[str, object]) -> bytes:
+    if type(items) is not dict or not items:
+        raise HarnessProtocolError("LWCR dictionary is empty or not exact")
+    pairs = bytearray()
+    for key in sorted(items):
+        if type(key) is not str:
+            raise HarnessProtocolError("LWCR dictionary key is not a string")
+        pairs.extend(_der_tlv(0x30, _der_utf8(key) + _der_value(items[key])))
+    return _der_tlv(0xB0, bytes(pairs))
+
+
+def _der_value(value: object) -> bytes:
+    if type(value) is bool:
+        raise HarnessProtocolError("LWCR boolean facts are unsupported")
+    if type(value) is int:
+        return _der_integer(value)
+    if type(value) is str:
+        return _der_utf8(value)
+    if type(value) is dict:
+        return _der_dictionary(value)
+    raise HarnessProtocolError("LWCR fact type is unsupported")
+
+
+def encode_lightweight_code_requirement(facts: Mapping[str, object]) -> bytes:
+    """Encode a default-designated LWCR facts dictionary into kernel DER.
+
+    Apple returns ``kSecCodeInfoDefaultDesignatedLightweightCodeRequirement``
+    as a decoded CFDictionary, not a SecRequirement. Kernel guest matching
+    requires an lwcrForm requirement whose payload is the CoreEntitlements V1
+    envelope around ``{ccat,comp,reqs,vers}``.
+    """
+
+    if type(facts) is not dict:
+        raise HarnessProtocolError("LWCR facts must be an exact dictionary")
+    wrapped = {
+        "ccat": 0,
+        "comp": 1,
+        "reqs": facts,
+        "vers": 1,
+    }
+    return _der_tlv(0x70, _der_integer(1) + _der_dictionary(wrapped))
 
 
 @dataclass(frozen=True)
@@ -1343,6 +1422,7 @@ class DarwinSecurityBridge:
     STATIC_VALIDITY_FLAGS = 0x19  # CheckAllArchitectures|CheckNestedCode|StrictValidate
     GUEST_REQUIREMENT_FLAGS = 1 << 23  # kSecCSMatchGuestRequirementInKernel
     REQUIREMENT_INFORMATION_FLAGS = 1 << 2  # kSecCSRequirementInformation
+    PROPERTY_LIST_XML_FORMAT = 100  # kCFPropertyListXMLFormat_v1_0
 
     def __init__(self) -> None:
         if sys.platform != "darwin":
@@ -1501,6 +1581,29 @@ class DarwinSecurityBridge:
             [ctypes.c_void_p, ctypes.c_uint32, ctypes.POINTER(ctypes.c_void_p)],
             ctypes.c_int32,
         )
+        self._sec_requirement_create_lwcr = bind(
+            security,
+            "SecRequirementCreateWithLightweightCodeRequirementData",
+            [
+                ctypes.c_void_p,
+                ctypes.c_uint32,
+                ctypes.POINTER(ctypes.c_void_p),
+                ctypes.POINTER(ctypes.c_void_p),
+            ],
+            ctypes.c_int32,
+        )
+        self._cf_property_list_create_data = bind(
+            cf,
+            "CFPropertyListCreateData",
+            [
+                ctypes.c_void_p,
+                ctypes.c_void_p,
+                ctypes.c_long,
+                ctypes.c_ulong,
+                ctypes.POINTER(ctypes.c_void_p),
+            ],
+            ctypes.c_void_p,
+        )
         self._sec_copy_guest = bind(
             security,
             "SecCodeCopyGuestWithAttributes",
@@ -1550,6 +1653,79 @@ class DarwinSecurityBridge:
             raise HarnessProtocolError(f"{label} CF type read failed") from exc
         if actual_type_id != int(expected_type_id):
             raise HarnessProtocolError(f"{label} has the wrong CF type")
+
+    def _copy_lwcr_facts_dictionary(self, value: ctypes.c_void_p) -> dict[str, object]:
+        error: ctypes.c_void_p | None = ctypes.c_void_p()
+        plist_data: ctypes.c_void_p | None = None
+        try:
+            plist_data = ctypes.c_void_p(
+                self._cf_property_list_create_data(
+                    self._allocator,
+                    value,
+                    self.PROPERTY_LIST_XML_FORMAT,
+                    0,
+                    ctypes.byref(error),
+                )
+            )
+            if not plist_data.value:
+                raise HarnessProtocolError("static lightweight requirement dictionary is unreadable")
+            raw = self._copy_cfdata(
+                plist_data,
+                maximum=65_536,
+                label="static lightweight requirement dictionary",
+            )
+            facts = plistlib.loads(raw)
+            if type(facts) is not dict or not facts:
+                raise HarnessProtocolError("static lightweight requirement dictionary is empty")
+            return facts
+        except (OSError, TypeError, ValueError, plistlib.InvalidFileException) as exc:
+            raise HarnessProtocolError("static lightweight requirement dictionary parse failed") from exc
+        finally:
+            self._release(plist_data)
+            self._release(error)
+
+    def _requirement_blob_from_lwcr_der(self, der: bytes) -> bytes:
+        if type(der) is not bytes or not 1 <= len(der) <= 65_536:
+            raise HarnessProtocolError("lightweight requirement DER is outside bounds")
+        requirement_data: ctypes.c_void_p | None = None
+        requirement: ctypes.c_void_p | None = None
+        copied: ctypes.c_void_p | None = None
+        error: ctypes.c_void_p | None = ctypes.c_void_p()
+        try:
+            buffer = (ctypes.c_ubyte * len(der)).from_buffer_copy(der)
+            created = self._cf_data_create(self._allocator, buffer, len(der))
+            if not created:
+                raise HarnessProtocolError("lightweight requirement CFData creation failed")
+            requirement_data = ctypes.c_void_p(created)
+            if len(self._copy_cfdata(requirement_data, maximum=65_536, label="lightweight requirement DER")) != len(der):
+                raise HarnessProtocolError("lightweight requirement DER length changed")
+            requirement = ctypes.c_void_p()
+            status = self._sec_requirement_create_lwcr(
+                requirement_data,
+                0,
+                ctypes.byref(requirement),
+                ctypes.byref(error),
+            )
+            if status != 0 or not requirement.value:
+                raise HarnessProtocolError("SecRequirementCreateWithLightweightCodeRequirementData failed")
+            copied = ctypes.c_void_p()
+            status = self._sec_requirement_copy_data(requirement, 0, ctypes.byref(copied))
+            if status != 0 or not copied.value:
+                raise HarnessProtocolError("lightweight requirement data is unavailable")
+            return self._copy_cfdata(
+                copied,
+                maximum=65_536,
+                label="static lightweight requirement",
+            )
+        except HarnessProtocolError:
+            raise
+        except (OSError, TypeError, ValueError, OverflowError) as exc:
+            raise HarnessProtocolError("lightweight requirement blob creation failed") from exc
+        finally:
+            self._release(copied)
+            self._release(requirement)
+            self._release(requirement_data)
+            self._release(error)
 
     def _app_url(self, app_path: Path) -> ctypes.c_void_p:
         path = Path(app_path)
@@ -1638,19 +1814,29 @@ class DarwinSecurityBridge:
             lwcr_requirement = self._cf_dictionary_get_value(signing_info, self._lwcr_key)
             if not lwcr_requirement:
                 raise HarnessProtocolError("static lightweight requirement is unavailable")
-            lightweight_data = ctypes.c_void_p()
-            status = self._sec_requirement_copy_data(
-                ctypes.c_void_p(lwcr_requirement),
-                0,
-                ctypes.byref(lightweight_data),
-            )
-            if status != 0 or not lightweight_data.value:
-                raise HarnessProtocolError("static lightweight requirement data is unavailable")
-            lightweight = self._copy_cfdata(
-                lightweight_data,
-                maximum=65_536,
-                label="static lightweight requirement",
-            )
+            lwcr_ref = ctypes.c_void_p(lwcr_requirement)
+            try:
+                lwcr_type_id = int(self._cf_get_type_id(lwcr_ref))
+            except (OSError, TypeError, ValueError) as exc:
+                raise HarnessProtocolError("static lightweight requirement type read failed") from exc
+            if lwcr_type_id == int(self._cf_dictionary_get_type_id()):
+                lightweight = self._requirement_blob_from_lwcr_der(
+                    encode_lightweight_code_requirement(self._copy_lwcr_facts_dictionary(lwcr_ref))
+                )
+            else:
+                lightweight_data = ctypes.c_void_p()
+                status = self._sec_requirement_copy_data(
+                    lwcr_ref,
+                    0,
+                    ctypes.byref(lightweight_data),
+                )
+                if status != 0 or not lightweight_data.value:
+                    raise HarnessProtocolError("static lightweight requirement data is unavailable")
+                lightweight = self._copy_cfdata(
+                    lightweight_data,
+                    maximum=65_536,
+                    label="static lightweight requirement",
+                )
             return StaticCodeIdentity(
                 unique_cdhash=unique_cdhash,
                 designated_requirement=requirement,

@@ -63,6 +63,7 @@ from live_system_audio_harness import (
     decode_shutdown_ack,
     decode_shutdown_request,
     encode_event as _encode_event,
+    encode_lightweight_code_requirement,
     encode_session_command,
     encode_shutdown_ack,
     encode_shutdown_request,
@@ -217,6 +218,19 @@ class RecordingFakeSocket:
 
 TEST_STATIC_IDENTITY = StaticCodeIdentity(
     b"\x01" * 32, b"designated-requirement", b"lightweight-requirement"
+)
+APPLE_DEVELOPER_ID_LWCR_FACTS = {
+    "signing-identifier": "com.ellaexecutivesearch.tarscompanion",
+    "team-identifier": "3FLG8W6B95",
+    "validation-category": 6,
+}
+# Captured from codesign --launch-constraint-self of the facts above on macOS 26.6.2.
+APPLE_DEVELOPER_ID_LWCR_DER = bytes.fromhex(
+    "7081a7020101b081a130090c046363617402010030090c04636f6d70020101307e0c0472"
+    "657173b076303b0c127369676e696e672d6964656e7469666965720c25636f6d2e656c6c"
+    "616578656375746976657365617263682e74617273636f6d70616e696f6e301d0c0f7465"
+    "616d2d6964656e7469666965720c0a33464c4738573642393530180c1376616c69646174"
+    "696f6e2d63617465676f727902010630090c0476657273020101"
 )
 _UNSET_ATTESTOR_RESULT = object()
 
@@ -6825,6 +6839,16 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(calls[1][0], "dynamic")
         self.assertEqual(calls[1][1], self.audit_token)
 
+    def test_encode_lightweight_code_requirement_matches_apple_developer_id_der(self) -> None:
+        """Default designated LWCR facts encode to Apple's kernel envelope."""
+
+        self.assertEqual(
+            encode_lightweight_code_requirement(APPLE_DEVELOPER_ID_LWCR_FACTS),
+            APPLE_DEVELOPER_ID_LWCR_DER,
+        )
+        with self.assertRaises(HarnessProtocolError):
+            encode_lightweight_code_requirement({"ok": True})
+
     def test_raw_security_bridge_fake_order_token_types_and_cf_ownership(self) -> None:
         """Raw ctypes calls stay ordered, token-bound, typed, and leak-free."""
 
@@ -6855,6 +6879,8 @@ class HarnessTests(unittest.TestCase):
                 self.null_data_pointer = False
                 self.guest_status = 0
                 self.requirement_status = 0
+                self.lwcr_create_status = 0
+                self.lwcr_facts: dict[str, object] | None = None
                 self.validity_statuses: list[int] = []
                 self.static_validity_status = 0
 
@@ -6973,7 +6999,10 @@ class HarnessTests(unittest.TestCase):
                     unique = self.new(unique_kind, self.dynamic_unique, name="dynamic_unique")
                 else:
                     unique = self.new("data", TEST_STATIC_IDENTITY.unique_cdhash, name="static_unique")
-                    lwcr = self.new("requirement", None, name="lightweight_requirement")
+                    if self.lwcr_facts is None:
+                        lwcr = self.new("requirement", None, name="lightweight_requirement")
+                    else:
+                        lwcr = self.new("dict", dict(self.lwcr_facts), name="lightweight_requirement")
                 info = self.new(
                     "dict",
                     (
@@ -6999,7 +7028,11 @@ class HarnessTests(unittest.TestCase):
                     return 1
                 payload = (
                     TEST_STATIC_IDENTITY.lightweight_requirement
-                    if self.handle(_requirement) == self.named.get("lightweight_requirement")
+                    if self.handle(_requirement)
+                    in {
+                        self.named.get("lightweight_requirement"),
+                        self.named.get("lwcr_requirement"),
+                    }
                     else TEST_STATIC_IDENTITY.designated_requirement
                 )
                 name = (
@@ -7015,6 +7048,34 @@ class HarnessTests(unittest.TestCase):
                 if self.requirement_status:
                     return self.requirement_status
                 self.out(output, self.new("requirement", None, name="requirement"))
+                return 0
+
+            def cf_property_list_create_data(
+                self,
+                _allocator: object,
+                plist: object,
+                fmt: int,
+                _options: int,
+                _error: object,
+            ) -> int:
+                self.allocator_values.append(_allocator)
+                payload = self.objects[self.handle(plist)][1]
+                self.calls.append(("CFPropertyListCreateData", self.handle(plist), fmt))
+                xml = __import__("plistlib").dumps(payload, fmt=__import__("plistlib").FMT_XML)
+                return self.new("data", xml, name="lwcr_facts_plist")
+
+            def sec_requirement_create_lwcr(
+                self,
+                data: object,
+                flags: int,
+                output: object,
+                _error: object,
+            ) -> int:
+                payload = self.objects[self.handle(data)][1]
+                self.calls.append(("SecRequirementCreateWithLightweightCodeRequirementData", flags, payload))
+                if self.lwcr_create_status:
+                    return self.lwcr_create_status
+                self.out(output, self.new("requirement", None, name="lwcr_requirement"))
                 return 0
 
             def sec_copy_guest(self, guest: object, attributes: object, flags: int, output: object) -> int:
@@ -7067,6 +7128,8 @@ class HarnessTests(unittest.TestCase):
                 bridge._sec_copy_designated = self.sec_copy_designated  # type: ignore[attr-defined]
                 bridge._sec_requirement_copy_data = self.sec_requirement_copy_data  # type: ignore[attr-defined]
                 bridge._sec_requirement_create_data = self.sec_requirement_create_data  # type: ignore[attr-defined]
+                bridge._sec_requirement_create_lwcr = self.sec_requirement_create_lwcr  # type: ignore[attr-defined]
+                bridge._cf_property_list_create_data = self.cf_property_list_create_data  # type: ignore[attr-defined]
                 bridge._sec_copy_guest = self.sec_copy_guest  # type: ignore[attr-defined]
                 bridge._sec_check_validity = self.sec_check_validity  # type: ignore[attr-defined]
 
@@ -7116,6 +7179,34 @@ class HarnessTests(unittest.TestCase):
         fake.bind(bridge)
         with self.assertRaises(HarnessProtocolError):
             bridge.read_static_identity(Path("/Applications/TarsCompanion.app"))
+
+        fake = RawCF(audit_token=self.audit_token)
+        fake.lwcr_facts = dict(APPLE_DEVELOPER_ID_LWCR_FACTS)
+        bridge = object.__new__(DarwinSecurityBridge)
+        fake.bind(bridge)
+        static_identity = bridge.read_static_identity(Path("/Applications/TarsCompanion.app"))
+        self.assertEqual(static_identity, TEST_STATIC_IDENTITY)
+        self.assertEqual(
+            [entry[0] for entry in fake.calls],
+            [
+                "CFURLCreateFromFileSystemRepresentation",
+                "SecStaticCodeCreateWithPath",
+                "SecStaticCodeCheckValidity",
+                "SecCodeCopySigningInformation",
+                "CFDictionaryGetValue",
+                "SecCodeCopyDesignatedRequirement",
+                "SecRequirementCopyData",
+                "CFDictionaryGetValue",
+                "CFPropertyListCreateData",
+                "CFDataCreate",
+                "SecRequirementCreateWithLightweightCodeRequirementData",
+                "SecRequirementCopyData",
+            ],
+        )
+        self.assertEqual(fake.calls[8][2], DarwinSecurityBridge.PROPERTY_LIST_XML_FORMAT)
+        self.assertEqual(fake.calls[9][2], APPLE_DEVELOPER_ID_LWCR_DER)
+        self.assertEqual(fake.calls[10][2], APPLE_DEVELOPER_ID_LWCR_DER)
+        self.assertNotIn(fake.named["lightweight_requirement"], fake.releases)
 
         fake = RawCF(audit_token=self.audit_token)
         bridge = object.__new__(DarwinSecurityBridge)
