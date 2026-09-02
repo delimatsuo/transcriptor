@@ -1335,3 +1335,19 @@ Evidence remains source/offline only. No app launch, live audio, TCC/device/proc
 
 - Source/offline only: no app launch, live audio, TCC/device/process enumeration or control, live Security.framework/codesign, signing/Keychain, provider/network/cloud/deployment/production/performance qualification, secrets, personal data, or real-user action.
 - No live qualification is claimed.
+
+## Owner-authorized Git landing
+
+Final31 source qualification ended with a dirty tree. Sol and Terra both APPROVED that exact dirty bound:
+
+- Frozen brief SHA-256 `8ee8caf9b443cac4d51a4fc14e01e5ce6ebccd26ac2e1450bdea318ef33e4500`
+- Report SHA-256 `0ab7d099cc451aaae23351c9acacdac1382fc24d3cd48b8585bd99a4174ca801`
+- 16-path `git diff HEAD --binary` SHA-256 `cc31edc9e9caf400a13655873af89db82a7b10660371724b0eec6b8e598bcddc`
+
+Owner then authorized Git in three explicit steps. Those steps are outside the original brief's no-Git rule and do not reopen source qualification.
+
+- Commit `6671f64ccedef8de7ca44f755402c095d1ff3915` on `codex/task11-live-process-tap-source`; committed tree `e79376b246500aa33c38a3ea7bc8db656f2cba73`; parent `5ea4e703cf6c4d6beb958b0946539d3127ff5066`.
+- Pushed to `origin/codex/task11-live-process-tap-source`.
+- Draft PR https://github.com/delimatsuo/transcriptor/pull/52 stacked on draft [PR #40](https://github.com/delimatsuo/transcriptor/pull/40) (`codex/task10-process-tap`). No Actions dispatch, rerun, or merge.
+
+Meet draft PRs remain frozen. Later owner gates remain: Developer ID signing, disposable-account live TCC/audio proof, isolated provider/STT, optional DMG/notary. No live qualification is claimed.
