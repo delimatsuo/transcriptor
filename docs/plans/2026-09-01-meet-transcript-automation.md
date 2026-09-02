@@ -1,7 +1,7 @@
 # Google Meet transcript automation — synthetic/offline implementation contract
 
 Date: 2026-09-01
-Next stacked branch: `codex/meet-transcript-automation`
+Next stacked branch: `codex/meet-transcript-provider`
 
 ## Scope and evidence ceiling
 
