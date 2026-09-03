@@ -3,9 +3,16 @@
 from __future__ import annotations
 
 import ipaddress
+import re
+from typing import Any, Literal, Mapping
 from urllib.parse import urlsplit
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings
+
+
+class AuthConfigurationError(ValueError):
+    """Raised when authentication or environment configuration fails validation."""
+
 
 DEFAULT_LOCAL_CORS_ORIGINS: list[str] = [
     "http://localhost:3000",
@@ -157,6 +164,12 @@ class Settings(BaseSettings):
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 
+    # Runtime mode
+    tars_runtime_mode: Literal["local", "hosted-pilot"] = Field(
+        default="local",
+        description="Runtime execution mode: local or hosted-pilot",
+    )
+
     # GCP
     google_cloud_project: str = Field(..., description="GCP project ID")
     gcs_bucket_name: str | None = Field(
@@ -178,6 +191,48 @@ class Settings(BaseSettings):
         description="Comma-separated exact email allowlist for internal access",
     )
     auth_ws_ticket_ttl_seconds: int = Field(default=60, gt=0, le=300)
+
+    @field_validator("google_cloud_project")
+    @classmethod
+    def validate_google_cloud_project(cls, value: str) -> str:
+        if not isinstance(value, str) or not re.fullmatch(r"[a-z][a-z0-9-]{4,28}[a-z0-9]", value):
+            raise ValueError("GOOGLE_CLOUD_PROJECT must match [a-z][a-z0-9-]{4,28}[a-z0-9] (6-30 chars)")
+        return value
+
+    @field_validator("firebase_project_id")
+    @classmethod
+    def validate_firebase_project_id(cls, value: str | None) -> str | None:
+        if value is not None:
+            if not isinstance(value, str) or not re.fullmatch(r"[a-z][a-z0-9-]{4,28}[a-z0-9]", value):
+                raise ValueError("FIREBASE_PROJECT_ID must match [a-z][a-z0-9-]{4,28}[a-z0-9] (6-30 chars)")
+        return value
+
+    @field_validator("auth_org_id")
+    @classmethod
+    def validate_auth_org_id(cls, value: str) -> str:
+        if not isinstance(value, str) or not re.fullmatch(r"[a-z][a-z0-9-]{1,61}[a-z0-9]", value):
+            raise ValueError("AUTH_ORG_ID must match [a-z][a-z0-9-]{1,61}[a-z0-9] (3-63 chars)")
+        return value
+
+    @field_validator("auth_bypass", mode="before")
+    @classmethod
+    def validate_auth_bypass(cls, value: Any) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            if value == "true":
+                return True
+            if value == "false":
+                return False
+        raise ValueError("AUTH_BYPASS must be exact canonical 'true', 'false', or a boolean literal")
+
+    @field_validator("tars_runtime_mode", mode="before")
+    @classmethod
+    def validate_runtime_mode_canonical(cls, value: Any) -> str:
+        if isinstance(value, str):
+            if value in ("local", "hosted-pilot"):
+                return value
+        raise ValueError("TARS_RUNTIME_MODE must be exact 'local' or 'hosted-pilot'")
 
     @field_validator("gcs_bucket_name")
     @classmethod
@@ -384,3 +439,154 @@ class Settings(BaseSettings):
 def get_settings() -> Settings:
     """Create and return a Settings instance."""
     return Settings()
+
+
+def resolve_settings_safely() -> Settings:
+    """Resolve Settings behind a content-free error boundary."""
+    success = False
+    resolved: Settings | None = None
+    try:
+        resolved = get_settings()
+        success = True
+    except Exception:
+        success = False
+        resolved = None
+
+    if not success or resolved is None:
+        raise AuthConfigurationError("Configuration validation failed during settings resolution") from None
+    return resolved
+
+
+def resolve_cors_settings_safely(secondary_source: dict[str, Any] | None = None) -> CorsSettings:
+    """Resolve CorsSettings behind a content-free error boundary."""
+    success = False
+    resolved: CorsSettings | None = None
+    try:
+        if secondary_source is not None:
+            resolved = CorsSettings(_env_file=None, **secondary_source)
+        else:
+            resolved = CorsSettings()
+        success = True
+    except Exception:
+        success = False
+        resolved = None
+
+    if not success or resolved is None:
+        raise AuthConfigurationError("Configuration validation failed during CORS settings resolution") from None
+    return resolved
+
+
+PROTECTED_LOGICAL_KEYS = (
+    "TARS_RUNTIME_MODE",
+    "AUTH_BYPASS",
+    "GOOGLE_CLOUD_PROJECT",
+    "FIREBASE_PROJECT_ID",
+    "AUTH_ORG_ID",
+    "AUTH_ALLOWED_EMAILS",
+)
+
+
+def validate_raw_process_env(
+    raw_env: Mapping[str, str],
+    resolved_settings: Settings | None = None,
+) -> Literal["local", "hosted-pilot"]:
+    """Pure validator for raw process environment and raw-vs-resolved configuration matrix."""
+    key_occurrences: dict[str, list[tuple[str, str]]] = {}
+    for k, v in raw_env.items():
+        k_upper = k.upper()
+        if k_upper in PROTECTED_LOGICAL_KEYS or k_upper == "K_SERVICE":
+            key_occurrences.setdefault(k_upper, []).append((k, v))
+
+    # Check for case collisions across protected keys
+    for protected_key in PROTECTED_LOGICAL_KEYS:
+        occurrences = key_occurrences.get(protected_key, [])
+        if len(occurrences) > 1:
+            raise AuthConfigurationError(f"Duplicate or case-colliding environment key detected for logical key: {protected_key}")
+        if len(occurrences) == 1:
+            raw_key, _ = occurrences[0]
+            if raw_key != protected_key:
+                raise AuthConfigurationError(f"Protected environment key must have exact uppercase spelling: {protected_key}")
+
+    k_service_occs = key_occurrences.get("K_SERVICE", [])
+    if len(k_service_occs) > 1:
+        raise AuthConfigurationError("Duplicate or case-colliding environment key detected for logical key: K_SERVICE")
+    has_k_service = False
+    if len(k_service_occs) == 1:
+        raw_k, raw_v = k_service_occs[0]
+        if raw_k != "K_SERVICE":
+            raise AuthConfigurationError("Protected environment key must have exact uppercase spelling: K_SERVICE")
+        has_k_service = len(raw_v) > 0
+
+    mode_occ = key_occurrences.get("TARS_RUNTIME_MODE", [])
+    raw_mode = mode_occ[0][1] if mode_occ else None
+
+    # Hosted determination: K_SERVICE non-empty by length or raw_mode == "hosted-pilot"
+    is_hosted = has_k_service or (raw_mode == "hosted-pilot")
+
+    if is_hosted:
+        if not mode_occ:
+            raise AuthConfigurationError("TARS_RUNTIME_MODE=hosted-pilot required in hosted environment")
+        if mode_occ[0][0] != "TARS_RUNTIME_MODE" or mode_occ[0][1] != "hosted-pilot":
+            raise AuthConfigurationError("TARS_RUNTIME_MODE must be exact 'hosted-pilot' in hosted environment")
+
+        # In hosted mode, require all 6 protected keys with exact uppercase spelling
+        for req_key in PROTECTED_LOGICAL_KEYS:
+            occ = key_occurrences.get(req_key, [])
+            if not occ:
+                raise AuthConfigurationError(f"Missing required protected environment key in hosted mode: {req_key}")
+            if occ[0][0] != req_key:
+                raise AuthConfigurationError(f"Protected key must be exact uppercase in hosted mode: {req_key}")
+
+        # AUTH_BYPASS must be exact "false"
+        bypass_occ = key_occurrences.get("AUTH_BYPASS", [])
+        if not bypass_occ or bypass_occ[0][1] != "false":
+            raise AuthConfigurationError("AUTH_BYPASS must be exact 'false' in hosted-pilot mode")
+
+        if resolved_settings is not None:
+            if resolved_settings.tars_runtime_mode != "hosted-pilot":
+                raise AuthConfigurationError("Resolved settings runtime mode mismatch with hosted raw environment")
+            if resolved_settings.auth_bypass is not False:
+                raise AuthConfigurationError("Resolved settings auth_bypass must be False in hosted mode")
+            for req_key in PROTECTED_LOGICAL_KEYS:
+                raw_v = key_occurrences[req_key][0][1]
+                if req_key == "TARS_RUNTIME_MODE" and resolved_settings.tars_runtime_mode != raw_v:
+                    raise AuthConfigurationError("Resolved TARS_RUNTIME_MODE does not match raw environment")
+                if req_key == "GOOGLE_CLOUD_PROJECT" and resolved_settings.google_cloud_project != raw_v:
+                    raise AuthConfigurationError("Resolved GOOGLE_CLOUD_PROJECT does not match raw environment")
+                if req_key == "FIREBASE_PROJECT_ID" and resolved_settings.firebase_project_id != raw_v:
+                    raise AuthConfigurationError("Resolved FIREBASE_PROJECT_ID does not match raw environment")
+                if req_key == "AUTH_ORG_ID" and resolved_settings.auth_org_id != raw_v:
+                    raise AuthConfigurationError("Resolved AUTH_ORG_ID does not match raw environment")
+                if req_key == "AUTH_ALLOWED_EMAILS" and resolved_settings.auth_allowed_emails != raw_v:
+                    raise AuthConfigurationError("Resolved AUTH_ALLOWED_EMAILS does not match raw environment")
+
+        return "hosted-pilot"
+    else:
+        if has_k_service:
+            raise AuthConfigurationError("K_SERVICE is set but runtime mode is not hosted-pilot")
+        if mode_occ and mode_occ[0][1] not in ("local",):
+            raise AuthConfigurationError("Invalid TARS_RUNTIME_MODE for local runtime")
+
+        if resolved_settings is not None:
+            if resolved_settings.tars_runtime_mode == "hosted-pilot":
+                raise AuthConfigurationError("Hosted runtime mode cannot be resolved from secondary source when raw environment is local or absent")
+
+            for protected_key in PROTECTED_LOGICAL_KEYS:
+                if protected_key in key_occurrences:
+                    raw_v = key_occurrences[protected_key][0][1]
+                    if protected_key == "AUTH_BYPASS":
+                        expected_bool = True if raw_v == "true" else (False if raw_v == "false" else None)
+                        if expected_bool is None or resolved_settings.auth_bypass != expected_bool:
+                            raise AuthConfigurationError("Resolved AUTH_BYPASS does not match raw environment")
+                    elif protected_key == "TARS_RUNTIME_MODE" and resolved_settings.tars_runtime_mode != raw_v:
+                        raise AuthConfigurationError("Resolved TARS_RUNTIME_MODE does not match raw environment")
+                    elif protected_key == "GOOGLE_CLOUD_PROJECT" and resolved_settings.google_cloud_project != raw_v:
+                        raise AuthConfigurationError("Resolved GOOGLE_CLOUD_PROJECT does not match raw environment")
+                    elif protected_key == "FIREBASE_PROJECT_ID" and resolved_settings.firebase_project_id != raw_v:
+                        raise AuthConfigurationError("Resolved FIREBASE_PROJECT_ID does not match raw environment")
+                    elif protected_key == "AUTH_ORG_ID" and resolved_settings.auth_org_id != raw_v:
+                        raise AuthConfigurationError("Resolved AUTH_ORG_ID does not match raw environment")
+                    elif protected_key == "AUTH_ALLOWED_EMAILS" and resolved_settings.auth_allowed_emails != raw_v:
+                        raise AuthConfigurationError("Resolved AUTH_ALLOWED_EMAILS does not match raw environment")
+
+        return "local"

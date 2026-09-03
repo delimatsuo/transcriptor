@@ -9,8 +9,7 @@ import {
 import { tokens } from "@/lib/tokens";
 import type { RecentInterview } from "@/types/ws";
 import { apiFetch } from "@/lib/auth";
-
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
+import { apiUrl } from "@/lib/runtimeConfig";
 
 interface Props {
   onOpen: (sessionId: string) => void;
@@ -40,7 +39,7 @@ export default function RecentInterviews({ onOpen }: Props) {
 
     const load = async () => {
       try {
-        const response = await apiFetch(`${API_BASE}/api/sessions/recent-interviews`, {
+        const response = await apiFetch(apiUrl("/api/sessions/recent-interviews"), {
           signal: controller.signal,
         });
         if (!response.ok) throw new Error("recent interviews unavailable");

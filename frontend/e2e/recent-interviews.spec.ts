@@ -78,6 +78,13 @@ test.beforeEach(async ({ page }) => {
       body: JSON.stringify({ detail: "Report not found" }),
     });
   });
+  await page.route("**/api/sessions/**/ws-ticket", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ ticket: "synthetic-ws-ticket" }),
+    });
+  });
   await page.route(`**/api/sessions/${SESSION_ID}/notes`, async (route) => {
     await route.fulfill({
       status: 200,

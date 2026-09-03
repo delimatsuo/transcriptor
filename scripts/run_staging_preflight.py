@@ -85,7 +85,7 @@ def check_auth_and_env() -> bool:
         text=True,
     )
     if res.returncode == 0:
-        print_pass("Firebase & Google Cloud auth configuration verified")
+        print_pass("Offline auth configuration source preflight passed (provider/real-account verification not performed)")
     else:
         print_fail(f"Auth configuration failed:\n{res.stdout}\n{res.stderr}")
         return False

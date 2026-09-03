@@ -244,6 +244,12 @@ def test_healthz_and_readyz_asgi_routes_without_lifespan(monkeypatch):
     async def run_asgi_probes():
         transport = httpx.ASGITransport(app=main.app)
         async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            dummy_settings = config.Settings(
+                google_cloud_project="test-proj",
+                auth_allowed_emails="test@example.com",
+            )
+            monkeypatch.setattr(main, "settings", dummy_settings)
+
             # 1. When ready is False: /healthz is 200 ok, /readyz is 503 not_ready
             main.app.state.ready = False
             resp_health = await client.get("/healthz")
@@ -254,27 +260,38 @@ def test_healthz_and_readyz_asgi_routes_without_lifespan(monkeypatch):
             assert resp_ready_false.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
             assert resp_ready_false.json() == {"status": "not_ready"}
 
-            # 2. When ready is True: /readyz is 200 ready
+            # 2. When ready is True and settings is not None: /readyz is 200 ready
             main.app.state.ready = True
             resp_ready_true = await client.get("/readyz")
             assert resp_ready_true.status_code == status.HTTP_200_OK
             assert resp_ready_true.json() == {"status": "ready"}
 
+            # 3. When settings is None, /readyz returns 503 even with ready=True
+            monkeypatch.setattr(main, "settings", None)
+            resp_ready_none = await client.get("/readyz")
+            assert resp_ready_none.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
+            assert resp_ready_none.json() == {"status": "not_ready"}
+
     asyncio.run(run_asgi_probes())
 
 
 def test_lifespan_ready_state_transition(monkeypatch):
-    monkeypatch.setattr(main, "get_settings", lambda: config.Settings(
+    settings = config.Settings(
         google_cloud_project="test-proj",
         auth_allowed_emails="test@example.com",
-    ))
+    )
+    monkeypatch.setattr(main, "get_settings", lambda: settings)
+    monkeypatch.setattr(main, "resolve_settings_safely", lambda: settings)
+    monkeypatch.setattr(main, "validate_raw_process_env", lambda *a, **kw: "local")
+    monkeypatch.setattr(main, "validate_auth_configuration", MagicMock())
+    monkeypatch.setattr(main, "validate_existing_firebase_app", MagicMock())
 
     test_app = main.FastAPI(lifespan=main.lifespan)
     test_app.state.ready = False
 
     adc_observed_ready: list[bool] = []
 
-    async def mock_probe_adc():
+    async def mock_probe_adc(project=None):
         adc_observed_ready.append(getattr(test_app.state, "ready", False))
 
     monkeypatch.setattr(main, "probe_application_default_credentials", mock_probe_adc)
@@ -300,6 +317,324 @@ def test_lifespan_ready_state_transition(monkeypatch):
     assert adc_observed_ready[0] is False
 
     # 4. After shutdown: ready must be False
+    assert getattr(test_app.state, "ready", False) is False
+
+
+def test_lifespan_shutdown_drains_pipelines_before_clearing_state(monkeypatch):
+    """Lifespan teardown must mark readiness False, keep dependency globals live
+
+    while active pipelines drain and process final transcript callbacks, and
+    clear all globals only after pipeline stops finish.
+    """
+    fake_settings = config.Settings(
+        google_cloud_project="test-proj",
+        auth_allowed_emails="test@example.com",
+    )
+    monkeypatch.setattr(main, "get_settings", lambda: fake_settings)
+    monkeypatch.setattr(main, "resolve_settings_safely", lambda: fake_settings)
+    monkeypatch.setattr(main, "validate_raw_process_env", lambda *a, **kw: "local")
+    monkeypatch.setattr(main, "validate_auth_configuration", MagicMock())
+    monkeypatch.setattr(main, "validate_existing_firebase_app", MagicMock())
+    monkeypatch.setattr(main, "probe_application_default_credentials", AsyncMock())
+    monkeypatch.setattr(main, "initialize_firebase_admin", MagicMock())
+
+    class FakeSession:
+        def __init__(self, session_id: str):
+            self.id = session_id
+            self.mode = main.SessionMode.MEETING
+            self.status = main.SessionStatus.ACTIVE
+            self.owner_id = "test-owner"
+            self.org_id = "test-org"
+            self.transcript_durability = "durable"
+            self.transcript_failure_count = 0
+
+    class FakeSessionManager:
+        def __init__(self, settings):
+            self.settings = settings
+            self.sessions: dict[str, FakeSession] = {}
+            self.recorded_segments: dict[str, list[main.TranscriptSegment]] = {}
+
+        def detect_orphaned_sessions(self):
+            return []
+
+        def get_session(self, session_id: str):
+            return self.sessions.get(session_id)
+
+        def add_transcript_segment(self, session_id: str, segment: main.TranscriptSegment):
+            self.recorded_segments.setdefault(session_id, []).append(segment)
+
+        def get_transcript_word_count_since_index(self, session_id: str, from_index: int = 0):
+            return 0
+
+    class FakeFirestoreStorage:
+        def __init__(self, settings):
+            self.settings = settings
+            self.persisted_segments: list[tuple[str, main.TranscriptSegment, dict]] = []
+
+        async def save_transcript_segment(self, session_id: str, segment: main.TranscriptSegment, **kwargs):
+            self.persisted_segments.append((session_id, segment, kwargs))
+
+        async def save_session(self, session, **kwargs):
+            pass
+
+    class FakeGCSStorage:
+        def __init__(self, settings):
+            self.settings = settings
+
+    class FakeGeminiClient:
+        def __init__(self, settings):
+            self.settings = settings
+
+    created_sm: list[FakeSessionManager] = []
+    created_fs: list[FakeFirestoreStorage] = []
+    created_gcs: list[FakeGCSStorage] = []
+    created_gem: list[FakeGeminiClient] = []
+
+    def make_sm(s):
+        instance = FakeSessionManager(s)
+        created_sm.append(instance)
+        return instance
+
+    def make_fs(s):
+        instance = FakeFirestoreStorage(s)
+        created_fs.append(instance)
+        return instance
+
+    def make_gcs(s):
+        instance = FakeGCSStorage(s)
+        created_gcs.append(instance)
+        return instance
+
+    def make_gem(s):
+        instance = FakeGeminiClient(s)
+        created_gem.append(instance)
+        return instance
+
+    monkeypatch.setattr(main, "SessionManager", make_sm)
+    monkeypatch.setattr(main, "FirestoreStorage", make_fs)
+    monkeypatch.setattr(main, "GCSStorage", make_gcs)
+    monkeypatch.setattr(main, "GeminiClient", make_gem)
+
+    test_app = main.FastAPI(lifespan=main.lifespan)
+    test_app.state.ready = False
+
+    session_id = "test-active-session"
+    final_segment = main.TranscriptSegment(
+        speaker="Speaker 1",
+        text="Final segment during drain",
+        is_final=True,
+        start_time=0.0,
+        end_time=1.0,
+    )
+
+    stop_calls: list[str] = []
+    drain_invariants_verified: list[bool] = []
+
+    async def fake_stop_pipeline(sid: str) -> bool:
+        stop_calls.append(sid)
+        assert sid == session_id
+        main.pipeline_tasks.pop(sid, None)
+        # 1. Assert readiness is already False before pipeline drain
+        assert getattr(test_app.state, "ready", True) is False
+        # 2. Assert all published dependency globals are the exact live fake instances
+        assert main.settings is fake_settings
+        assert main.session_mgr is created_sm[0]
+        assert main.firestore_storage is created_fs[0]
+        assert main.gcs_storage is created_gcs[0]
+        assert main.gemini_client is created_gem[0]
+        assert main._context_window_for(sid) is not None
+
+        # 3. Invoke real _on_transcript with one final TranscriptSegment
+        await main._on_transcript(sid, final_segment)
+        drain_invariants_verified.append(True)
+        return True
+
+    monkeypatch.setattr(main, "_stop_pipeline", fake_stop_pipeline)
+
+    async def run_lifespan():
+        async with main.lifespan(test_app):
+            assert getattr(test_app.state, "ready", False) is True
+            # Seed one active pipeline session
+            sm = created_sm[0]
+            sm.sessions[session_id] = FakeSession(session_id)
+            monkeypatch.setitem(main.pipeline_tasks, session_id, object())
+            mock_cw = MagicMock()
+            mock_cw.should_summarize = lambda count: False
+            mock_cw.last_summary_seq = 0
+            main.context_windows[session_id] = mock_cw
+
+    asyncio.run(run_lifespan())
+
+    # Assert stop ran exactly once and invariants passed during drain
+    assert stop_calls == [session_id]
+    assert len(drain_invariants_verified) == 1
+
+    # Assert the final segment was recorded in session manager
+    sm = created_sm[0]
+    assert session_id in sm.recorded_segments
+    assert sm.recorded_segments[session_id] == [final_segment]
+
+    # Assert the final segment was persisted to Firestore
+    fs = created_fs[0]
+    assert len(fs.persisted_segments) == 1
+    assert fs.persisted_segments[0][0] == session_id
+    assert fs.persisted_segments[0][1] == final_segment
+
+    # Assert all globals and context were cleared after lifespan exit
+    assert main.settings is None
+    assert main.session_mgr is None
+    assert main.firestore_storage is None
+    assert main.gcs_storage is None
+    assert main.gemini_client is None
+    assert main.context_window is None
+    assert len(main.context_windows) == 0
+    assert getattr(test_app.state, "ready", False) is False
+
+
+def test_lifespan_shutdown_clears_state_and_propagates_on_drain_failure(monkeypatch):
+    """If stopping an active pipeline raises an exception during shutdown,
+
+    the exact exception must propagate and all globals and context state must
+    still be cleared in the inner finally.
+    """
+    fake_settings = config.Settings(
+        google_cloud_project="test-proj",
+        auth_allowed_emails="test@example.com",
+    )
+    monkeypatch.setattr(main, "get_settings", lambda: fake_settings)
+    monkeypatch.setattr(main, "resolve_settings_safely", lambda: fake_settings)
+    monkeypatch.setattr(main, "validate_raw_process_env", lambda *a, **kw: "local")
+    monkeypatch.setattr(main, "validate_auth_configuration", MagicMock())
+    monkeypatch.setattr(main, "validate_existing_firebase_app", MagicMock())
+    monkeypatch.setattr(main, "probe_application_default_credentials", AsyncMock())
+    monkeypatch.setattr(main, "initialize_firebase_admin", MagicMock())
+
+    class FakeSession:
+        def __init__(self, session_id: str):
+            self.id = session_id
+            self.mode = main.SessionMode.MEETING
+            self.status = main.SessionStatus.ACTIVE
+            self.owner_id = "test-owner"
+            self.org_id = "test-org"
+
+    class FakeSessionManager:
+        def __init__(self, settings):
+            self.settings = settings
+            self.sessions: dict[str, FakeSession] = {}
+
+        def detect_orphaned_sessions(self):
+            return []
+
+        def get_session(self, session_id: str):
+            return self.sessions.get(session_id)
+
+    class FakeFirestoreStorage:
+        def __init__(self, settings):
+            self.settings = settings
+
+    class FakeGCSStorage:
+        def __init__(self, settings):
+            self.settings = settings
+
+    class FakeGeminiClient:
+        def __init__(self, settings):
+            self.settings = settings
+
+    created_sm: list[FakeSessionManager] = []
+    created_fs: list[FakeFirestoreStorage] = []
+    created_gcs: list[FakeGCSStorage] = []
+    created_gem: list[FakeGeminiClient] = []
+
+    def make_sm(s):
+        instance = FakeSessionManager(s)
+        created_sm.append(instance)
+        return instance
+
+    def make_fs(s):
+        instance = FakeFirestoreStorage(s)
+        created_fs.append(instance)
+        return instance
+
+    def make_gcs(s):
+        instance = FakeGCSStorage(s)
+        created_gcs.append(instance)
+        return instance
+
+    def make_gem(s):
+        instance = FakeGeminiClient(s)
+        created_gem.append(instance)
+        return instance
+
+    monkeypatch.setattr(main, "SessionManager", make_sm)
+    monkeypatch.setattr(main, "FirestoreStorage", make_fs)
+    monkeypatch.setattr(main, "GCSStorage", make_gcs)
+    monkeypatch.setattr(main, "GeminiClient", make_gem)
+
+    class DrainPipelineSentinelError(RuntimeError):
+        pass
+
+    sentinel_error = DrainPipelineSentinelError("simulated pipeline drain failure")
+    observed_state: dict[str, object] = {}
+    stop_calls: list[str] = []
+
+    test_app = main.FastAPI(lifespan=main.lifespan)
+    test_app.state.ready = False
+    session_id = "test-failing-session"
+    later_session_id = "test-later-session"
+
+    async def failing_stop_pipeline(sid: str) -> bool:
+        stop_calls.append(sid)
+        main.pipeline_tasks.pop(sid, None)
+        if sid == later_session_id:
+            observed_state["later_ready"] = getattr(test_app.state, "ready", True)
+            observed_state["later_session_mgr"] = main.session_mgr
+            return True
+        observed_state["ready"] = getattr(test_app.state, "ready", True)
+        observed_state["settings"] = main.settings
+        observed_state["session_mgr"] = main.session_mgr
+        observed_state["firestore_storage"] = main.firestore_storage
+        observed_state["gcs_storage"] = main.gcs_storage
+        observed_state["gemini_client"] = main.gemini_client
+        observed_state["context"] = main._context_window_for(sid)
+        raise sentinel_error
+
+    monkeypatch.setattr(main, "_stop_pipeline", failing_stop_pipeline)
+
+    async def run_lifespan():
+        async with main.lifespan(test_app):
+            sm = created_sm[0]
+            sm.sessions[session_id] = FakeSession(session_id)
+            monkeypatch.setitem(main.pipeline_tasks, session_id, object())
+            monkeypatch.setitem(main.pipeline_tasks, later_session_id, object())
+            mock_cw = MagicMock()
+            main.context_windows[session_id] = mock_cw
+
+    with pytest.raises(DrainPipelineSentinelError) as exc_info:
+        asyncio.run(run_lifespan())
+
+    # Assert exact sentinel exception propagated
+    assert exc_info.value is sentinel_error
+    assert stop_calls == [session_id, later_session_id]
+
+    # Assert live-global invariant was observed during stop_pipeline
+    assert observed_state["ready"] is False
+    assert observed_state["settings"] is fake_settings
+    assert observed_state["session_mgr"] is created_sm[0]
+    assert observed_state["firestore_storage"] is created_fs[0]
+    assert observed_state["gcs_storage"] is created_gcs[0]
+    assert observed_state["gemini_client"] is created_gem[0]
+    assert observed_state["context"] is not None
+    assert observed_state["later_ready"] is False
+    assert observed_state["later_session_mgr"] is created_sm[0]
+
+    # Assert all globals and context state were still cleared in inner finally
+    assert main.settings is None
+    assert main.session_mgr is None
+    assert main.firestore_storage is None
+    assert main.gcs_storage is None
+    assert main.gemini_client is None
+    assert main.context_window is None
+    assert len(main.context_windows) == 0
     assert getattr(test_app.state, "ready", False) is False
 
 
@@ -341,6 +676,8 @@ def _parse_dockerfile_instructions(content: str) -> list[tuple[str, str]]:
             continue
         directive = parts[0].upper()
         body = parts[1].strip(" \t\r\n") if len(parts) > 1 else ""
+        if directive == "FROM" and instructions:
+            instructions = []
         instructions.append((directive, body))
 
     return instructions
@@ -376,7 +713,9 @@ def _parse_env_instruction_assignments(body: str) -> list[tuple[str, str]]:
         if "=" not in token:
             raise ValueError(f"Legacy space-separated or non-key=value ENV token not allowed: {token}")
         k, v = token.split("=", 1)
-        assignments.append((k.strip(), v.strip()))
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", k):
+            raise ValueError(f"Invalid identifier key in ENV instruction token: '{k}'")
+        assignments.append((k, v))
     return assignments
 
 
@@ -432,6 +771,8 @@ def _validate_dockerfile_contract(instructions: list[tuple[str, str]]) -> None:
         "PYTHONDONTWRITEBYTECODE": "1",
         "HOST_AUDIO_CAPTURE_ENABLED": "false",
         "AUDIO_BACKUP_ENABLED": "false",
+        "TARS_RUNTIME_MODE": "hosted-pilot",
+        "AUTH_BYPASS": "false",
     }
 
     # 1. Exact uppercase source spelling and expected value required
@@ -468,16 +809,111 @@ def test_dockerfile_static_source_contract():
     _validate_dockerfile_contract(instructions)
 
 
+def make_valid_dockerfile(
+    *,
+    builder_env: str = "TARS_RUNTIME_MODE=hosted-pilot AUTH_BYPASS=false",
+    final_deps: str = "apt-get update && apt-get install -y --no-install-recommends libsndfile1 libportaudio2 && rm -rf /var/lib/apt/lists/*",
+    final_env: str = "HOST_AUDIO_CAPTURE_ENABLED=false AUDIO_BACKUP_ENABLED=false PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 TARS_RUNTIME_MODE=hosted-pilot AUTH_BYPASS=false",
+    final_useradd: str = "useradd -r -u 1001 appuser",
+    final_user: str = "appuser",
+    final_cmd: str = '["sh", "-c", "exec python -m uvicorn backend.main:app --host 0.0.0.0 --port ${PORT:-8080}"]',
+    extra_instructions: str = "",
+) -> str:
+    return f"""
+    FROM python:3.12-slim AS builder
+    ENV {builder_env}
+    RUN apt-get update && apt-get install -y --no-install-recommends libsndfile1 libportaudio2 && rm -rf /var/lib/apt/lists/*
+    RUN useradd -r -u 1001 appuser
+
+    FROM python:3.12-slim
+    RUN {final_deps}
+    ENV {final_env}
+    RUN {final_useradd}
+    USER {final_user}
+    CMD {final_cmd}
+    {extra_instructions}
+    """
+
+
 def test_dockerfile_static_source_guard_regression_probes():
+    # Validate positive baseline first
+    _validate_dockerfile_contract(_parse_dockerfile_instructions(make_valid_dockerfile()))
+
+    # Probe: Safe values only in early builder stage (final stage missing runtime/bypass)
+    sample_safe_early_only = make_valid_dockerfile(
+        final_env="HOST_AUDIO_CAPTURE_ENABLED=false AUDIO_BACKUP_ENABLED=false PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1"
+    )
+    with pytest.raises(AssertionError):
+        _validate_dockerfile_contract(_parse_dockerfile_instructions(sample_safe_early_only))
+
+    # Probe: Final stage missing TARS_RUNTIME_MODE
+    sample_missing_runtime = make_valid_dockerfile(
+        final_env="HOST_AUDIO_CAPTURE_ENABLED=false AUDIO_BACKUP_ENABLED=false PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 AUTH_BYPASS=false"
+    )
+    with pytest.raises(AssertionError):
+        _validate_dockerfile_contract(_parse_dockerfile_instructions(sample_missing_runtime))
+
+    # Probe: Final stage missing AUTH_BYPASS
+    sample_missing_bypass = make_valid_dockerfile(
+        final_env="HOST_AUDIO_CAPTURE_ENABLED=false AUDIO_BACKUP_ENABLED=false PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 TARS_RUNTIME_MODE=hosted-pilot"
+    )
+    with pytest.raises(AssertionError):
+        _validate_dockerfile_contract(_parse_dockerfile_instructions(sample_missing_bypass))
+
+    # Probe: Final stage duplicate TARS_RUNTIME_MODE
+    sample_duplicate_runtime = make_valid_dockerfile(
+        final_env="HOST_AUDIO_CAPTURE_ENABLED=false AUDIO_BACKUP_ENABLED=false PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 TARS_RUNTIME_MODE=hosted-pilot AUTH_BYPASS=false TARS_RUNTIME_MODE=hosted-pilot"
+    )
+    with pytest.raises(AssertionError):
+        _validate_dockerfile_contract(_parse_dockerfile_instructions(sample_duplicate_runtime))
+
+    # Probe: Final stage duplicate AUTH_BYPASS
+    sample_duplicate_bypass = make_valid_dockerfile(
+        final_env="HOST_AUDIO_CAPTURE_ENABLED=false AUDIO_BACKUP_ENABLED=false PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 TARS_RUNTIME_MODE=hosted-pilot AUTH_BYPASS=false AUTH_BYPASS=false"
+    )
+    with pytest.raises(AssertionError):
+        _validate_dockerfile_contract(_parse_dockerfile_instructions(sample_duplicate_bypass))
+
+    # Probe: Final stage case-colliding tars_runtime_mode
+    sample_case_runtime = make_valid_dockerfile(
+        final_env="HOST_AUDIO_CAPTURE_ENABLED=false AUDIO_BACKUP_ENABLED=false PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 tars_runtime_mode=hosted-pilot AUTH_BYPASS=false"
+    )
+    with pytest.raises(AssertionError):
+        _validate_dockerfile_contract(_parse_dockerfile_instructions(sample_case_runtime))
+
+    # Probe: Final stage case-colliding auth_bypass
+    sample_case_bypass = make_valid_dockerfile(
+        final_env="HOST_AUDIO_CAPTURE_ENABLED=false AUDIO_BACKUP_ENABLED=false PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 TARS_RUNTIME_MODE=hosted-pilot auth_bypass=false"
+    )
+    with pytest.raises(AssertionError):
+        _validate_dockerfile_contract(_parse_dockerfile_instructions(sample_case_bypass))
+
+    # Probe: Final stage unsafe TARS_RUNTIME_MODE=local
+    sample_unsafe_runtime = make_valid_dockerfile(
+        final_env="HOST_AUDIO_CAPTURE_ENABLED=false AUDIO_BACKUP_ENABLED=false PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 TARS_RUNTIME_MODE=local AUTH_BYPASS=false"
+    )
+    with pytest.raises(AssertionError):
+        _validate_dockerfile_contract(_parse_dockerfile_instructions(sample_unsafe_runtime))
+
+    # Probe: Final stage unsafe AUTH_BYPASS=true
+    sample_unsafe_bypass = make_valid_dockerfile(
+        final_env="HOST_AUDIO_CAPTURE_ENABLED=false AUDIO_BACKUP_ENABLED=false PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 TARS_RUNTIME_MODE=hosted-pilot AUTH_BYPASS=true"
+    )
+    with pytest.raises(AssertionError):
+        _validate_dockerfile_contract(_parse_dockerfile_instructions(sample_unsafe_bypass))
+
     canonical_deps = (
         "apt-get update && apt-get install -y --no-install-recommends libsndfile1 libportaudio2 && rm -rf /var/lib/apt/lists/*"
+    )
+    canonical_env = (
+        "HOST_AUDIO_CAPTURE_ENABLED=false AUDIO_BACKUP_ENABLED=false PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 TARS_RUNTIME_MODE=hosted-pilot AUTH_BYPASS=false"
     )
 
     # Probe 1: Case-insensitive lowercase cmd/user/entrypoint (valid lowercase directives parsed case-insensitively)
     sample_lowercase = f"""
     from python:3.12-slim
     run {canonical_deps}
-    env HOST_AUDIO_CAPTURE_ENABLED=false AUDIO_BACKUP_ENABLED=false PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
+    env {canonical_env}
     run useradd -r -u 1001 appuser
     user appuser
     cmd ["sh", "-c", "exec python -m uvicorn backend.main:app --host 0.0.0.0 --port ${{PORT:-8080}}"]
@@ -489,7 +925,7 @@ def test_dockerfile_static_source_guard_regression_probes():
     sample_comment_user = f"""
     FROM python:3.12-slim
     RUN {canonical_deps}
-    ENV HOST_AUDIO_CAPTURE_ENABLED=false AUDIO_BACKUP_ENABLED=false PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
+    ENV {canonical_env}
     # RUN useradd -r -u 1001 appuser
     # USER appuser
     CMD ["sh", "-c", "exec python -m uvicorn backend.main:app --host 0.0.0.0 --port ${{PORT:-8080}}"]
@@ -501,7 +937,7 @@ def test_dockerfile_static_source_guard_regression_probes():
     sample_inert_useradd_run = f"""
     FROM python:3.12-slim
     RUN {canonical_deps}
-    ENV HOST_AUDIO_CAPTURE_ENABLED=false AUDIO_BACKUP_ENABLED=false PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
+    ENV {canonical_env}
     RUN true # useradd -r -u 1001 appuser
     USER appuser
     CMD ["sh", "-c", "exec python -m uvicorn backend.main:app --host 0.0.0.0 --port ${{PORT:-8080}}"]
@@ -510,13 +946,13 @@ def test_dockerfile_static_source_guard_regression_probes():
         _validate_dockerfile_contract(_parse_dockerfile_instructions(sample_inert_useradd_run))
 
     # Probe 4: Inert RUN comment with library installs fails
-    sample_inert_libs_run = """
+    sample_inert_libs_run = f"""
     FROM python:3.12-slim
     RUN true # apt-get update && apt-get install -y --no-install-recommends libsndfile1 libportaudio2 && rm -rf /var/lib/apt/lists/*
-    ENV HOST_AUDIO_CAPTURE_ENABLED=false AUDIO_BACKUP_ENABLED=false PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
+    ENV {canonical_env}
     RUN useradd -r -u 1001 appuser
     USER appuser
-    CMD ["sh", "-c", "exec python -m uvicorn backend.main:app --host 0.0.0.0 --port ${PORT:-8080}"]
+    CMD ["sh", "-c", "exec python -m uvicorn backend.main:app --host 0.0.0.0 --port ${{PORT:-8080}}"]
     """
     with pytest.raises(AssertionError):
         _validate_dockerfile_contract(_parse_dockerfile_instructions(sample_inert_libs_run))
@@ -525,7 +961,7 @@ def test_dockerfile_static_source_guard_regression_probes():
     sample_inert_env_note = f"""
     FROM python:3.12-slim
     RUN {canonical_deps}
-    ENV NOTE="HOST_AUDIO_CAPTURE_ENABLED=false AUDIO_BACKUP_ENABLED=false PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1"
+    ENV NOTE="{canonical_env}"
     RUN useradd -r -u 1001 appuser
     USER appuser
     CMD ["sh", "-c", "exec python -m uvicorn backend.main:app --host 0.0.0.0 --port ${{PORT:-8080}}"]
@@ -537,7 +973,7 @@ def test_dockerfile_static_source_guard_regression_probes():
     sample_duplicate_env = f"""
     FROM python:3.12-slim
     RUN {canonical_deps}
-    ENV HOST_AUDIO_CAPTURE_ENABLED=true HOST_AUDIO_CAPTURE_ENABLED=false AUDIO_BACKUP_ENABLED=false PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
+    ENV HOST_AUDIO_CAPTURE_ENABLED=true {canonical_env}
     RUN useradd -r -u 1001 appuser
     USER appuser
     CMD ["sh", "-c", "exec python -m uvicorn backend.main:app --host 0.0.0.0 --port ${{PORT:-8080}}"]
@@ -549,7 +985,7 @@ def test_dockerfile_static_source_guard_regression_probes():
     sample_override_entrypoint = f"""
     FROM python:3.12-slim
     RUN {canonical_deps}
-    ENV HOST_AUDIO_CAPTURE_ENABLED=false AUDIO_BACKUP_ENABLED=false PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
+    ENV {canonical_env}
     RUN useradd -r -u 1001 appuser
     USER appuser
     entrypoint ["sh", "-c", "override"]
@@ -562,7 +998,7 @@ def test_dockerfile_static_source_guard_regression_probes():
     sample_reload = f"""
     FROM python:3.12-slim
     RUN {canonical_deps}
-    ENV HOST_AUDIO_CAPTURE_ENABLED=false AUDIO_BACKUP_ENABLED=false PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
+    ENV {canonical_env}
     RUN useradd -r -u 1001 appuser
     USER appuser
     CMD ["sh", "-c", "exec python -m uvicorn backend.main:app --reload --host 0.0.0.0 --port ${{PORT:-8080}}"]
@@ -574,7 +1010,7 @@ def test_dockerfile_static_source_guard_regression_probes():
     sample_echo_useradd = f"""
     FROM python:3.12-slim
     RUN {canonical_deps}
-    ENV HOST_AUDIO_CAPTURE_ENABLED=false AUDIO_BACKUP_ENABLED=false PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
+    ENV {canonical_env}
     RUN echo useradd -r -u 1001 appuser
     USER appuser
     CMD ["sh", "-c", "exec python -m uvicorn backend.main:app --host 0.0.0.0 --port ${{PORT:-8080}}"]
@@ -583,13 +1019,13 @@ def test_dockerfile_static_source_guard_regression_probes():
         _validate_dockerfile_contract(_parse_dockerfile_instructions(sample_echo_useradd))
 
     # Probe 10: Inert echo dependency installation command fails exact equality
-    sample_echo_deps = """
+    sample_echo_deps = f"""
     FROM python:3.12-slim
     RUN echo apt-get install libsndfile1 libportaudio2
-    ENV HOST_AUDIO_CAPTURE_ENABLED=false AUDIO_BACKUP_ENABLED=false PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
+    ENV {canonical_env}
     RUN useradd -r -u 1001 appuser
     USER appuser
-    CMD ["sh", "-c", "exec python -m uvicorn backend.main:app --host 0.0.0.0 --port ${PORT:-8080}"]
+    CMD ["sh", "-c", "exec python -m uvicorn backend.main:app --host 0.0.0.0 --port ${{PORT:-8080}}"]
     """
     with pytest.raises(AssertionError):
         _validate_dockerfile_contract(_parse_dockerfile_instructions(sample_echo_deps))
@@ -598,7 +1034,7 @@ def test_dockerfile_static_source_guard_regression_probes():
     sample_inline_hash_env = f"""
     FROM python:3.12-slim
     RUN {canonical_deps}
-    ENV HOST_AUDIO_CAPTURE_ENABLED=false#unsafe AUDIO_BACKUP_ENABLED=false PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
+    ENV HOST_AUDIO_CAPTURE_ENABLED=false#unsafe AUDIO_BACKUP_ENABLED=false PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 TARS_RUNTIME_MODE=hosted-pilot AUTH_BYPASS=false
     RUN useradd -r -u 1001 appuser
     USER appuser
     CMD ["sh", "-c", "exec python -m uvicorn backend.main:app --host 0.0.0.0 --port ${{PORT:-8080}}"]
@@ -610,7 +1046,7 @@ def test_dockerfile_static_source_guard_regression_probes():
     sample_nbsp_useradd = f"""
     FROM python:3.12-slim
     RUN {canonical_deps}
-    ENV HOST_AUDIO_CAPTURE_ENABLED=false AUDIO_BACKUP_ENABLED=false PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
+    ENV {canonical_env}
     RUN useradd\u00a0-r -u 1001 appuser
     USER appuser
     CMD ["sh", "-c", "exec python -m uvicorn backend.main:app --host 0.0.0.0 --port ${{PORT:-8080}}"]
@@ -619,13 +1055,13 @@ def test_dockerfile_static_source_guard_regression_probes():
         _validate_dockerfile_contract(_parse_dockerfile_instructions(sample_nbsp_useradd))
 
     # Probe 13: NBSP-separated dependency RUN fails non-ASCII check
-    sample_nbsp_deps = """
+    sample_nbsp_deps = f"""
     FROM python:3.12-slim
     RUN apt-get\u00a0update && apt-get install -y --no-install-recommends libsndfile1 libportaudio2 && rm -rf /var/lib/apt/lists/*
-    ENV HOST_AUDIO_CAPTURE_ENABLED=false AUDIO_BACKUP_ENABLED=false PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
+    ENV {canonical_env}
     RUN useradd -r -u 1001 appuser
     USER appuser
-    CMD ["sh", "-c", "exec python -m uvicorn backend.main:app --host 0.0.0.0 --port ${PORT:-8080}"]
+    CMD ["sh", "-c", "exec python -m uvicorn backend.main:app --host 0.0.0.0 --port ${{PORT:-8080}}"]
     """
     with pytest.raises(AssertionError):
         _validate_dockerfile_contract(_parse_dockerfile_instructions(sample_nbsp_deps))
@@ -634,7 +1070,7 @@ def test_dockerfile_static_source_guard_regression_probes():
     sample_nbsp_run_directive = f"""
     FROM python:3.12-slim
     RUN\u00a0{canonical_deps}
-    ENV HOST_AUDIO_CAPTURE_ENABLED=false AUDIO_BACKUP_ENABLED=false PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
+    ENV {canonical_env}
     RUN useradd -r -u 1001 appuser
     USER appuser
     CMD ["sh", "-c", "exec python -m uvicorn backend.main:app --host 0.0.0.0 --port ${{PORT:-8080}}"]
@@ -646,7 +1082,7 @@ def test_dockerfile_static_source_guard_regression_probes():
     sample_nbsp_env_directive = f"""
     FROM python:3.12-slim
     RUN {canonical_deps}
-    ENV\u00a0HOST_AUDIO_CAPTURE_ENABLED=false AUDIO_BACKUP_ENABLED=false PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
+    ENV\u00a0{canonical_env}
     RUN useradd -r -u 1001 appuser
     USER appuser
     CMD ["sh", "-c", "exec python -m uvicorn backend.main:app --host 0.0.0.0 --port ${{PORT:-8080}}"]
@@ -658,7 +1094,7 @@ def test_dockerfile_static_source_guard_regression_probes():
     sample_nbsp_user_directive = f"""
     FROM python:3.12-slim
     RUN {canonical_deps}
-    ENV HOST_AUDIO_CAPTURE_ENABLED=false AUDIO_BACKUP_ENABLED=false PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
+    ENV {canonical_env}
     RUN useradd -r -u 1001 appuser
     USER\u00a0appuser
     CMD ["sh", "-c", "exec python -m uvicorn backend.main:app --host 0.0.0.0 --port ${{PORT:-8080}}"]
@@ -670,7 +1106,7 @@ def test_dockerfile_static_source_guard_regression_probes():
     sample_nbsp_cmd_directive = f"""
     FROM python:3.12-slim
     RUN {canonical_deps}
-    ENV HOST_AUDIO_CAPTURE_ENABLED=false AUDIO_BACKUP_ENABLED=false PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
+    ENV {canonical_env}
     RUN useradd -r -u 1001 appuser
     USER appuser
     CMD\u00a0["sh", "-c", "exec python -m uvicorn backend.main:app --host 0.0.0.0 --port ${{PORT:-8080}}"]
@@ -682,7 +1118,7 @@ def test_dockerfile_static_source_guard_regression_probes():
     sample_trailing_nbsp_deps = f"""
     FROM python:3.12-slim
     RUN {canonical_deps}\u00a0
-    ENV HOST_AUDIO_CAPTURE_ENABLED=false AUDIO_BACKUP_ENABLED=false PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
+    ENV {canonical_env}
     RUN useradd -r -u 1001 appuser
     USER appuser
     CMD ["sh", "-c", "exec python -m uvicorn backend.main:app --host 0.0.0.0 --port ${{PORT:-8080}}"]
@@ -694,7 +1130,7 @@ def test_dockerfile_static_source_guard_regression_probes():
     sample_trailing_nbsp_env = f"""
     FROM python:3.12-slim
     RUN {canonical_deps}
-    ENV HOST_AUDIO_CAPTURE_ENABLED=false AUDIO_BACKUP_ENABLED=false PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1\u00a0
+    ENV {canonical_env}\u00a0
     RUN useradd -r -u 1001 appuser
     USER appuser
     CMD ["sh", "-c", "exec python -m uvicorn backend.main:app --host 0.0.0.0 --port ${{PORT:-8080}}"]
@@ -706,7 +1142,7 @@ def test_dockerfile_static_source_guard_regression_probes():
     sample_trailing_nbsp_useradd = f"""
     FROM python:3.12-slim
     RUN {canonical_deps}
-    ENV HOST_AUDIO_CAPTURE_ENABLED=false AUDIO_BACKUP_ENABLED=false PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
+    ENV {canonical_env}
     RUN useradd -r -u 1001 appuser\u00a0
     USER appuser
     CMD ["sh", "-c", "exec python -m uvicorn backend.main:app --host 0.0.0.0 --port ${{PORT:-8080}}"]
@@ -718,7 +1154,7 @@ def test_dockerfile_static_source_guard_regression_probes():
     sample_trailing_nbsp_user = f"""
     FROM python:3.12-slim
     RUN {canonical_deps}
-    ENV HOST_AUDIO_CAPTURE_ENABLED=false AUDIO_BACKUP_ENABLED=false PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
+    ENV {canonical_env}
     RUN useradd -r -u 1001 appuser
     USER appuser\u00a0
     CMD ["sh", "-c", "exec python -m uvicorn backend.main:app --host 0.0.0.0 --port ${{PORT:-8080}}"]
@@ -730,7 +1166,7 @@ def test_dockerfile_static_source_guard_regression_probes():
     sample_trailing_nbsp_cmd = f"""
     FROM python:3.12-slim
     RUN {canonical_deps}
-    ENV HOST_AUDIO_CAPTURE_ENABLED=false AUDIO_BACKUP_ENABLED=false PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
+    ENV {canonical_env}
     RUN useradd -r -u 1001 appuser
     USER appuser
     CMD ["sh", "-c", "exec python -m uvicorn backend.main:app --host 0.0.0.0 --port ${{PORT:-8080}}"]\u00a0
@@ -742,7 +1178,7 @@ def test_dockerfile_static_source_guard_regression_probes():
     sample_combined_mixed_env_override = f"""
     FROM python:3.12-slim
     RUN {canonical_deps}
-    ENV HOST_AUDIO_CAPTURE_ENABLED=false AUDIO_BACKUP_ENABLED=false PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
+    ENV {canonical_env}
     ENV Host_Audio_Capture_Enabled=true audio_backup_enabled=true
     RUN useradd -r -u 1001 appuser
     USER appuser
@@ -755,7 +1191,7 @@ def test_dockerfile_static_source_guard_regression_probes():
     sample_mixed_host_audio_override = f"""
     FROM python:3.12-slim
     RUN {canonical_deps}
-    ENV HOST_AUDIO_CAPTURE_ENABLED=false AUDIO_BACKUP_ENABLED=false PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
+    ENV {canonical_env}
     ENV Host_Audio_Capture_Enabled=true
     RUN useradd -r -u 1001 appuser
     USER appuser
@@ -768,7 +1204,7 @@ def test_dockerfile_static_source_guard_regression_probes():
     sample_lower_host_audio_override = f"""
     FROM python:3.12-slim
     RUN {canonical_deps}
-    ENV HOST_AUDIO_CAPTURE_ENABLED=false AUDIO_BACKUP_ENABLED=false PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
+    ENV {canonical_env}
     ENV host_audio_capture_enabled=true
     RUN useradd -r -u 1001 appuser
     USER appuser
@@ -781,7 +1217,7 @@ def test_dockerfile_static_source_guard_regression_probes():
     sample_mixed_audio_backup_override = f"""
     FROM python:3.12-slim
     RUN {canonical_deps}
-    ENV HOST_AUDIO_CAPTURE_ENABLED=false AUDIO_BACKUP_ENABLED=false PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
+    ENV {canonical_env}
     ENV Audio_Backup_Enabled=true
     RUN useradd -r -u 1001 appuser
     USER appuser
@@ -794,7 +1230,7 @@ def test_dockerfile_static_source_guard_regression_probes():
     sample_lower_audio_backup_override = f"""
     FROM python:3.12-slim
     RUN {canonical_deps}
-    ENV HOST_AUDIO_CAPTURE_ENABLED=false AUDIO_BACKUP_ENABLED=false PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
+    ENV {canonical_env}
     ENV audio_backup_enabled=true
     RUN useradd -r -u 1001 appuser
     USER appuser
@@ -807,7 +1243,7 @@ def test_dockerfile_static_source_guard_regression_probes():
     sample_lower_unbuffered_override = f"""
     FROM python:3.12-slim
     RUN {canonical_deps}
-    ENV HOST_AUDIO_CAPTURE_ENABLED=false AUDIO_BACKUP_ENABLED=false PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
+    ENV {canonical_env}
     ENV pythonunbuffered=0
     RUN useradd -r -u 1001 appuser
     USER appuser
@@ -820,7 +1256,7 @@ def test_dockerfile_static_source_guard_regression_probes():
     sample_lower_dontwritebytecode_override = f"""
     FROM python:3.12-slim
     RUN {canonical_deps}
-    ENV HOST_AUDIO_CAPTURE_ENABLED=false AUDIO_BACKUP_ENABLED=false PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
+    ENV {canonical_env}
     ENV pythondontwritebytecode=0
     RUN useradd -r -u 1001 appuser
     USER appuser
@@ -833,7 +1269,7 @@ def test_dockerfile_static_source_guard_regression_probes():
     sample_inline_case_collision_env = f"""
     FROM python:3.12-slim
     RUN {canonical_deps}
-    ENV HOST_AUDIO_CAPTURE_ENABLED=false host_audio_capture_enabled=true AUDIO_BACKUP_ENABLED=false PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
+    ENV HOST_AUDIO_CAPTURE_ENABLED=false host_audio_capture_enabled=true AUDIO_BACKUP_ENABLED=false PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 TARS_RUNTIME_MODE=hosted-pilot AUTH_BYPASS=false
     RUN useradd -r -u 1001 appuser
     USER appuser
     CMD ["sh", "-c", "exec python -m uvicorn backend.main:app --host 0.0.0.0 --port ${{PORT:-8080}}"]
@@ -860,33 +1296,42 @@ def test_dockerignore_static_contract():
     ]
 
 
-# --- Section 7: Environment Examples Static Contract ---
-
 def _parse_env_assignment_pairs(text: str) -> list[tuple[str, str]]:
-    """Parse all non-comment key=value assignments preserving multiplicity and order, failing closed on noncanonical syntax."""
+    """Parse all non-comment exact KEY=value assignments, failing closed on any noncanonical syntax."""
     pairs: list[tuple[str, str]] = []
     for line in text.splitlines():
-        line_clean = line.strip()
-        if not line_clean or line_clean.startswith("#"):
+        if not line or line.startswith("#"):
             continue
 
-        # Optional lowercase export prefix followed by one or more ASCII spaces/tabs
-        if line_clean.startswith("export"):
-            if not re.match(r"^export[ \t]+", line_clean):
-                raise ValueError(f"Noncanonical export prefix syntax in .env: '{line}'")
-            line_clean = re.sub(r"^export[ \t]+", "", line_clean)
+        try:
+            line.encode("ascii")
+        except UnicodeEncodeError:
+            raise ValueError(f"Non-ASCII character in .env line: '{line}'")
 
-        if "=" not in line_clean:
-            raise ValueError(f"Non-assignment line in .env: '{line}'")
+        if "\u00a0" in line:
+            raise ValueError(f"NBSP in .env line: '{line}'")
 
-        k_raw, v_raw = line_clean.split("=", 1)
-        k = k_raw.strip()
+        if line.startswith(" ") or line.startswith("\t") or line.endswith(" ") or line.endswith("\t"):
+            raise ValueError(f"Leading or trailing whitespace on .env line: '{line}'")
 
-        # Reject quoted keys, non-ASCII, NBSP, whitespace inside key, non-identifier key
-        if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", k):
-            raise ValueError(f"Noncanonical or invalid identifier key in .env: '{k_raw}'")
+        if line.startswith("export"):
+            raise ValueError(f"export keyword prohibited in .env line: '{line}'")
 
-        pairs.append((k, v_raw.strip()))
+        if "=" not in line:
+            raise ValueError(f"Missing '=' assignment in .env line: '{line}'")
+
+        k, v = line.split("=", 1)
+
+        if k.endswith(" ") or k.endswith("\t") or v.startswith(" ") or v.startswith("\t") or v.endswith(" ") or v.endswith("\t"):
+            raise ValueError(f"Whitespace around '=' or value padding in .env line: '{line}'")
+
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", k):
+            raise ValueError(f"Invalid identifier key in .env line: '{k}'")
+
+        if (v.startswith('"') and v.endswith('"')) or (v.startswith("'") and v.endswith("'")):
+            raise ValueError(f"Quoted value prohibited in .env line: '{line}'")
+
+        pairs.append((k, v))
     return pairs
 
 
@@ -901,6 +1346,7 @@ def _validate_env_examples_contract(root_content: str, frontend_content: str) ->
     root_exact_keys = [k for k, _ in root_pairs]
     frontend_exact_keys = [k for k, _ in frontend_pairs]
 
+    assert "TARS_RUNTIME_MODE" in root_exact_keys, "Root .env.example must have exact uppercase TARS_RUNTIME_MODE"
     assert "AUTH_ALLOWED_EMAILS" in root_exact_keys, "Root .env.example must have exact uppercase AUTH_ALLOWED_EMAILS"
     assert "AUTH_BYPASS" in root_exact_keys, "Root .env.example must have exact uppercase AUTH_BYPASS"
     assert "NEXT_PUBLIC_AUTH_BYPASS" in root_exact_keys, "Root .env.example must have exact uppercase NEXT_PUBLIC_AUTH_BYPASS"
@@ -912,6 +1358,11 @@ def _validate_env_examples_contract(root_content: str, frontend_content: str) ->
         assert var in frontend_exact_keys, f"Frontend .env.example must have exact uppercase {var}"
 
     # 2. Case-insensitive logical-key multiplicity and exact values:
+    # Root has exactly one TARS_RUNTIME_MODE=local (any case variant)
+    root_modes = [v for k, v in root_pairs if k.upper() == "TARS_RUNTIME_MODE"]
+    assert len(root_modes) == 1, f"Root .env.example must have exactly one TARS_RUNTIME_MODE (found {len(root_modes)})"
+    assert root_modes[0] == "local"
+
     # Root has exactly one AUTH_ALLOWED_EMAILS=authorized-recruiter@example.com (any case variant)
     root_emails = [v for k, v in root_pairs if k.upper() == "AUTH_ALLOWED_EMAILS"]
     assert len(root_emails) == 1, f"Root .env.example must have exactly one AUTH_ALLOWED_EMAILS (found {len(root_emails)})"
@@ -991,265 +1442,168 @@ def test_environment_examples_static_contract():
 
 
 def test_environment_examples_guard_regression_probes():
-    valid_root = """
-    AUTH_ALLOWED_EMAILS=authorized-recruiter@example.com
-    AUTH_BYPASS=false
-    CORS_ALLOWED_ORIGINS=http://localhost:3000,http://localhost:3003,http://127.0.0.1:3000,http://127.0.0.1:3003,chrome-extension://fhnadcdkfgdlkomjpilmgehhpgmkjnga
-    NEXT_PUBLIC_API_URL=http://localhost:8000
-    NEXT_PUBLIC_WS_URL=ws://localhost:8000/ws
-    NEXT_PUBLIC_WS_STREAM_URL=ws://localhost:8000/api/stream/native
-    NEXT_PUBLIC_AUTH_BYPASS=0
-    """
-    valid_frontend = """
-    NEXT_PUBLIC_API_URL=http://localhost:8000
-    NEXT_PUBLIC_WS_URL=ws://localhost:8000/ws
-    NEXT_PUBLIC_WS_STREAM_URL=ws://localhost:8000/api/stream/native
-    # Only Playwright sets this to 1. Never enable it in a production build.
-    NEXT_PUBLIC_AUTH_BYPASS=0
-    """
+    valid_root = (
+        "TARS_RUNTIME_MODE=local\n"
+        "AUTH_ALLOWED_EMAILS=authorized-recruiter@example.com\n"
+        "AUTH_BYPASS=false\n"
+        "CORS_ALLOWED_ORIGINS=http://localhost:3000,http://localhost:3003,http://127.0.0.1:3000,http://127.0.0.1:3003,chrome-extension://fhnadcdkfgdlkomjpilmgehhpgmkjnga\n"
+        "NEXT_PUBLIC_API_URL=http://localhost:8000\n"
+        "NEXT_PUBLIC_WS_URL=ws://localhost:8000/ws\n"
+        "NEXT_PUBLIC_WS_STREAM_URL=ws://localhost:8000/api/stream/native\n"
+        "NEXT_PUBLIC_AUTH_BYPASS=0"
+    )
+    valid_frontend = (
+        "NEXT_PUBLIC_API_URL=http://localhost:8000\n"
+        "NEXT_PUBLIC_WS_URL=ws://localhost:8000/ws\n"
+        "NEXT_PUBLIC_WS_STREAM_URL=ws://localhost:8000/api/stream/native\n"
+        "# Only Playwright sets this to 1. Never enable it in a production build.\n"
+        "NEXT_PUBLIC_AUTH_BYPASS=0"
+    )
+
+    # Validate positive baseline first
+    _validate_env_examples_contract(valid_root, valid_frontend)
+
+    # Probe: Missing TARS_RUNTIME_MODE in root
+    root_missing_mode = (
+        "AUTH_ALLOWED_EMAILS=authorized-recruiter@example.com\n"
+        "AUTH_BYPASS=false\n"
+        "CORS_ALLOWED_ORIGINS=http://localhost:3000,http://localhost:3003,http://127.0.0.1:3000,http://127.0.0.1:3003,chrome-extension://fhnadcdkfgdlkomjpilmgehhpgmkjnga\n"
+        "NEXT_PUBLIC_API_URL=http://localhost:8000\n"
+        "NEXT_PUBLIC_WS_URL=ws://localhost:8000/ws\n"
+        "NEXT_PUBLIC_WS_STREAM_URL=ws://localhost:8000/api/stream/native\n"
+        "NEXT_PUBLIC_AUTH_BYPASS=0"
+    )
+    with pytest.raises(AssertionError):
+        _validate_env_examples_contract(root_missing_mode, valid_frontend)
+
+    # Probe: Wrong TARS_RUNTIME_MODE=hosted-pilot in root example
+    root_hosted_mode = valid_root.replace("TARS_RUNTIME_MODE=local", "TARS_RUNTIME_MODE=hosted-pilot")
+    with pytest.raises(AssertionError):
+        _validate_env_examples_contract(root_hosted_mode, valid_frontend)
+
+    # Probe: Duplicate TARS_RUNTIME_MODE
+    root_duplicate_mode = valid_root + "\nTARS_RUNTIME_MODE=local"
+    with pytest.raises(AssertionError):
+        _validate_env_examples_contract(root_duplicate_mode, valid_frontend)
+
+    # Probe: Case-colliding tars_runtime_mode
+    root_case_mode = valid_root.replace("TARS_RUNTIME_MODE=local", "tars_runtime_mode=local")
+    with pytest.raises(AssertionError):
+        _validate_env_examples_contract(root_case_mode, valid_frontend)
+
+    # Probe: Quoted TARS_RUNTIME_MODE="local"
+    root_quoted_mode = valid_root.replace("TARS_RUNTIME_MODE=local", 'TARS_RUNTIME_MODE="local"')
+    with pytest.raises(AssertionError):
+        _validate_env_examples_contract(root_quoted_mode, valid_frontend)
+
+    # Probe: Exported export TARS_RUNTIME_MODE=local
+    root_export_mode = valid_root.replace("TARS_RUNTIME_MODE=local", "export TARS_RUNTIME_MODE=local")
+    with pytest.raises(AssertionError):
+        _validate_env_examples_contract(root_export_mode, valid_frontend)
+
+    # Probe: Padded whitespace TARS_RUNTIME_MODE = local
+    root_padded_mode = valid_root.replace("TARS_RUNTIME_MODE=local", "TARS_RUNTIME_MODE = local")
+    with pytest.raises(AssertionError):
+        _validate_env_examples_contract(root_padded_mode, valid_frontend)
+
+    # Probe: Non-ASCII in .env line
+    root_non_ascii = valid_root + "\nUNICODE_KEY=café"
+    with pytest.raises(AssertionError):
+        _validate_env_examples_contract(root_non_ascii, valid_frontend)
+
+    # Probe: NBSP in .env line
+    root_nbsp = valid_root + "\nNBSP_KEY\u00a0=val"
+    with pytest.raises(AssertionError):
+        _validate_env_examples_contract(root_nbsp, valid_frontend)
 
     # Probe 1: Duplicate unsafe bypass followed by safe bypass fails
-    root_duplicate_unsafe = """
-    AUTH_ALLOWED_EMAILS=authorized-recruiter@example.com
-    AUTH_BYPASS=true
-    AUTH_BYPASS=false
-    CORS_ALLOWED_ORIGINS=http://localhost:3000,http://localhost:3003,http://127.0.0.1:3000,http://127.0.0.1:3003,chrome-extension://fhnadcdkfgdlkomjpilmgehhpgmkjnga
-    NEXT_PUBLIC_API_URL=http://localhost:8000
-    NEXT_PUBLIC_WS_URL=ws://localhost:8000/ws
-    NEXT_PUBLIC_WS_STREAM_URL=ws://localhost:8000/api/stream/native
-    NEXT_PUBLIC_AUTH_BYPASS=0
-    """
+    root_duplicate_unsafe = "AUTH_BYPASS=true\n" + valid_root
     with pytest.raises(AssertionError):
         _validate_env_examples_contract(root_duplicate_unsafe, valid_frontend)
 
     # Probe 2: Removal of root NEXT_PUBLIC_AUTH_BYPASS fails
-    root_missing_public_bypass = """
-    AUTH_ALLOWED_EMAILS=authorized-recruiter@example.com
-    AUTH_BYPASS=false
-    CORS_ALLOWED_ORIGINS=http://localhost:3000,http://localhost:3003,http://127.0.0.1:3000,http://127.0.0.1:3003,chrome-extension://fhnadcdkfgdlkomjpilmgehhpgmkjnga
-    NEXT_PUBLIC_API_URL=http://localhost:8000
-    NEXT_PUBLIC_WS_URL=ws://localhost:8000/ws
-    NEXT_PUBLIC_WS_STREAM_URL=ws://localhost:8000/api/stream/native
-    """
+    root_missing_public_bypass = "\n".join(
+        line for line in valid_root.splitlines() if not line.startswith("NEXT_PUBLIC_AUTH_BYPASS")
+    )
     with pytest.raises(AssertionError):
         _validate_env_examples_contract(root_missing_public_bypass, valid_frontend)
 
     # Probe 3: export AUTH_BYPASS=true fails even if safe line exists
-    root_export_bypass_true = """
-    AUTH_ALLOWED_EMAILS=authorized-recruiter@example.com
-    export AUTH_BYPASS=true
-    AUTH_BYPASS=false
-    CORS_ALLOWED_ORIGINS=http://localhost:3000,http://localhost:3003,http://127.0.0.1:3000,http://127.0.0.1:3003,chrome-extension://fhnadcdkfgdlkomjpilmgehhpgmkjnga
-    NEXT_PUBLIC_API_URL=http://localhost:8000
-    NEXT_PUBLIC_WS_URL=ws://localhost:8000/ws
-    NEXT_PUBLIC_WS_STREAM_URL=ws://localhost:8000/api/stream/native
-    NEXT_PUBLIC_AUTH_BYPASS=0
-    """
+    root_export_bypass_true = valid_root + "\nexport AUTH_BYPASS=true"
     with pytest.raises(AssertionError):
         _validate_env_examples_contract(root_export_bypass_true, valid_frontend)
 
     # Probe 4: export NEXT_PUBLIC_AUTH_BYPASS=1 fails even if safe line exists
-    frontend_export_public_bypass = """
-    NEXT_PUBLIC_API_URL=http://localhost:8000
-    NEXT_PUBLIC_WS_URL=ws://localhost:8000/ws
-    NEXT_PUBLIC_WS_STREAM_URL=ws://localhost:8000/api/stream/native
-    # Only Playwright sets this to 1. Never enable it in a production build.
-    export NEXT_PUBLIC_AUTH_BYPASS=1
-    NEXT_PUBLIC_AUTH_BYPASS=0
-    """
+    frontend_export_public_bypass = valid_frontend + "\nexport NEXT_PUBLIC_AUTH_BYPASS=1"
     with pytest.raises(AssertionError):
         _validate_env_examples_contract(valid_root, frontend_export_public_bypass)
 
     # Probe 5: export CORS_ALLOWED_ORIGINS=* fails even if safe line exists
-    root_export_cors_wildcard = """
-    AUTH_ALLOWED_EMAILS=authorized-recruiter@example.com
-    AUTH_BYPASS=false
-    export CORS_ALLOWED_ORIGINS=*
-    CORS_ALLOWED_ORIGINS=http://localhost:3000,http://localhost:3003,http://127.0.0.1:3000,http://127.0.0.1:3003,chrome-extension://fhnadcdkfgdlkomjpilmgehhpgmkjnga
-    NEXT_PUBLIC_API_URL=http://localhost:8000
-    NEXT_PUBLIC_WS_URL=ws://localhost:8000/ws
-    NEXT_PUBLIC_WS_STREAM_URL=ws://localhost:8000/api/stream/native
-    NEXT_PUBLIC_AUTH_BYPASS=0
-    """
+    root_export_cors_wildcard = valid_root + "\nexport CORS_ALLOWED_ORIGINS=*"
     with pytest.raises(AssertionError):
         _validate_env_examples_contract(root_export_cors_wildcard, valid_frontend)
 
     # Probe 6: Uppercase PRIVATE_KEY or CREDENTIAL_PATH fails
-    root_with_private_key = """
-    AUTH_ALLOWED_EMAILS=authorized-recruiter@example.com
-    AUTH_BYPASS=false
-    PRIVATE_KEY=secret
-    CORS_ALLOWED_ORIGINS=http://localhost:3000,http://localhost:3003,http://127.0.0.1:3000,http://127.0.0.1:3003,chrome-extension://fhnadcdkfgdlkomjpilmgehhpgmkjnga
-    NEXT_PUBLIC_API_URL=http://localhost:8000
-    NEXT_PUBLIC_WS_URL=ws://localhost:8000/ws
-    NEXT_PUBLIC_WS_STREAM_URL=ws://localhost:8000/api/stream/native
-    NEXT_PUBLIC_AUTH_BYPASS=0
-    """
+    root_with_private_key = valid_root + "\nPRIVATE_KEY=secret"
     with pytest.raises(AssertionError):
         _validate_env_examples_contract(root_with_private_key, valid_frontend)
 
-    root_with_credential_path = """
-    AUTH_ALLOWED_EMAILS=authorized-recruiter@example.com
-    AUTH_BYPASS=false
-    CREDENTIAL_PATH=/path/to/key.json
-    CORS_ALLOWED_ORIGINS=http://localhost:3000,http://localhost:3003,http://127.0.0.1:3000,http://127.0.0.1:3003,chrome-extension://fhnadcdkfgdlkomjpilmgehhpgmkjnga
-    NEXT_PUBLIC_API_URL=http://localhost:8000
-    NEXT_PUBLIC_WS_URL=ws://localhost:8000/ws
-    NEXT_PUBLIC_WS_STREAM_URL=ws://localhost:8000/api/stream/native
-    NEXT_PUBLIC_AUTH_BYPASS=0
-    """
+    root_with_credential_path = valid_root + "\nCREDENTIAL_PATH=/path/to/key.json"
     with pytest.raises(AssertionError):
         _validate_env_examples_contract(root_with_credential_path, valid_frontend)
 
     # Probe 7: Duplicate CORS with wildcard fails
-    root_duplicate_cors_wildcard = """
-    AUTH_ALLOWED_EMAILS=authorized-recruiter@example.com
-    AUTH_BYPASS=false
-    CORS_ALLOWED_ORIGINS=*
-    CORS_ALLOWED_ORIGINS=http://localhost:3000,http://localhost:3003,http://127.0.0.1:3000,http://127.0.0.1:3003,chrome-extension://fhnadcdkfgdlkomjpilmgehhpgmkjnga
-    NEXT_PUBLIC_API_URL=http://localhost:8000
-    NEXT_PUBLIC_WS_URL=ws://localhost:8000/ws
-    NEXT_PUBLIC_WS_STREAM_URL=ws://localhost:8000/api/stream/native
-    NEXT_PUBLIC_AUTH_BYPASS=0
-    """
+    root_duplicate_cors_wildcard = valid_root + "\nCORS_ALLOWED_ORIGINS=*"
     with pytest.raises(AssertionError):
         _validate_env_examples_contract(root_duplicate_cors_wildcard, valid_frontend)
 
     # Probe 8: Lowercase auth_bypass=true fails
-    root_lowercase_bypass_true = """
-    AUTH_ALLOWED_EMAILS=authorized-recruiter@example.com
-    AUTH_BYPASS=false
-    CORS_ALLOWED_ORIGINS=http://localhost:3000,http://localhost:3003,http://127.0.0.1:3000,http://127.0.0.1:3003,chrome-extension://fhnadcdkfgdlkomjpilmgehhpgmkjnga
-    NEXT_PUBLIC_API_URL=http://localhost:8000
-    NEXT_PUBLIC_WS_URL=ws://localhost:8000/ws
-    NEXT_PUBLIC_WS_STREAM_URL=ws://localhost:8000/api/stream/native
-    NEXT_PUBLIC_AUTH_BYPASS=0
-    auth_bypass=true
-    """
+    root_lowercase_bypass_true = valid_root + "\nauth_bypass=true"
     with pytest.raises(AssertionError):
         _validate_env_examples_contract(root_lowercase_bypass_true, valid_frontend)
 
     # Probe 9: Mixed-case Auth_Bypass=true fails
-    root_mixed_case_bypass_true = """
-    AUTH_ALLOWED_EMAILS=authorized-recruiter@example.com
-    AUTH_BYPASS=false
-    CORS_ALLOWED_ORIGINS=http://localhost:3000,http://localhost:3003,http://127.0.0.1:3000,http://127.0.0.1:3003,chrome-extension://fhnadcdkfgdlkomjpilmgehhpgmkjnga
-    NEXT_PUBLIC_API_URL=http://localhost:8000
-    NEXT_PUBLIC_WS_URL=ws://localhost:8000/ws
-    NEXT_PUBLIC_WS_STREAM_URL=ws://localhost:8000/api/stream/native
-    NEXT_PUBLIC_AUTH_BYPASS=0
-    Auth_Bypass=true
-    """
+    root_mixed_case_bypass_true = valid_root + "\nAuth_Bypass=true"
     with pytest.raises(AssertionError):
         _validate_env_examples_contract(root_mixed_case_bypass_true, valid_frontend)
 
     # Probe 10: export auth_bypass=true fails
-    root_export_mixed_bypass_true = """
-    AUTH_ALLOWED_EMAILS=authorized-recruiter@example.com
-    AUTH_BYPASS=false
-    CORS_ALLOWED_ORIGINS=http://localhost:3000,http://localhost:3003,http://127.0.0.1:3000,http://127.0.0.1:3003,chrome-extension://fhnadcdkfgdlkomjpilmgehhpgmkjnga
-    NEXT_PUBLIC_API_URL=http://localhost:8000
-    NEXT_PUBLIC_WS_URL=ws://localhost:8000/ws
-    NEXT_PUBLIC_WS_STREAM_URL=ws://localhost:8000/api/stream/native
-    NEXT_PUBLIC_AUTH_BYPASS=0
-    export auth_bypass=true
-    """
+    root_export_mixed_bypass_true = valid_root + "\nexport auth_bypass=true"
     with pytest.raises(AssertionError):
         _validate_env_examples_contract(root_export_mixed_bypass_true, valid_frontend)
 
     # Probe 11: Mixed-case real allowlist duplicate fails
-    root_mixed_allowlist_duplicate = """
-    AUTH_ALLOWED_EMAILS=authorized-recruiter@example.com
-    Auth_Allowed_Emails=attacker@example.com
-    AUTH_BYPASS=false
-    CORS_ALLOWED_ORIGINS=http://localhost:3000,http://localhost:3003,http://127.0.0.1:3000,http://127.0.0.1:3003,chrome-extension://fhnadcdkfgdlkomjpilmgehhpgmkjnga
-    NEXT_PUBLIC_API_URL=http://localhost:8000
-    NEXT_PUBLIC_WS_URL=ws://localhost:8000/ws
-    NEXT_PUBLIC_WS_STREAM_URL=ws://localhost:8000/api/stream/native
-    NEXT_PUBLIC_AUTH_BYPASS=0
-    """
+    root_mixed_allowlist_duplicate = valid_root + "\nAuth_Allowed_Emails=attacker@example.com"
     with pytest.raises(AssertionError):
         _validate_env_examples_contract(root_mixed_allowlist_duplicate, valid_frontend)
 
     # Probe 12: Mixed-case public-bypass=1 duplicate fails
-    frontend_mixed_public_bypass_duplicate = """
-    NEXT_PUBLIC_API_URL=http://localhost:8000
-    NEXT_PUBLIC_WS_URL=ws://localhost:8000/ws
-    NEXT_PUBLIC_WS_STREAM_URL=ws://localhost:8000/api/stream/native
-    # Only Playwright sets this to 1. Never enable it in a production build.
-    NEXT_PUBLIC_AUTH_BYPASS=0
-    Next_Public_Auth_Bypass=1
-    """
+    frontend_mixed_public_bypass_duplicate = valid_frontend + "\nNext_Public_Auth_Bypass=1"
     with pytest.raises(AssertionError):
         _validate_env_examples_contract(valid_root, frontend_mixed_public_bypass_duplicate)
 
     # Probe 13: Mixed-case/exported wildcard CORS duplicate fails
-    root_mixed_cors_wildcard = """
-    AUTH_ALLOWED_EMAILS=authorized-recruiter@example.com
-    AUTH_BYPASS=false
-    CORS_ALLOWED_ORIGINS=http://localhost:3000,http://localhost:3003,http://127.0.0.1:3000,http://127.0.0.1:3003,chrome-extension://fhnadcdkfgdlkomjpilmgehhpgmkjnga
-    export Cors_Allowed_Origins=*
-    NEXT_PUBLIC_API_URL=http://localhost:8000
-    NEXT_PUBLIC_WS_URL=ws://localhost:8000/ws
-    NEXT_PUBLIC_WS_STREAM_URL=ws://localhost:8000/api/stream/native
-    NEXT_PUBLIC_AUTH_BYPASS=0
-    """
+    root_mixed_cors_wildcard = valid_root + "\nexport Cors_Allowed_Origins=*"
     with pytest.raises(AssertionError):
         _validate_env_examples_contract(root_mixed_cors_wildcard, valid_frontend)
 
     # Probe 14: Single-quoted key 'AUTH_BYPASS'=true fails noncanonical syntax
-    root_quoted_bypass_true = """
-    AUTH_ALLOWED_EMAILS=authorized-recruiter@example.com
-    AUTH_BYPASS=false
-    CORS_ALLOWED_ORIGINS=http://localhost:3000,http://localhost:3003,http://127.0.0.1:3000,http://127.0.0.1:3003,chrome-extension://fhnadcdkfgdlkomjpilmgehhpgmkjnga
-    NEXT_PUBLIC_API_URL=http://localhost:8000
-    NEXT_PUBLIC_WS_URL=ws://localhost:8000/ws
-    NEXT_PUBLIC_WS_STREAM_URL=ws://localhost:8000/api/stream/native
-    NEXT_PUBLIC_AUTH_BYPASS=0
-    'AUTH_BYPASS'=true
-    """
+    root_quoted_bypass_true = valid_root + "\n'AUTH_BYPASS'=true"
     with pytest.raises(AssertionError):
         _validate_env_examples_contract(root_quoted_bypass_true, valid_frontend)
 
     # Probe 15: Exported single-quoted key export 'AUTH_BYPASS'=true fails noncanonical syntax
-    root_export_quoted_bypass_true = """
-    AUTH_ALLOWED_EMAILS=authorized-recruiter@example.com
-    AUTH_BYPASS=false
-    CORS_ALLOWED_ORIGINS=http://localhost:3000,http://localhost:3003,http://127.0.0.1:3000,http://127.0.0.1:3003,chrome-extension://fhnadcdkfgdlkomjpilmgehhpgmkjnga
-    NEXT_PUBLIC_API_URL=http://localhost:8000
-    NEXT_PUBLIC_WS_URL=ws://localhost:8000/ws
-    NEXT_PUBLIC_WS_STREAM_URL=ws://localhost:8000/api/stream/native
-    NEXT_PUBLIC_AUTH_BYPASS=0
-    export 'AUTH_BYPASS'=true
-    """
+    root_export_quoted_bypass_true = valid_root + "\nexport 'AUTH_BYPASS'=true"
     with pytest.raises(AssertionError):
         _validate_env_examples_contract(root_export_quoted_bypass_true, valid_frontend)
 
     # Probe 16: NBSP export separator export\u00a0AUTH_BYPASS=true fails
-    root_nbsp_export_bypass_true = """
-    AUTH_ALLOWED_EMAILS=authorized-recruiter@example.com
-    AUTH_BYPASS=false
-    CORS_ALLOWED_ORIGINS=http://localhost:3000,http://localhost:3003,http://127.0.0.1:3000,http://127.0.0.1:3003,chrome-extension://fhnadcdkfgdlkomjpilmgehhpgmkjnga
-    NEXT_PUBLIC_API_URL=http://localhost:8000
-    NEXT_PUBLIC_WS_URL=ws://localhost:8000/ws
-    NEXT_PUBLIC_WS_STREAM_URL=ws://localhost:8000/api/stream/native
-    NEXT_PUBLIC_AUTH_BYPASS=0
-    export\u00a0AUTH_BYPASS=true
-    """
+    root_nbsp_export_bypass_true = valid_root + "\nexport\u00a0AUTH_BYPASS=true"
     with pytest.raises(AssertionError):
         _validate_env_examples_contract(root_nbsp_export_bypass_true, valid_frontend)
 
     # Probe 17: Single-quoted CORS key 'CORS_ALLOWED_ORIGINS'=* fails noncanonical syntax
-    root_quoted_cors_wildcard = """
-    AUTH_ALLOWED_EMAILS=authorized-recruiter@example.com
-    AUTH_BYPASS=false
-    CORS_ALLOWED_ORIGINS=http://localhost:3000,http://localhost:3003,http://127.0.0.1:3000,http://127.0.0.1:3003,chrome-extension://fhnadcdkfgdlkomjpilmgehhpgmkjnga
-    NEXT_PUBLIC_API_URL=http://localhost:8000
-    NEXT_PUBLIC_WS_URL=ws://localhost:8000/ws
-    NEXT_PUBLIC_WS_STREAM_URL=ws://localhost:8000/api/stream/native
-    NEXT_PUBLIC_AUTH_BYPASS=0
-    'CORS_ALLOWED_ORIGINS'=*
-    """
+    root_quoted_cors_wildcard = valid_root + "\n'CORS_ALLOWED_ORIGINS'=*"
     with pytest.raises(AssertionError):
         _validate_env_examples_contract(root_quoted_cors_wildcard, valid_frontend)
 
