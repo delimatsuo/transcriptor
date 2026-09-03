@@ -4882,6 +4882,11 @@ def phase_evidence(
         for seg in transcript:
             text = seg["text"].replace("|", "\\|")
             lines.append(f"| {seg['speaker']} | {text} |")
+    elif safe_facts.get("segments_final", 0):
+        lines.append(
+            "_Texto do transcript intencionalmente omitido da evidência por segurança; "
+            "contagens, rotulagem de falantes e validação tipada comprovadas acima._"
+        )
     else:
         lines.append("_Nenhum segmento final foi produzido nesta execução._")
 
