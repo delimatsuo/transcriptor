@@ -3399,7 +3399,16 @@ def phase_companion(
         capture_started = True
         if run.secret_seen:
             ph.mark_secret_seen()
+        stim_thread: threading.Thread | None = None
+        if launcher is None:
+            def _play_primary_stimulus() -> None:
+                play_capture_fixture()
+
+            stim_thread = threading.Thread(target=_play_primary_stimulus, daemon=True)
+            stim_thread.start()
         state, output = run.wait_for_capture()
+        if stim_thread is not None:
+            stim_thread.join(timeout=5.0)
         if run.secret_seen:
             ph.mark_secret_seen()
 
@@ -3769,16 +3778,19 @@ def phase_restart_drill(
         )
         return
     again.start_event_reader()
+    stim_thread: threading.Thread | None = None
     stimulus_codes: list[int] = []
 
-    def _play_restart_stimulus() -> None:
-        try:
-            stimulus_codes.append(speak(voice, RESTART_SENTENCE))
-        except Exception:
-            stimulus_codes.append(1)
+    if run._launcher is None:
+        def _play_restart_stimulus() -> None:
+            try:
+                stimulus_codes.append(speak(voice, RESTART_SENTENCE))
+            except Exception:
+                stimulus_codes.append(1)
 
-    stim_thread = threading.Thread(target=_play_restart_stimulus, daemon=True)
-    stim_thread.start()
+        stim_thread = threading.Thread(target=_play_restart_stimulus, daemon=True)
+        stim_thread.start()
+
     state, _ = again.wait_for_capture()
     if state != "ativo":
         ph.record(
@@ -3787,7 +3799,8 @@ def phase_restart_drill(
             CredentialReachableDiagnostic(f"não recapturou após SIGKILL (estado={state})"),
         )
         return
-    stim_thread.join(timeout=10.0)
+    if stim_thread is not None:
+        stim_thread.join(timeout=10.0)
     if again.activation is None or not restart_requires_fresh(previous, again.activation.tuple):
         ph.record(
             PhaseID.RESTART,
@@ -3804,13 +3817,22 @@ def phase_restart_drill(
             ),
         )
         return
-    if any(code != 0 for code in stimulus_codes):
-        ph.record(
-            PhaseID.RESTART,
-            PhaseStatus.FAIL,
-            CredentialReachableDiagnostic("`afplay` falhou ao reproduzir o estímulo pós-reinício"),
-        )
-        return
+    if stim_thread is not None:
+        if any(code != 0 for code in stimulus_codes):
+            ph.record(
+                PhaseID.RESTART,
+                PhaseStatus.FAIL,
+                CredentialReachableDiagnostic("`afplay` falhou ao reproduzir o estímulo pós-reinício"),
+            )
+            return
+    else:
+        if speak(voice, RESTART_SENTENCE) != 0:
+            ph.record(
+                PhaseID.RESTART,
+                PhaseStatus.FAIL,
+                CredentialReachableDiagnostic("`afplay` falhou ao reproduzir o estímulo pós-reinício"),
+            )
+            return
     time.sleep(2)
     ph.record(PhaseID.RESTART, PhaseStatus.PASS, PhaseDetail.template())
 
