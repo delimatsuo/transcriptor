@@ -12,6 +12,14 @@ export const SESSION_ID = "e2e000000000000000000000000000ff";
 export async function mockSession(page: Page, mode: "meeting" | "interview") {
   await page.route("**/api/sessions**", async (route) => {
     const url = new URL(route.request().url());
+    if (url.pathname.endsWith("/ws-ticket")) {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ ticket: "synthetic-mock-ticket" }),
+      });
+      return;
+    }
     if (route.request().method() === "POST") {
       await route.fulfill({
         status: 200,

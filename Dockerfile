@@ -17,7 +17,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     HOST_AUDIO_CAPTURE_ENABLED=false \
-    AUDIO_BACKUP_ENABLED=false
+    AUDIO_BACKUP_ENABLED=false \
+    TARS_RUNTIME_MODE=hosted-pilot \
+    AUTH_BYPASS=false
 
 # Install Python dependencies
 COPY requirements.txt .

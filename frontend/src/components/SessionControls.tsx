@@ -3,10 +3,9 @@
 import { useRef, useState } from "react";
 import type { SessionMode } from "@/types/ws";
 import { apiFetch, authBypassEnabled } from "@/lib/auth";
+import { apiUrl } from "@/lib/runtimeConfig";
 import AudioDeviceSelector from "@/components/AudioDeviceSelector";
 import type { UseBrowserAudioCaptureReturn } from "@/hooks/useBrowserAudioCapture";
-
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
 
 interface Props {
   onSessionStart: (
@@ -78,7 +77,7 @@ export default function SessionControls({
         formData.append("file", resumeFile);
       }
 
-      const res = await apiFetch(`${API_BASE}/api/analyze`, {
+      const res = await apiFetch(apiUrl("/api/analyze"), {
         method: "POST",
         body: formData,
       });
@@ -106,7 +105,7 @@ export default function SessionControls({
     docType: string,
     text: string,
   ) => {
-    const response = await apiFetch(`${API_BASE}/api/sessions/${sid}/context`, {
+    const response = await apiFetch(apiUrl(`/api/sessions/${sid}/context`), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ doc_type: docType, text }),
@@ -121,7 +120,7 @@ export default function SessionControls({
     setLoading(true);
     try {
       const params = new URLSearchParams({ mode, title, notice_given: String(noticeGiven) });
-      const res = await apiFetch(`${API_BASE}/api/sessions?${params}`, {
+      const res = await apiFetch(apiUrl(`/api/sessions?${params}`), {
         method: "POST",
       });
       if (!res.ok) throw new Error("Falha ao iniciar sessão");
@@ -142,7 +141,7 @@ export default function SessionControls({
           formData.append("doc_type", "resume");
           uploads.push((async () => {
             const response = await apiFetch(
-              `${API_BASE}/api/sessions/${sid}/documents`,
+              apiUrl(`/api/sessions/${sid}/documents`),
               {
               method: "POST",
               body: formData,

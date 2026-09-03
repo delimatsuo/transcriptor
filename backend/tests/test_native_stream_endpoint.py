@@ -18,6 +18,7 @@ def configure_test_settings(monkeypatch):
         auth_allowed_emails="test@example.com",
     )
     monkeypatch.setattr(main, "settings", test_settings)
+    monkeypatch.setattr(main.app.state, "ready", True)
     main.native_stream_managers.clear()
     main.stream_managers.clear()
     main.stream_keys.clear()
@@ -38,7 +39,7 @@ def _encode_native_packet(header: dict, payload: bytes = b"\x00\x00" * 800) -> b
 
 
 class FakeNativeWebSocket:
-    def __init__(self, incoming_messages: list[dict], query_params: dict | None = None, headers: dict | None = None):
+    def __init__(self, incoming_messages: list[dict], query_params: dict | None = None, headers: dict | None = None, app=None):
         self.incoming = list(incoming_messages)
         self.sent_json: list[dict] = []
         self.accepted = False
@@ -46,6 +47,11 @@ class FakeNativeWebSocket:
         self.query_params = dict(query_params) if query_params else {}
         self.headers = dict(headers) if headers else {}
         self.closed_code: int | None = None
+        self.app = app or main.app
+        self.denial_response = None
+
+    async def send_denial_response(self, response):
+        self.denial_response = response
 
     async def accept(self, subprotocol: str | None = None):
         self.accepted = True

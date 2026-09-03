@@ -9,8 +9,7 @@ import {
 import { tokens } from "@/lib/tokens";
 import type { NoteKind, RecruiterNote, TranscriptSegment } from "@/types/ws";
 import { apiFetch } from "@/lib/auth";
-
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
+import { apiUrl } from "@/lib/runtimeConfig";
 
 const ACTIONS: Array<{
   kind: NoteKind;
@@ -85,7 +84,7 @@ export default function NoteChips({ sessionId, transcript }: Props) {
 
     try {
       const response = await apiFetch(
-        `${API_BASE}/api/sessions/${encodeURIComponent(sessionId)}/notes`,
+        apiUrl(`/api/sessions/${encodeURIComponent(sessionId)}/notes`),
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
