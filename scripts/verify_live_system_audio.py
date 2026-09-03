@@ -3882,6 +3882,12 @@ def phase_stop_and_assert(
                     "captura pronta não foi provada imediatamente antes do cleanup"
                 ),
             )
+        else:
+            ph.record(
+                PhaseID.POSITIVE_FACTS,
+                PhaseStatus.PASS,
+                PhaseDetail.template(),
+            )
         cleanup_ok = companion.stop()
         if not cleanup_ok:
             ph.record(
