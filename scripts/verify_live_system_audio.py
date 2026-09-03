@@ -488,7 +488,7 @@ def _validate_artifact_projection(value: object) -> None:
     identity = value["static_identity"]
     if type(identity) is not dict or set(identity) != _STATIC_IDENTITY_FIELDS:
         raise HarnessProtocolError("artifact static identity is not a typed projection")
-    if type(identity["unique_cdhash"]) is not str or re.fullmatch(r"[0-9a-f]{64}", identity["unique_cdhash"]) is None:
+    if type(identity["unique_cdhash"]) is not str or re.fullmatch(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$", identity["unique_cdhash"]) is None:
         raise HarnessProtocolError("artifact static identity cdhash is invalid")
     requirement = identity["designated_requirement"]
     if (
@@ -1119,15 +1119,12 @@ class Phases:
         # escape hatch and must permanently disqualify the proof.
         for raw_key, raw_value in self.facts.items():
             if type(raw_key) is not str or raw_key not in FACT_SPECS:
-                import sys; sys.stderr.write(f"[DIAG] operational_facts_owned unknown/non-string raw_key: {raw_key!r}\n")
                 self._fact_ownership_failed = True
                 continue
             spec = FACT_SPECS[raw_key]
             if spec.kind is FactKind.TRANSCRIPT:
-                import sys; sys.stderr.write(f"[DIAG] operational_facts_owned raw TRANSCRIPT key: {raw_key!r}\n")
                 self._fact_ownership_failed = True
             elif spec.kind is FactKind.DIAGNOSTIC and not _valid_diagnostic_shape(raw_value):
-                import sys; sys.stderr.write(f"[DIAG] operational_facts_owned invalid DIAGNOSTIC shape for {raw_key!r}: {raw_value!r}\n")
                 self._fact_ownership_failed = True
         for key, spec in FACT_SPECS.items():
             if spec.kind in {FactKind.DIAGNOSTIC, FactKind.TRANSCRIPT}:
@@ -1135,7 +1132,6 @@ class Phases:
             if key in self.facts:
                 value = self.facts[key]
                 if _contains_diagnostic(value):
-                    import sys; sys.stderr.write(f"[DIAG] operational_facts_owned value contains diagnostic for {key!r}: {value!r}\n")
                     self._fact_ownership_failed = True
                     safe = self._redact_value(value)
                 else:
@@ -1143,8 +1139,7 @@ class Phases:
                 operational[key] = safe
         try:
             validate_fact_specs(operational)
-        except HarnessProtocolError as exc:
-            import sys; sys.stderr.write(f"[DIAG] operational_facts_owned validate_fact_specs failed: {exc}\n")
+        except HarnessProtocolError:
             self._fact_ownership_failed = True
             return False
         return not self._fact_ownership_failed
@@ -4465,10 +4460,6 @@ def _reduce_required_phase_status(
     if allow_pending_evidence and PhaseID.EVIDENCE.value not in names:
         required = frozenset(set(required) - {PhaseID.EVIDENCE.value})
     if len(rows) != len(required) or set(names) != required or len(set(names)) != len(names):
-        import sys
-        missing = set(required) - set(names)
-        extra = set(names) - set(required)
-        sys.stderr.write(f"[DIAG] _reduce_required_phase_status: len(rows)={len(rows)} len(req)={len(required)} missing={missing} extra={extra}\n")
         return "FAIL"
     if "FAIL" in statuses:
         return "FAIL"
@@ -4626,12 +4617,6 @@ def phase_evidence(
         allow_pending_evidence=True,
     )
     facts_owned = ph.operational_facts_owned()
-    import sys
-    sys.stderr.write(
-        f"[DIAG] phase_evidence: required_result={required_result!r} facts_owned={facts_owned!r} "
-        f"fact_failed={ph._fact_ownership_failed!r} row_failed={ph._row_ownership_failed!r} "
-        f"proof_type={type(proof)} claim={positive_process_tap_claim(proof) if proof else None}\n"
-    )
     if required_result != "PASS" or not facts_owned or ph._fact_ownership_failed or ph._row_ownership_failed:
         proof = None
         evidence_result = "FAIL" if (ph._fact_ownership_failed or ph._row_ownership_failed) else required_result

@@ -97,6 +97,7 @@ _SHUTDOWN_NONCE = re.compile(r"^sn1_[0-9a-f]{32}$")
 _SHUTDOWN_BINDING = re.compile(r"^sd1_[0-9a-f]{64}$")
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
 _HEX40 = re.compile(r"^[0-9a-f]{40}$")
+_CDHASH_HEX = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
 _GATEWAY_HOST = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$")
 _GATEWAY_IPV6 = re.compile(r"^[0-9A-Fa-f:.]+$")
 _GATEWAY_PATH = re.compile(r"^/[A-Za-z0-9._~!$&'()*+,;=:@/-]*$")
@@ -3449,7 +3450,7 @@ def _canonical_artifact_facts(value: object, sentinel: str | None) -> None:
         raise HarnessProtocolError("artifact static identity is not an exact projection")
     unique_cdhash = identity["unique_cdhash"]
     designated_requirement = identity["designated_requirement"]
-    if type(unique_cdhash) is not str or _HEX64.fullmatch(unique_cdhash) is None:
+    if type(unique_cdhash) is not str or _CDHASH_HEX.fullmatch(unique_cdhash) is None:
         raise HarnessProtocolError("artifact static identity cdhash is invalid")
     # The designated requirement is a byte-string projection.  Keep its
     # length explicitly bounded before accepting the even-length lowercase
