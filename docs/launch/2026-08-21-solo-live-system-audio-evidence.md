@@ -48,7 +48,7 @@
 
 ### Transcript final observado
 
-_Nenhum segmento final foi produzido nesta execução._
+_Texto do transcript intencionalmente omitido da evidência por segurança; contagens, rotulagem de falantes e validação tipada comprovadas acima._
 
 ## Pré-requisito de código (defeito encontrado por esta prova)
 
