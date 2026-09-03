@@ -3371,6 +3371,12 @@ def phase_companion(
         else:
             ph.cleanup_run = target_run
 
+    if type(artifact_facts) is not ArtifactFacts and artifact_inspector is not None and callable(getattr(artifact_inspector, "inspect", None)):
+        try:
+            artifact_facts = artifact_inspector.inspect(signed_app)
+        except Exception:
+            pass
+
     try:
         run = CompanionRun(
             signed_app,
@@ -3483,7 +3489,13 @@ def play_capture_fixture() -> int:
 def speak(voice: str, sentence: str) -> int:
     """Devolve o código de saída do `afplay` — um PASS incondicional aqui
     registraria "áudio reproduzido" mesmo quando nada tocou."""
-    _ = voice, sentence
+    _ = voice
+    custom_candidate = os.environ.get("TARS_CANDIDATE_FIXTURE_WAV")
+    custom_restart = os.environ.get("TARS_RESTART_FIXTURE_WAV")
+    if sentence == CANDIDATE_SENTENCE and custom_candidate and Path(custom_candidate).is_file():
+        return subprocess.run(["afplay", custom_candidate], check=False).returncode
+    if sentence == RESTART_SENTENCE and custom_restart and Path(custom_restart).is_file():
+        return subprocess.run(["afplay", custom_restart], check=False).returncode
     return play_capture_fixture()
 
 
@@ -5042,6 +5054,19 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    if "GOOGLE_CLOUD_PROJECT" not in os.environ:
+        try:
+            detected = subprocess.run(
+                ["gcloud", "config", "get-value", "project"],
+                capture_output=True,
+                text=True,
+                check=False,
+            ).stdout.strip()
+            if detected:
+                os.environ["GOOGLE_CLOUD_PROJECT"] = detected
+        except Exception:
+            pass
+
     SCRATCH.mkdir(parents=True, exist_ok=True)
     print("━" * 62)
     print("  T.A.R.S. — Prova ao vivo: canal do candidato (piloto-solo)")
@@ -5075,12 +5100,18 @@ def main() -> int:
         phase_wrong_key(ph, session_id, stream_key)
 
         voice = str(ph.facts["voice"])
+        artifact_facts = None
+        if artifact_inspector is not None:
+            try:
+                artifact_facts = artifact_inspector.inspect(args.signed_app)
+            except Exception:
+                artifact_facts = None
         companion_res = phase_companion(
             ph,
             args.signed_app,
             session_id,
             stream_key,
-            artifact_facts=ph.facts.get("artifact_facts"),
+            artifact_facts=artifact_facts,
             expected_head=ph.facts.get("expected_head"),
             expected_tree=ph.facts.get("expected_tree"),
             expected_digest=ph.facts.get("expected_digest"),
