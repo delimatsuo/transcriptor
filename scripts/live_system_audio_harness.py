@@ -2421,11 +2421,17 @@ class LaunchServicesProcess:
             except HarnessProtocolError:
                 # Once the exact token boundary has accepted a lifecycle
                 # signal, disappearance of the LaunchServices helper is the
-                # completion edge.  Identity/revalidation failures while the
-                # helper is still alive remain errors and never become a
-                # completion claim.
+                # completion edge.  SIGKILL can make peer revalidation fail a
+                # few milliseconds before ``open -W`` exits; keep polling
+                # until that helper death or the wait deadline.  Identity
+                # failures with no prior token signal remain errors.
                 if self._last_authenticated_signal is not None and not self._helper_is_alive():
                     return 0
+                if self._last_authenticated_signal is not None:
+                    if deadline is not None and self._clock() >= deadline:
+                        raise TimeoutError("LaunchServices app wait timed out")
+                    self._sleeper(0.05)
+                    continue
                 raise
             if status is not None:
                 return status

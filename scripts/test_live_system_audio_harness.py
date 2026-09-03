@@ -1252,6 +1252,34 @@ class HarnessTests(unittest.TestCase):
         with self.assertRaises(HarnessProtocolError): facade.terminate()
         self.assertEqual(signals, [(bytes.fromhex(self.audit_token), signal.SIGTERM)])
 
+    def test_wait_retries_revalidation_failure_after_token_kill_until_helper_exits(self) -> None:
+        """SIGKILL can kill the peer a few milliseconds before open -W exits."""
+
+        helper = FakeOpenHelper(pid=7001)
+        peer_dead = [False]
+        clock = [0.0]
+
+        def revalidator() -> PeerIdentity:
+            if peer_dead[0]:
+                raise HarnessProtocolError("authenticated peer revalidation failed")
+            return self.peer
+
+        def sleeper(interval: float) -> None:
+            clock[0] += interval
+            helper.returncode = 0
+
+        facade = LaunchServicesProcess(
+            helper,
+            signal_sender=lambda token, signum: None,
+            clock=lambda: clock[0],
+            sleeper=sleeper,
+        )
+        facade.bind_authenticated_peer(self.peer, revalidator=revalidator)
+        facade.kill()
+        peer_dead[0] = True
+        self.assertEqual(facade.wait(timeout=5.0), 0)
+        self.assertGreater(clock[0], 0.0)
+
     def test_audit_token_sender_receives_exact_bytes_and_rejects_stale_token_race(self) -> None:
         helper = FakeOpenHelper(pid=7001)
         current_peer = [self.peer]
