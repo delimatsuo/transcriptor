@@ -3769,6 +3769,16 @@ def phase_restart_drill(
         )
         return
     again.start_event_reader()
+    stimulus_codes: list[int] = []
+
+    def _play_restart_stimulus() -> None:
+        try:
+            stimulus_codes.append(speak(voice, RESTART_SENTENCE))
+        except Exception:
+            stimulus_codes.append(1)
+
+    stim_thread = threading.Thread(target=_play_restart_stimulus, daemon=True)
+    stim_thread.start()
     state, _ = again.wait_for_capture()
     if state != "ativo":
         ph.record(
@@ -3777,6 +3787,7 @@ def phase_restart_drill(
             CredentialReachableDiagnostic(f"não recapturou após SIGKILL (estado={state})"),
         )
         return
+    stim_thread.join(timeout=10.0)
     if again.activation is None or not restart_requires_fresh(previous, again.activation.tuple):
         ph.record(
             PhaseID.RESTART,
@@ -3793,7 +3804,7 @@ def phase_restart_drill(
             ),
         )
         return
-    if speak(voice, RESTART_SENTENCE) != 0:
+    if any(code != 0 for code in stimulus_codes):
         ph.record(
             PhaseID.RESTART,
             PhaseStatus.FAIL,
