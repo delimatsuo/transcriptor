@@ -2,6 +2,8 @@ import CoreAudio
 import XCTest
 @testable import TarsNativeCompanion
 
+private let controllerStreamKey = "TASK11-GOLDEN-STREAM-KEY-0123456789abcdefgh"
+
 // MARK: - Fakes for isolated controller testing
 
 private final class FakeTransport: AudioStreamTransport, @unchecked Sendable {
@@ -30,6 +32,9 @@ private final class FakeTransport: AudioStreamTransport, @unchecked Sendable {
 
 private final class FakeCaptureSource: CaptureSource, @unchecked Sendable {
     let source: AudioSource = .systemAudio
+    // Legacy injected fixtures may intentionally omit an engine assertion;
+    // concrete Process Tap and ScreenCaptureKit sources are never allowed to.
+    let engineIdentity: ResolvedSystemAudioEngine?
     let configuration: CaptureSourceConfiguration
     var status: CaptureSourceStatus = .idle
 
@@ -41,10 +46,16 @@ private final class FakeCaptureSource: CaptureSource, @unchecked Sendable {
     private(set) var observerRemovalCount = 0
     private var observers: [CaptureSourceObserverToken: CaptureSourceHealthObserver] = [:]
 
-    init(configuration: CaptureSourceConfiguration, shouldFailStart: Bool = false, startError: Error? = nil) {
+    init(
+        configuration: CaptureSourceConfiguration,
+        shouldFailStart: Bool = false,
+        startError: Error? = nil,
+        engineIdentity: ResolvedSystemAudioEngine? = .processTap
+    ) {
         self.configuration = configuration
         self.shouldFailStart = shouldFailStart
         self.startError = startError
+        self.engineIdentity = engineIdentity
     }
 
     func start() async throws {
@@ -266,7 +277,7 @@ final class CompanionSessionControllerTests: XCTestCase {
             }
         )
 
-        await controller.start(sessionID: "sess-1", streamKey: "key-1", gatewayBase: "ws://127.0.0.1:8000/api")
+        await controller.start(sessionID: "sess-1", streamKey: controllerStreamKey, gatewayBase: "ws://127.0.0.1:8000/api")
 
         let reached = await waitForState(controller: controller, condition: { $0 == .capturing })
         XCTAssertTrue(reached)
@@ -284,7 +295,7 @@ final class CompanionSessionControllerTests: XCTestCase {
             sourceFactory: { config, _ in fakeSource }
         )
 
-        await controller.start(sessionID: "sess-2", streamKey: "key-2", gatewayBase: "ws://127.0.0.1:8000/api")
+        await controller.start(sessionID: "sess-2", streamKey: controllerStreamKey, gatewayBase: "ws://127.0.0.1:8000/api")
 
         let reached = await waitForState(controller: controller, condition: { $0 == .reconnecting })
         XCTAssertTrue(reached)
@@ -301,7 +312,7 @@ final class CompanionSessionControllerTests: XCTestCase {
             sourceFactory: { config, _ in failingSource }
         )
 
-        await controller.start(sessionID: "sess-3", streamKey: "key-3", gatewayBase: "ws://127.0.0.1:8000/api")
+        await controller.start(sessionID: "sess-3", streamKey: controllerStreamKey, gatewayBase: "ws://127.0.0.1:8000/api")
 
         let state = controller.state
         if case .error(let message) = state {
@@ -322,7 +333,7 @@ final class CompanionSessionControllerTests: XCTestCase {
             sourceFactory: { _, _ in failingSource }
         )
 
-        await controller.start(sessionID: "sess-denied-start", streamKey: "key", gatewayBase: "ws://127.0.0.1:8000/api")
+        await controller.start(sessionID: "sess-denied-start", streamKey: controllerStreamKey, gatewayBase: "ws://127.0.0.1:8000/api")
 
         XCTAssertEqual(
             controller.systemAudioStatus,
@@ -346,7 +357,7 @@ final class CompanionSessionControllerTests: XCTestCase {
             sourceFactory: { config, _ in fakeSource }
         )
 
-        await controller.start(sessionID: "sess-4", streamKey: "key-4", gatewayBase: "ws://127.0.0.1:8000/api")
+        await controller.start(sessionID: "sess-4", streamKey: controllerStreamKey, gatewayBase: "ws://127.0.0.1:8000/api")
         _ = await waitForState(controller: controller, condition: { $0 == .capturing })
 
         await controller.stop()
@@ -368,12 +379,12 @@ final class CompanionSessionControllerTests: XCTestCase {
             }
         )
 
-        await controller.start(sessionID: "sess-5", streamKey: "key-5", gatewayBase: "ws://127.0.0.1:8000/api")
+        await controller.start(sessionID: "sess-5", streamKey: controllerStreamKey, gatewayBase: "ws://127.0.0.1:8000/api")
         _ = await waitForState(controller: controller, condition: { $0 == .capturing })
         XCTAssertEqual(sourceFactoryCount, 1)
 
         // Second start attempt while already capturing
-        await controller.start(sessionID: "sess-5-dup", streamKey: "key-5-dup", gatewayBase: "ws://127.0.0.1:8000/api")
+        await controller.start(sessionID: "sess-5-dup", streamKey: controllerStreamKey, gatewayBase: "ws://127.0.0.1:8000/api")
 
         XCTAssertEqual(sourceFactoryCount, 1, "Factory should not be called again")
         XCTAssertEqual(controller.activeSessionID, "sess-5")
@@ -388,7 +399,7 @@ final class CompanionSessionControllerTests: XCTestCase {
             sourceFactory: { config, _ in failingSource }
         )
 
-        await controller.start(sessionID: "sess-err", streamKey: "key-err", gatewayBase: "ws://127.0.0.1:8000/api")
+        await controller.start(sessionID: "sess-err", streamKey: controllerStreamKey, gatewayBase: "ws://127.0.0.1:8000/api")
 
         let state = controller.state
         guard case .error(let message) = state else {
@@ -418,7 +429,7 @@ final class CompanionSessionControllerTests: XCTestCase {
 
         await controller.start(
             sessionID: "sess-proto",
-            streamKey: "safe_stream_key-123",
+            streamKey: controllerStreamKey,
             gatewayBase: "ws://127.0.0.1:8000/api/stream/native"
         )
 
@@ -426,7 +437,7 @@ final class CompanionSessionControllerTests: XCTestCase {
         XCTAssertTrue(reached)
         XCTAssertEqual(captured.url?.absoluteString, "ws://127.0.0.1:8000/api/stream/native/sess-proto")
         XCTAssertNil(captured.url?.query)
-        XCTAssertEqual(captured.protocols, ["tars-stream", "safe_stream_key-123"])
+        XCTAssertEqual(captured.protocols, ["tars-stream", controllerStreamKey])
     }
 
     func testInvalidLaunchArgumentStopsBeforeCreatingSource() async throws {
@@ -439,7 +450,7 @@ final class CompanionSessionControllerTests: XCTestCase {
             },
             launchArgumentError: "Valor inválido para --system-audio-engine"
         )
-        await controller.start(sessionID: "bad-arg", streamKey: "key", gatewayBase: "ws://127.0.0.1:8000/api")
+        await controller.start(sessionID: "bad-arg", streamKey: controllerStreamKey, gatewayBase: "ws://127.0.0.1:8000/api")
         XCTAssertEqual(sourceFactoryCount, 0)
         guard case .error(let message) = controller.state else {
             return XCTFail("invalid launch arguments must be surfaced as an app error")
@@ -453,7 +464,7 @@ final class CompanionSessionControllerTests: XCTestCase {
             transportFactory: { _, _ in FakeTransport() },
             sourceFactory: { _, _ in fakeSource }
         )
-        await controller.start(sessionID: "health-session", streamKey: "key", gatewayBase: "ws://127.0.0.1:8000/api")
+        await controller.start(sessionID: "health-session", streamKey: controllerStreamKey, gatewayBase: "ws://127.0.0.1:8000/api")
         _ = await waitForState(controller: controller, condition: { $0 == .capturing })
         fakeSource.emit(.running(SourceHealth(permission: .granted, route: .healthy)), generation: 2)
         await Task.yield()
@@ -467,7 +478,7 @@ final class CompanionSessionControllerTests: XCTestCase {
     }
 
     func testInjectedScreenCaptureKitFactoryDoesNotInvokeCoreGraphicsPreflight() async throws {
-        let fakeSource = FakeCaptureSource(configuration: try dummyConfig())
+        let fakeSource = FakeCaptureSource(configuration: try dummyConfig(), engineIdentity: .screenCaptureKit)
         let controller = CompanionSessionController(
             transportFactory: { _, _ in FakeTransport() },
             enginePreference: .screenCaptureKit,
@@ -477,7 +488,7 @@ final class CompanionSessionControllerTests: XCTestCase {
                 return fakeSource
             }
         )
-        await controller.start(sessionID: "injected-sck", streamKey: "key", gatewayBase: "ws://127.0.0.1:8000/api")
+        await controller.start(sessionID: "injected-sck", streamKey: controllerStreamKey, gatewayBase: "ws://127.0.0.1:8000/api")
         XCTAssertEqual(controller.resolvedSystemAudioEngine, .screenCaptureKit)
         XCTAssertEqual(controller.state, .capturing)
         await controller.stop()
@@ -497,7 +508,7 @@ final class CompanionSessionControllerTests: XCTestCase {
 
         await controller.start(
             sessionID: "startup-hal-event",
-            streamKey: "key",
+            streamKey: controllerStreamKey,
             gatewayBase: "ws://127.0.0.1:8000/api"
         )
 
@@ -525,7 +536,7 @@ final class CompanionSessionControllerTests: XCTestCase {
 
         await controller.start(
             sessionID: "pre-start-permission",
-            streamKey: "key",
+            streamKey: controllerStreamKey,
             gatewayBase: "ws://127.0.0.1:8000/api"
         )
 
@@ -556,7 +567,7 @@ final class CompanionSessionControllerTests: XCTestCase {
 
         await controller.start(
             sessionID: "live-device-permission",
-            streamKey: "key",
+            streamKey: controllerStreamKey,
             gatewayBase: "ws://127.0.0.1:8000/api"
         )
         let reachedCapturing = await waitForState(controller: controller, condition: { $0 == .capturing })
@@ -596,7 +607,7 @@ final class CompanionSessionControllerTests: XCTestCase {
             transportFactory: { _, _ in FakeTransport() },
             sourceFactory: { _, _ in fakeSource }
         )
-        await controller.start(sessionID: "health-denied", streamKey: "key", gatewayBase: "ws://127.0.0.1:8000/api")
+        await controller.start(sessionID: "health-denied", streamKey: controllerStreamKey, gatewayBase: "ws://127.0.0.1:8000/api")
         _ = await waitForState(controller: controller, condition: { $0 == .capturing })
         fakeSource.emit(.failed(SystemAudioCaptureMonitor.permissionDeniedMessage))
         await Task.yield()
@@ -616,7 +627,7 @@ final class CompanionSessionControllerTests: XCTestCase {
             transportFactory: { _, _ in FakeTransport() },
             sourceFactory: { _, _ in fakeSource }
         )
-        await controller.start(sessionID: "health-route-failure", streamKey: "key", gatewayBase: "ws://127.0.0.1:8000/api")
+        await controller.start(sessionID: "health-route-failure", streamKey: controllerStreamKey, gatewayBase: "ws://127.0.0.1:8000/api")
         _ = await waitForState(controller: controller, condition: { $0 == .capturing })
         fakeSource.emit(.failed("Rota de áudio indisponível"))
         await Task.yield()
@@ -640,7 +651,7 @@ final class CompanionSessionControllerTests: XCTestCase {
             }
         )
 
-        await controller.start(sessionID: "old-session", streamKey: "old-key", gatewayBase: "ws://127.0.0.1:8000/api")
+        await controller.start(sessionID: "old-session", streamKey: controllerStreamKey, gatewayBase: "ws://127.0.0.1:8000/api")
         let initiallyCapturing = await waitForState(controller: controller, condition: { $0 == .capturing })
         XCTAssertTrue(initiallyCapturing)
 
@@ -653,7 +664,7 @@ final class CompanionSessionControllerTests: XCTestCase {
 
         // Starting immediately must join the terminal cleanup owner.  The
         // old observer/source/sink therefore cannot race the second graph.
-        await controller.start(sessionID: "new-session", streamKey: "new-key", gatewayBase: "ws://127.0.0.1:8000/api")
+        await controller.start(sessionID: "new-session", streamKey: controllerStreamKey, gatewayBase: "ws://127.0.0.1:8000/api")
         let retryCapturing = await waitForState(controller: controller, condition: { $0 == .capturing })
         XCTAssertTrue(retryCapturing)
         XCTAssertEqual(firstSource.stopCount, 1)
@@ -670,5 +681,44 @@ final class CompanionSessionControllerTests: XCTestCase {
         XCTAssertEqual(firstSource.observerRemovalCount, 1)
         XCTAssertEqual(secondSource.stopCount, 1)
         XCTAssertEqual(secondSource.observerRemovalCount, 1)
+    }
+
+    func testNormalModeRetainsShortNativeHandshakeKeyCompatibility() async throws {
+        let fakeSource = FakeCaptureSource(configuration: try dummyConfig())
+        let controller = CompanionSessionController(
+            transportFactory: { _, _ in FakeTransport() },
+            sourceFactory: { _, _ in fakeSource }
+        )
+
+        await controller.start(
+            sessionID: "normal-session",
+            streamKey: "key-1",
+            gatewayBase: "ws://127.0.0.1:8000/api"
+        )
+
+        let reached = await waitForState(controller: controller, condition: { $0 == .capturing })
+        XCTAssertTrue(reached)
+        await controller.stop()
+    }
+
+    func testHarnessModeRejectsShortNativeHandshakeKey() async throws {
+        let fakeSource = FakeCaptureSource(configuration: try dummyConfig())
+        let controller = CompanionSessionController(
+            transportFactory: { _, _ in FakeTransport() },
+            sourceFactory: { _, _ in fakeSource },
+            harnessMode: true
+        )
+
+        await controller.start(
+            sessionID: "harness-session",
+            streamKey: "key-1",
+            gatewayBase: "ws://127.0.0.1:8000/api"
+        )
+
+        if case .error = controller.state {
+            XCTAssertEqual(fakeSource.startCount, 0)
+        } else {
+            XCTFail("harness mode must reject a non-43-byte stream key")
+        }
     }
 }

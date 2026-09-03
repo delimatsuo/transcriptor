@@ -5,6 +5,7 @@ import ScreenCaptureKit
 @available(macOS 13.0, *)
 public final class ScreenCaptureKitSystemAudioSource: NSObject, CaptureSource, SCStreamDelegate, SCStreamOutput, @unchecked Sendable {
     public let source: AudioSource = .systemAudio
+    public let engineIdentity: ResolvedSystemAudioEngine? = .screenCaptureKit
     public let configuration: CaptureSourceConfiguration
     public var status: CaptureSourceStatus {
         lock.withLock { currentStatus }
