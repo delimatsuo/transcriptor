@@ -1252,6 +1252,30 @@ class HarnessTests(unittest.TestCase):
         with self.assertRaises(HarnessProtocolError): facade.terminate()
         self.assertEqual(signals, [(bytes.fromhex(self.audit_token), signal.SIGTERM)])
 
+    def test_speak_plays_afplay_fixture_and_never_invokes_say(self) -> None:
+        """System-audio stimulus is a PCM fixture, not macOS TTS."""
+
+        calls: list[list[str]] = []
+
+        def fake_run(argv: list[str], check: bool = False, **kwargs: object):
+            _ = check, kwargs
+            calls.append(list(argv))
+            return subprocess.CompletedProcess(argv, 0)
+
+        previous = verifier.SCRATCH
+        with tempfile.TemporaryDirectory() as root:
+            verifier.SCRATCH = Path(root)
+            try:
+                with mock.patch.object(verifier.subprocess, "run", side_effect=fake_run):
+                    self.assertEqual(verifier.speak("Eddy", "ignored-sentence"), 0)
+                self.assertEqual(len(calls), 1)
+                self.assertEqual(calls[0][0], "afplay")
+                self.assertTrue(calls[0][1].endswith(".wav"))
+                self.assertTrue(Path(calls[0][1]).is_file())
+                self.assertFalse(any(call and call[0] == "say" for call in calls))
+            finally:
+                verifier.SCRATCH = previous
+
     def test_wait_retries_revalidation_failure_after_token_kill_until_helper_exits(self) -> None:
         """SIGKILL can kill the peer a few milliseconds before open -W exits."""
 

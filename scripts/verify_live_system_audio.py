@@ -3,15 +3,16 @@
 
 Roda o sistema real de ponta a ponta na máquina do proprietário:
 
-    say (pt-BR)  ->  alto-falantes  ->  Process Tap (app menu-bar assinado)
-                 ->  gateway WebSocket (backend real)  ->  Google STT
-                 ->  segmento final rotulado "Candidato"
+    afplay (fixture PCM) ->  alto-falantes  ->  Process Tap (app menu-bar assinado)
+                         ->  gateway WebSocket (backend real)  ->  Google STT
+                         ->  segmento final rotulado "Candidato"
 
 Nada aqui é simulado: backend real (uvicorn), app menu-bar assinado real,
-Google STT real, `say` real. O único trecho injetado por software é o canal do
-*entrevistador* (fase 6), que envia PCM de fala real gerada por `say` pelo mesmo
-gateway com `source="microphone"` — é assim que a rotulagem por fonte é provada
-sem precisar de um humano falando ao microfone.
+Google STT real, estímulo de captura por `afplay` de um wav gerado. O único
+trecho injetado por software é o canal do *entrevistador* (fase 6), que envia
+PCM gerado por `say -o` pelo mesmo gateway com `source="microphone"` — é assim
+que a rotulagem por fonte é provada sem precisar de um humano falando ao
+microfone. `say` não toca nos alto-falantes; não é TTS de produto.
 
 Códigos de saída:
     0  todas as fases executadas passaram
@@ -31,7 +32,9 @@ from dataclasses import dataclass, is_dataclass, replace
 from enum import Enum
 import hashlib
 import json
+import math
 import os
+import struct
 import plistlib
 import re
 import signal
@@ -3452,10 +3455,36 @@ def phase_companion(
 # Fase 6 — Áudio do candidato (alto-falante -> ScreenCaptureKit)
 # --------------------------------------------------------------------------
 
+def write_capture_fixture(path: Path, *, seconds: float = 0.4) -> None:
+    """Write a short 440Hz wav. This is capture stimulus, not product TTS."""
+
+    rate = SAMPLE_RATE
+    frames = bytearray()
+    total = int(rate * seconds)
+    for index in range(total):
+        sample = int(8000 * math.sin(2.0 * math.pi * 440.0 * index / rate))
+        frames.extend(struct.pack("<h", sample))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with wave.open(str(path), "w") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(rate)
+        handle.writeframes(bytes(frames))
+
+
+def play_capture_fixture() -> int:
+    """Play the capture fixture through the speakers. Never uses macOS `say`."""
+
+    path = SCRATCH / "capture-fixture.wav"
+    write_capture_fixture(path)
+    return subprocess.run(["afplay", str(path)], check=False).returncode
+
+
 def speak(voice: str, sentence: str) -> int:
-    """Devolve o código de saída do `say` — um PASS incondicional aqui
+    """Devolve o código de saída do `afplay` — um PASS incondicional aqui
     registraria "áudio reproduzido" mesmo quando nada tocou."""
-    return subprocess.run(["say", "-v", voice, sentence], check=False).returncode
+    _ = voice, sentence
+    return play_capture_fixture()
 
 
 def phase_candidate_audio(ph: Phases, voice: str, run: CompanionRun) -> bool:
@@ -3478,7 +3507,7 @@ def phase_candidate_audio(ph: Phases, voice: str, run: CompanionRun) -> bool:
         ph.record(
             PhaseID.CANDIDATE_AUDIO,
             PhaseStatus.FAIL,
-            CredentialReachableDiagnostic(f"`say` retornou {codes}"),
+            CredentialReachableDiagnostic(f"`afplay` retornou {codes}"),
         )
         return False
     ph.record(PhaseID.CANDIDATE_AUDIO, PhaseStatus.PASS, PhaseDetail.template())
@@ -3735,7 +3764,7 @@ def phase_restart_drill(
         ph.record(
             PhaseID.RESTART,
             PhaseStatus.FAIL,
-            CredentialReachableDiagnostic("`say` falhou ao reproduzir a frase pós-reinício"),
+            CredentialReachableDiagnostic("`afplay` falhou ao reproduzir o estímulo pós-reinício"),
         )
         return
     time.sleep(2)
