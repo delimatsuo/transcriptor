@@ -30,44 +30,36 @@ O **T.A.R.S.** é o seu copiloto de inteligência em tempo real para entrevistas
 
 ## 3. Passo a Passo: Preparação Rápida (3 Minutos)
 
-### Passo 1: Conceder Permissão de Gravação de Tela e Áudio do Sistema
-Antes de baixar ou executar o companion, conceda a permissão do macOS:
-1. Abra **Ajustes do Sistema → Privacidade e Segurança → Gravação de Tela e Áudio do Sistema**.
-2. Habilite a permissão para o **seu aplicativo de Terminal** (ex.: Terminal.app ou iTerm2) — é o Terminal quem recebe a permissão do sistema, não o binário `tars-companion` em si.
-3. Se `tars-companion` ainda não aparecer na lista, execute-o uma vez (ele será recusado com uma mensagem de erro), volte a este painel e habilite a entrada que aparecer.
+### Passo 1: Instalar o Aplicativo Menu-Bar TarsCompanion
+1. Obtenha o aplicativo assinado `dist/TarsCompanion.app` e mova-o para a pasta `/Applications` (ou execute-o diretamente).
+2. Na primeira inicialização, o ícone do **T.A.R.S.** aparecerá discretamente na sua barra de menus do macOS.
+3. O app está assinado com Developer ID oficial (`Travel Advisory LLC`) e possui runtime protegido.
 
 ---
 
-### Passo 2: Fazer o Download do Executável do Companion
-Baixe o arquivo único correspondente ao seu sistema operacional:
-- **macOS:** `dist/macos/tars-companion`
-- **Windows:** indisponível nesta fase do piloto (o companion Windows é um esqueleto sem captura real).
-
-> **Nota para macOS:** Na primeira execução, o macOS exibirá uma caixa solicitando permissão para "Gravação de Tela e Áudio do Sistema" e "Microfone". Basta clicar em **Permitir**.
+### Passo 2: Conceder Permissão de Gravação de Tela e Áudio do Sistema
+Para capturar o áudio das reuniões (Google Meet, Teams, Zoom) sem necessidade de drivers virtuais:
+1. Abra **Ajustes do Sistema → Privacidade e Segurança → Gravação de Tela e Áudio do Sistema**.
+2. Garanta que o **TarsCompanion** esteja habilitado na lista.
+3. Na primeira execução do app, o próprio macOS solicitará essa permissão; basta clicar em **Permitir**.
 
 ---
 
 ### Passo 3: Acessar o Cockpit Web
-1. Abra o navegador e acesse a interface web do T.A.R.S. (`http://localhost:3000`).
-2. Faça login com sua conta Google autorizada.
-3. Clique em **"Nova Entrevista"** para obter o seu `Session ID` (exemplo: `sess_exec_20260821`).
+1. Abra o navegador e acesse a interface web do T.A.R.S. (`http://localhost:3000` ou URL corporativa).
+2. Faça login com sua conta autorizada (@ellaexecutivesearch.com).
+3. Clique em **"Nova Entrevista"** para iniciar a sessão.
 
 ---
 
-### Passo 4: Iniciar a Captura de Áudio
-No Cockpit Web, o card **"Canal do Candidato"** já exibe o comando de inicialização pronto para copiar, com o seu `Session ID` e a chave de stream preenchidos. Clique em **Copiar** e cole no terminal. O comando tem este formato:
+### Passo 4: Iniciar a Captura com Um Clique ("Conectar companion")
+No Cockpit Web, o card **"Canal do Candidato"** exibe o botão **"Conectar companion"**:
+1. Basta clicar no botão **"Conectar companion"**.
+2. O navegador abrirá automaticamente o aplicativo da barra de menus via link seguro (`tars-companion://join`), conectando o áudio da chamada instantaneamente.
+3. O indicador de status do candidato fica verde no Cockpit Web:
+   - 🟢 **Áudio do Sistema (ScreenCaptureKit Process Tap):** Ativo e capturando o áudio da reunião.
 
-**No macOS:**
-```bash
-./tars-companion --session-id SEU_SESSION_ID --stream-key SUA_CHAVE --sources system_audio
-```
-
-**Windows: indisponível nesta fase.** O companion Windows é um esqueleto sem captura real; o piloto atual é macOS-somente.
-
-Ao rodar o comando, o indicador de status do candidato fica verde no Cockpit Web:
-- 🟢 **Áudio do Sistema (ScreenCaptureKit):** Ativo e capturando o áudio da chamada — canal do candidato, controlado pelo companion.
-
-O indicador de **Microfone** (canal do entrevistador) é ativado separadamente, direto no navegador: quando solicitado, clique em **Permitir** o acesso ao microfone e selecione seu headset no seletor de dispositivo do Cockpit. Ele não depende do companion.
+*O canal do entrevistador (microfone) é capturado diretamente pelo navegador com o headset selecionado no painel do Cockpit.*
 
 ---
 
@@ -94,7 +86,7 @@ Após a confirmação verbal positiva do candidato, clique na caixa **"Consentim
 
 1. Ao término da chamada, clique no botão **"Encerrar Entrevista"** no Cockpit Web.
 2. O sistema fará a drenagem final do áudio, fechará o fluxo com segurança e gerará o **Relatório Executivo de Avaliação**.
-3. No terminal do companion, pressione `Ctrl + C` para finalizar o processo.
+3. O aplicativo de menu **TarsCompanion** encerra a captura automaticamente (ou você pode clicar em "Parar" no menu bar).
 
 ---
 
