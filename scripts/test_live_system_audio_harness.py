@@ -1276,6 +1276,40 @@ class HarnessTests(unittest.TestCase):
             finally:
                 verifier.SCRATCH = previous
 
+    def test_synth_pcm_reads_fixture_and_never_invokes_say(self) -> None:
+        """Interviewer PCM injection uses a file fixture, not macOS TTS."""
+
+        calls: list[list[str]] = []
+
+        def fake_run(argv: list[str], check: bool = False, **kwargs: object):
+            _ = check, kwargs
+            calls.append(list(argv))
+            return subprocess.CompletedProcess(argv, 0)
+
+        previous = verifier.SCRATCH
+        with tempfile.TemporaryDirectory() as root:
+            verifier.SCRATCH = Path(root)
+            try:
+                with mock.patch.object(verifier.subprocess, "run", side_effect=fake_run):
+                    pcm = verifier.synth_pcm("Eddy", "ignored-sentence", "mic-test")
+                self.assertGreater(len(pcm), 0)
+                self.assertEqual(len(pcm) % 2, 0)
+                self.assertFalse(any(call and call[0] == "say" for call in calls))
+                self.assertTrue((verifier.SCRATCH / "mic-test.wav").is_file())
+            finally:
+                verifier.SCRATCH = previous
+
+    def test_synth_pcm_accepts_custom_fixture_env(self) -> None:
+        """A custom WAV fixture path provided in the environment is consumed directly."""
+
+        with tempfile.TemporaryDirectory() as root:
+            custom_path = Path(root) / "custom-interviewer.wav"
+            verifier.write_interviewer_fixture(custom_path, seconds=0.1, freq=1000.0)
+            with mock.patch.dict(os.environ, {"TARS_INTERVIEWER_FIXTURE_WAV": str(custom_path)}):
+                pcm = verifier.synth_pcm("ignored-voice", "ignored-sentence", "mic-test-custom")
+            self.assertGreater(len(pcm), 0)
+            self.assertEqual(len(pcm), int(verifier.SAMPLE_RATE * 0.1 * 2))
+
     def test_wait_retries_revalidation_failure_after_token_kill_until_helper_exits(self) -> None:
         """SIGKILL can kill the peer a few milliseconds before open -W exits."""
 

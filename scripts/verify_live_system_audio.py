@@ -10,9 +10,9 @@ Roda o sistema real de ponta a ponta na máquina do proprietário:
 Nada aqui é simulado: backend real (uvicorn), app menu-bar assinado real,
 Google STT real, estímulo de captura por `afplay` de um wav gerado. O único
 trecho injetado por software é o canal do *entrevistador* (fase 6), que envia
-PCM gerado por `say -o` pelo mesmo gateway com `source="microphone"` — é assim
+PCM de fixture de arquivo pelo mesmo gateway com `source="microphone"` — é assim
 que a rotulagem por fonte é provada sem precisar de um humano falando ao
-microfone. `say` não toca nos alto-falantes; não é TTS de produto.
+microfone. Nem os alto-falantes nem a injeção usam macOS `say`; não há TTS de produto.
 
 Códigos de saída:
     0  todas as fases executadas passaram
@@ -3536,13 +3536,34 @@ def encode_frame(session_id: str, source: str, sequence: int, first_sample: int,
     return len(header).to_bytes(4, "big") + header + pcm
 
 
+def write_interviewer_fixture(path: Path, *, seconds: float = 0.5, freq: float = 880.0) -> None:
+    """Write a short PCM fixture for injected interviewer microphone audio.
+
+    This provides deterministic, speech-free audio without invoking macOS `say`.
+    """
+    rate = SAMPLE_RATE
+    frames = bytearray()
+    total = int(rate * seconds)
+    for index in range(total):
+        sample = int(8000 * math.sin(2.0 * math.pi * freq * index / rate))
+        frames.extend(struct.pack("<h", sample))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with wave.open(str(path), "w") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(rate)
+        handle.writeframes(bytes(frames))
+
+
 def synth_pcm(voice: str, sentence: str, tag: str) -> bytes:
-    """Gera fala real em PCM 16 kHz mono s16le via `say`."""
-    wav_path = SCRATCH / f"{tag}.wav"
-    subprocess.run(
-        ["say", "-v", voice, "-o", str(wav_path), "--data-format=LEI16@16000", sentence],
-        check=True,
-    )
+    """Gera PCM 16 kHz mono s16le via fixture de arquivo sem invocar macOS `say`."""
+    _ = voice, sentence
+    custom_fixture = os.environ.get("TARS_INTERVIEWER_FIXTURE_WAV")
+    if custom_fixture and Path(custom_fixture).is_file():
+        wav_path = Path(custom_fixture)
+    else:
+        wav_path = SCRATCH / f"{tag}.wav"
+        write_interviewer_fixture(wav_path)
     with wave.open(str(wav_path), "rb") as wav:
         assert wav.getnchannels() == 1 and wav.getframerate() == SAMPLE_RATE and wav.getsampwidth() == 2
         return wav.readframes(wav.getnframes())
