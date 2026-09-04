@@ -90,18 +90,31 @@ class GoogleSTTStream:
         )
 
         # Subsequent requests: audio data
+        last_yield_time = time.monotonic()
+        # Keepalive silence: 50ms of 16-bit PCM zeros
+        keepalive_bytes = int(self.settings.sample_rate * 2 * self.settings.channels * 0.05)
+        keepalive_silence = b"\x00" * max(keepalive_bytes, 320)
+        keepalive_interval = getattr(self.settings, "stt_keepalive_interval_seconds", 10.0)
         while True:
             try:
                 audio_data = await asyncio.wait_for(
                     self._audio_queue.get(), timeout=0.5
                 )
             except asyncio.TimeoutError:
+                if self._input_closed:
+                    break
+                # Emit a small keepalive silence chunk every 10s of silence
+                # to prevent Google STT gRPC stream from aborting due to inactivity
+                if time.monotonic() - last_yield_time >= keepalive_interval:
+                    last_yield_time = time.monotonic()
+                    yield cloud_speech.StreamingRecognizeRequest(audio=keepalive_silence)
                 continue
 
             if audio_data is None:
                 # Sentinel value: end of stream
                 break
 
+            last_yield_time = time.monotonic()
             yield cloud_speech.StreamingRecognizeRequest(audio=audio_data)
 
     async def start(self) -> AsyncIterator[cloud_speech.StreamingRecognizeResponse]:

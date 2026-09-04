@@ -5,11 +5,36 @@ import { buildJoinLink } from "@/lib/joinLink";
 interface Props {
   sessionId: string;
   streamKey?: string;
+  isConnected?: boolean;
 }
 
-export default function CompanionCommand({ sessionId, streamKey }: Props) {
+export default function CompanionCommand({ sessionId, streamKey, isConnected }: Props) {
   if (!streamKey) {
     return null;
+  }
+
+  if (isConnected) {
+    return (
+      <div
+        role="status"
+        aria-label="Companion conectado"
+        style={{
+          display: "inline-flex",
+          alignItems: "center",
+          gap: 6,
+          padding: "6px 12px",
+          borderRadius: 8,
+          backgroundColor: "rgba(52, 199, 89, 0.12)",
+          border: "1px solid rgba(52, 199, 89, 0.25)",
+          color: "#248a3d",
+          fontSize: 12,
+          fontWeight: 600,
+        }}
+      >
+        <span aria-hidden="true">✓</span>
+        <span>Companion conectado</span>
+      </div>
+    );
   }
 
   const gatewayBase =
