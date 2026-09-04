@@ -849,13 +849,43 @@ def test_capture_start_failure_marks_stream_incomplete(monkeypatch, tmp_path):
     assert manager.drain_failure_reason == "audio_pipeline_error"
 
 
-def test_stop_pipeline_without_initialized_stream_is_incomplete(monkeypatch):
-    session_id = "session-not-initialized"
+def test_stream_manager_auto_recovers_from_idle_timeout(monkeypatch):
+    class IdleTimeoutStream(FinalOnCloseStream):
+        start_count = 0
+
+        async def start(self):
+            IdleTimeoutStream.start_count += 1
+            if IdleTimeoutStream.start_count == 1:
+                self._accepting_audio = True
+                self.request_opened = True
+                raise Exception("409 Stream timed out after receiving no more client requests.")
+            async for item in super().start():
+                yield item
+
+    IdleTimeoutStream.start_count = 0
+    monkeypatch.setattr(stream_manager, "GoogleSTTStream", IdleTimeoutStream)
 
     async def run():
-        task = asyncio.create_task(asyncio.Event().wait())
-        monkeypatch.setitem(backend_main.pipeline_tasks, session_id, [task])
-        monkeypatch.setitem(backend_main.stream_managers, session_id, [])
-        return await backend_main._stop_pipeline(session_id)
+        sm = stream_manager.StreamManager(
+            Settings(google_cloud_project="test-project"),
+            source_label="Candidato",
+        )
+        await sm.start()
+        # Wait for recovery to spin up the second stream
+        for _ in range(100):
+            if IdleTimeoutStream.start_count >= 2 and sm._current_stream and sm._current_stream.is_active:
+                break
+            await asyncio.sleep(0.01)
+        else:
+            raise AssertionError("StreamManager did not auto-recover from idle timeout")
 
-    assert asyncio.run(run()) is False
+        # Now send audio and stop cleanly
+        await sm.send_audio(b"pcm-data")
+        completed = await sm.stop()
+        return sm, completed
+
+    sm, completed = asyncio.run(run())
+    assert IdleTimeoutStream.start_count >= 2
+    assert completed is True
+    assert sm.drain_failure_reason is None
+

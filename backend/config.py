@@ -404,6 +404,11 @@ class Settings(BaseSettings):
             "Maximum time to await final STT responses after closing audio input"
         ),
     )
+    stt_keepalive_interval_seconds: float = Field(
+        default=10.0,
+        gt=0,
+        description="Interval between silence keepalive frames to keep STT gRPC stream open",
+    )
 
     # Server
     fastapi_host: str = Field(default="127.0.0.1")

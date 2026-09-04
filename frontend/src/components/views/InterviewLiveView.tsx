@@ -82,7 +82,11 @@ export default function InterviewLiveView({
           systemAudioHealth={sources?.system_audio}
           message={companionMessage}
         />
-        <CompanionCommand sessionId={sessionId} streamKey={streamKey} />
+        <CompanionCommand
+          sessionId={sessionId}
+          streamKey={streamKey}
+          isConnected={sources?.system_audio === "healthy"}
+        />
       </div>
       <HeroQuestion
         hero={hero}

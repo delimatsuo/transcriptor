@@ -467,6 +467,23 @@ class StreamManager:
                     self._ever_stream_opened
                     or getattr(stream, "request_opened", False)
                 )
+                is_idle_timeout = (
+                    "timed out after receiving no more client requests" in str(exc).lower()
+                    or "stream timed out" in str(exc).lower()
+                )
+                if is_idle_timeout and self._running:
+                    logger.warning(
+                        "stt_stream_idle_timeout_recovering",
+                        stream_id=stream.stream_id,
+                        source=self.source_label,
+                    )
+                    try:
+                        await stream.stop()
+                    except Exception:
+                        pass
+                    if self._running:
+                        continue
+
                 self.mark_failed("response_error")
                 logger.exception(
                     "stt_stream_error",
