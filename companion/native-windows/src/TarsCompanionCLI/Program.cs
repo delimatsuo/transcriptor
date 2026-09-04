@@ -87,6 +87,11 @@ public static class Program
         };
 
         using var clientWebSocket = new ClientWebSocket();
+        if (!string.IsNullOrEmpty(token))
+        {
+            clientWebSocket.Options.AddSubProtocol("tars-stream");
+            clientWebSocket.Options.AddSubProtocol(token);
+        }
         try
         {
             await clientWebSocket.ConnectAsync(uri, cts.Token);

@@ -89,7 +89,7 @@ public sealed class WasapiMicrophoneAudioSource : IWasapiCaptureSource
                 {
                     int floatCount = e.BytesRecorded / 4;
                     float[] floatSamples = new float[floatCount];
-                    Buffer.BlockCopy(e.Buffer, 0, floatSamples, 0, e.BytesRecorded);
+                    Buffer.BlockCopy(e.Buffer, 0, floatSamples, 0, floatCount * 4);
                     await PushSamplesAsync(floatSamples, sampleRate, channels, nowMs);
                 }
                 else
@@ -215,8 +215,9 @@ public sealed class WasapiMicrophoneAudioSource : IWasapiCaptureSource
 
         if (_sink != null)
         {
-            foreach (byte[] chunk in framesToEmit)
+            for (int i = 0; i < framesToEmit.Count; i++)
             {
+                byte[] chunk = framesToEmit[i];
                 ulong seq;
                 ulong firstSample;
                 lock (_lock)
@@ -226,12 +227,13 @@ public sealed class WasapiMicrophoneAudioSource : IWasapiCaptureSource
                     _currentSampleOffset += (ulong)(chunk.Length / (Identity.ChannelCount * 2));
                 }
 
+                ulong chunkTimeMs = captureTimeMs + (ulong)(i * 50);
                 var frame = new AudioFrame(
                     Identity,
                     seq,
                     firstSample,
-                    captureTimeMs,
-                    CaptureEventContext.CreateFixture(captureTimeMs),
+                    chunkTimeMs,
+                    CaptureEventContext.CreateFixture(chunkTimeMs),
                     chunk
                 );
 
