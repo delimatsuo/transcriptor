@@ -340,10 +340,16 @@ function AuthenticatedHome({ auth }: { auth: AuthenticatedAuthState }) {
       {/* Active meeting: single column */}
       {isActive && !isInterview && (
         <MeetingLiveView
+          sessionId={sessionId ?? undefined}
           transcript={transcript}
+          gaps={coverageGaps}
+          sources={sources}
+          captureState={companionCaptureState}
+          companionMessage={companionMessage}
           suggestionHistory={suggestionHistory}
           summary={summary}
           isSummaryFinal={isSummaryFinal}
+          streamKey={streamKey ?? undefined}
         />
       )}
 
