@@ -56,6 +56,7 @@ public class WasapiCaptureTests
         Assert.Equal(0UL, frame1.FirstSample);
         Assert.Equal(800UL, frame1.SampleCount);
         Assert.Equal(50UL, frame1.DurationMs);
+        Assert.Equal(1000UL, frame1.CapturedAtMs);
         Assert.Equal(1600, frame1.Payload.Count);
 
         var frame2 = sink.Frames[1];
@@ -63,6 +64,7 @@ public class WasapiCaptureTests
         Assert.Equal(800UL, frame2.FirstSample);
         Assert.Equal(800UL, frame2.SampleCount);
         Assert.Equal(50UL, frame2.DurationMs);
+        Assert.Equal(1050UL, frame2.CapturedAtMs);
         Assert.Equal(1600, frame2.Payload.Count);
 
         await source.StopAsync();
@@ -94,6 +96,7 @@ public class WasapiCaptureTests
         Assert.Equal(1UL, frame.Sequence);
         Assert.Equal(800UL, frame.SampleCount);
         Assert.Equal(50UL, frame.DurationMs);
+        Assert.Equal(2000UL, frame.CapturedAtMs);
         Assert.Equal(1600, frame.Payload.Count);
 
         await source.StopAsync();
