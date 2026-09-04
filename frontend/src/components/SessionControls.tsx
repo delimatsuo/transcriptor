@@ -31,11 +31,11 @@ export default function SessionControls({
   disabled = false,
   audioCapture,
 }: Props) {
-  const [mode, setMode] = useState<SessionMode>(authBypassEnabled ? "meeting" : "interview");
+  const [mode, setMode] = useState<SessionMode>("interview");
   const [title, setTitle] = useState("");
-  const [noticeGiven, setNoticeGiven] = useState(false);
+  const [noticeGiven, setNoticeGiven] = useState(authBypassEnabled);
   const [loading, setLoading] = useState(false);
-  const [showInterviewPrep, setShowInterviewPrep] = useState(!authBypassEnabled);
+  const [showInterviewPrep, setShowInterviewPrep] = useState(true);
   const [candidateName, setCandidateName] = useState("");
   const [nextSteps, setNextSteps] = useState("");
   const [resumeFile, setResumeFile] = useState<File | null>(null);
@@ -292,8 +292,8 @@ export default function SessionControls({
               cursor: "pointer",
             }}
           >
-            <option value="meeting">Reunião</option>
             <option value="interview">Entrevista</option>
+            <option value="meeting">Reunião</option>
           </select>
         ) : (
           <span style={{ fontSize: 13, color: "#515154" }}>Entrevista</span>
