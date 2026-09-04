@@ -35,14 +35,15 @@ received_stats = {
     "sequences": set(),
 }
 
-connected_event = asyncio.Event()
-frames_received_event = asyncio.Event()
+connected_event: asyncio.Event | None = None
+frames_received_event: asyncio.Event | None = None
 
 
 @app.websocket("/api/stream/native/{session_id}")
 async def mock_native_stream(websocket: WebSocket, session_id: str):
     await websocket.accept()
-    connected_event.set()
+    if connected_event is not None:
+        connected_event.set()
 
     try:
         while True:
@@ -79,7 +80,8 @@ async def mock_native_stream(websocket: WebSocket, session_id: str):
                     received_stats["microphone_frames"] >= 5
                     and received_stats["system_audio_frames"] >= 5
                 ):
-                    frames_received_event.set()
+                    if frames_received_event is not None:
+                        frames_received_event.set()
 
             elif "text" in msg and msg["text"]:
                 try:
@@ -109,6 +111,10 @@ async def run_server(server: uvicorn.Server):
 
 
 async def main_async():
+    global connected_event, frames_received_event
+    connected_event = asyncio.Event()
+    frames_received_event = asyncio.Event()
+
     port = get_free_port()
     session_id = f"pilot-win-e2e-{int(time.time())}"
 

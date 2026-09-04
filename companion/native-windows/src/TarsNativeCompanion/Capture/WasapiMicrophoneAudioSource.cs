@@ -45,6 +45,8 @@ public sealed class WasapiMicrophoneAudioSource : IWasapiCaptureSource
         );
     }
 
+    private NAudio.CoreAudioApi.WasapiCapture? _wasapiCapture;
+
     public ValueTask StartAsync()
     {
         lock (_lock)
@@ -59,8 +61,65 @@ public sealed class WasapiMicrophoneAudioSource : IWasapiCaptureSource
                 _simCts = new CancellationTokenSource();
                 _simTask = Task.Run(() => RunSimulationAsync(_simCts.Token));
             }
+            else if (OperatingSystem.IsWindows() && _liveCaptureEnabled)
+            {
+                StartLiveCapture();
+            }
         }
         return ValueTask.CompletedTask;
+    }
+
+    [System.Runtime.Versioning.SupportedOSPlatform("windows")]
+    private void StartLiveCapture()
+    {
+        try
+        {
+            _wasapiCapture = new NAudio.CoreAudioApi.WasapiCapture();
+            var format = _wasapiCapture.WaveFormat;
+            int sampleRate = format.SampleRate;
+            int channels = format.Channels;
+            bool isFloat = format.Encoding == NAudio.Wave.WaveFormatEncoding.IeeeFloat;
+
+            _wasapiCapture.DataAvailable += async (s, e) =>
+            {
+                if (!_capturing || e.BytesRecorded == 0) return;
+                ulong nowMs = (ulong)DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+
+                if (isFloat)
+                {
+                    int floatCount = e.BytesRecorded / 4;
+                    float[] floatSamples = new float[floatCount];
+                    Buffer.BlockCopy(e.Buffer, 0, floatSamples, 0, e.BytesRecorded);
+                    await PushSamplesAsync(floatSamples, sampleRate, channels, nowMs);
+                }
+                else
+                {
+                    int shortCount = e.BytesRecorded / 2;
+                    float[] floatSamples = new float[shortCount];
+                    for (int i = 0; i < shortCount; i++)
+                    {
+                        short val = BitConverter.ToInt16(e.Buffer, i * 2);
+                        floatSamples[i] = val / 32768.0f;
+                    }
+                    await PushSamplesAsync(floatSamples, sampleRate, channels, nowMs);
+                }
+            };
+
+            _wasapiCapture.RecordingStopped += (s, e) =>
+            {
+                if (e.Exception != null)
+                {
+                    Health = Health with { Route = RouteState.Unavailable };
+                }
+            };
+
+            _wasapiCapture.StartRecording();
+        }
+        catch (Exception)
+        {
+            Health = Health with { Route = RouteState.Unavailable };
+            throw;
+        }
     }
 
     public async ValueTask StopAsync()
@@ -75,6 +134,11 @@ public sealed class WasapiMicrophoneAudioSource : IWasapiCaptureSource
             task = _simTask;
             _simCts = null;
             _simTask = null;
+
+            if (OperatingSystem.IsWindows() && _wasapiCapture != null)
+            {
+                StopLiveCapture();
+            }
         }
         if (cts != null)
         {
@@ -85,6 +149,18 @@ public sealed class WasapiMicrophoneAudioSource : IWasapiCaptureSource
             }
             cts.Dispose();
         }
+    }
+
+    [System.Runtime.Versioning.SupportedOSPlatform("windows")]
+    private void StopLiveCapture()
+    {
+        try
+        {
+            _wasapiCapture?.StopRecording();
+            _wasapiCapture?.Dispose();
+            _wasapiCapture = null;
+        }
+        catch { }
     }
 
     private async Task RunSimulationAsync(CancellationToken ct)

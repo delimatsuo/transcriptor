@@ -10,9 +10,14 @@ namespace TarsCompanionCLI;
 
 public static class CaptureModeGate
 {
+    public static int Validate(bool simulate, bool isWindows)
+    {
+        return (simulate || isWindows) ? 0 : 2;
+    }
+
     public static int Validate(bool simulate)
     {
-        return simulate ? 0 : 2;
+        return Validate(simulate, OperatingSystem.IsWindows());
     }
 }
 
@@ -45,11 +50,11 @@ public static class Program
             }
         }
 
-        // Check if non-simulate mode is requested (not allowed)
+        // Check if non-simulate mode is requested on non-Windows platforms
         int gateResult = CaptureModeGate.Validate(simulate);
         if (gateResult == 2)
         {
-            Console.Error.WriteLine("ERRO: A captura WASAPI real ainda NÃO está implementada neste companion. Este binário só funciona com --simulate (tom de teste). Não use em entrevistas reais.");
+            Console.Error.WriteLine("ERRO: A captura WASAPI real requer Windows 10/11. Em outros sistemas operacionais, use --simulate.");
             return 2;
         }
 
@@ -70,7 +75,7 @@ public static class Program
         Console.WriteLine("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
         Console.WriteLine($"Session ID:   {sessionId}");
         Console.WriteLine($"Gateway URL:  {urlString}");
-        Console.WriteLine($"Capture Mode: {(simulate ? "Simulated WASAPI Audio Engine" : "NÃO IMPLEMENTADO — apenas --simulate disponível")}");
+        Console.WriteLine($"Capture Mode: {(simulate ? "Simulated WASAPI Audio Engine" : "Native Windows WASAPI (Direct Render + Microphone)")}");
         Console.WriteLine("Driver Setup: ZERO virtual devices or VB-CABLE required");
         Console.WriteLine("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
