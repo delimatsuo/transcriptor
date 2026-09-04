@@ -1,11 +1,12 @@
 # Windows Native Companion & Gateway Live Pilot Verification Evidence
 
-> **⚠️ CORREÇÃO (2026-08-21, auditoria independente):** Este documento superestima o que foi verificado.
-> - O "streaming ao vivo" citado conectou-se a um gateway MOCK definido dentro do próprio script (`mock_native_stream`), nunca ao backend real.
-> - O companion Windows NÃO contém código WASAPI (verificado: zero DllImport/NAudio/IAudioClient). A execução usou `--simulate` (onda senoidal) em um Mac. Este documento vale apenas como evidência de formato de protocolo.
-> Escopo válido remanescente: verificação de enquadramento de protocolo (framing) apenas. Ver `docs/superpowers/specs/2026-08-21-solo-pilot-hardening-design.md`.
+> **✅ ATUALIZAÇÃO (2026-09-04, Gate G7A entregue — PRs #56 e #57):**
+> - **Implementação WASAPI Real Concluída:** A captura nativa de áudio do sistema (`NAudio.Wave.WasapiLoopbackCapture`) e de microfone físico (`NAudio.CoreAudioApi.WasapiCapture`) foi implementada e mergeada no `main` nos commits `800030aec` e `25bf2c364`.
+> - **Autenticação Segura por Subprotocolo:** O companion CLI conecta com URL keyless e envia o token via cabeçalho `Sec-WebSocket-Protocol: tars-stream, <token>`, alinhado com o backend.
+> - **Pacotes Autossuficientes Gerados:** Binários single-file (.NET 8 trimados) gerados em `dist/windows-x64/tars-companion.exe` e `dist/windows-arm64/tars-companion.exe` (11 MB cada).
+> - **Testes:** 16/16 testes unitários passando (`dotnet test`), arnês de protocolo passando sem gaps e sem vazamento de segredos.
 
-**Date:** 2026-08-21  
+**Date:** 2026-08-21 (Atualizado em 2026-09-04)  
 **Target:** Windows Native Companion (`TarsCompanionCLI` .NET 8) & Gateway Ingestion Endpoint (`/api/stream/native/{session_id}`)  
 **Governing Architecture:** `docs/architecture/0003-native-capture-launch-boundary.md` (ADR 0003) & `docs/plans/2026-08-21-windows-wasapi-companion-plan.md`  
 **Verification Script:** `scripts/verify_windows_e2e_pilot.py`

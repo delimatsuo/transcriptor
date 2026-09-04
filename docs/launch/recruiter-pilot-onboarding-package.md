@@ -1,7 +1,7 @@
 # T.A.R.S. Recruiter Pilot Onboarding Package
 
-**Version:** 1.0.0 (Launch Pilot Edition)  
-**Target Audience:** Executive Search Recruiters & Interviewers (macOS — piloto atual; Windows indisponível nesta fase)  
+**Version:** 1.1.0 (Launch Pilot Edition)  
+**Target Audience:** Executive Search Recruiters & Interviewers (macOS e Windows 10/11)  
 **Governing Architecture:** ADR 0003 (`docs/architecture/0003-native-capture-launch-boundary.md`)  
 **Cockpit Web Interface:** `http://localhost:3000` (or company staging URL)
 
@@ -13,7 +13,7 @@ O **T.A.R.S.** é o seu copiloto de inteligência em tempo real para entrevistas
 
 ### ✨ Principais Vantagens do Novo Modo Nativo:
 - **Zero Configuração de Drivers:** Você **NÃO** precisa instalar BlackHole, VB-CABLE nem alterar Ajustes de Áudio e MIDI.
-- **Detecção Automática:** O áudio do seu microfone e o áudio da chamada (Google Meet, Zoom, Microsoft Teams) são capturados nativamente com isolamento total.
+- **Detecção Automática:** O áudio do seu microfone e o áudio da chamada (Google Meet, Zoom, Microsoft Teams) são capturados nativamente com isolamento total (macOS CoreAudio Process Tap ou Windows WASAPI Loopback).
 - **Transparência de Cobertura:** Se houver oscilação de rede ou queda de conexão, o sistema sinaliza exatamente o intervalo de áudio afetado na linha do tempo.
 
 ---
@@ -22,7 +22,7 @@ O **T.A.R.S.** é o seu copiloto de inteligência em tempo real para entrevistas
 
 1. **Computador:**
    - **macOS:** macOS 13.0 (Ventura) ou superior (Apple Silicon M1/M2/M3/M4 ou Intel).
-   - **Windows:** indisponível nesta fase do piloto (o companion Windows é um esqueleto sem captura real).
+   - **Windows:** Windows 10 ou Windows 11 (x64 ou ARM64) executando o binário autossuficiente portátil `dist/windows-x64/tars-companion.exe` ou `dist/windows-arm64/tars-companion.exe`.
 2. **Headset ou Fones de Ouvido:** **Obrigatório.** O uso de fones evita que a voz do candidato ecoe no seu microfone físico, garantindo que os rótulos de quem está falando fiquem 100% corretos.
 3. **Navegador:** Google Chrome, Microsoft Edge ou Safari atualizados.
 
@@ -52,12 +52,20 @@ Para capturar o áudio das reuniões (Google Meet, Teams, Zoom) sem necessidade 
 
 ---
 
-### Passo 4: Iniciar a Captura com Um Clique ("Conectar companion")
+### Passo 4: Iniciar a Captura do Áudio
+
+#### No macOS (Um Clique):
 No Cockpit Web, o card **"Canal do Candidato"** exibe o botão **"Conectar companion"**:
 1. Basta clicar no botão **"Conectar companion"**.
 2. O navegador abrirá automaticamente o aplicativo da barra de menus via link seguro (`tars-companion://join`), conectando o áudio da chamada instantaneamente.
 3. O indicador de status do candidato fica verde no Cockpit Web:
-   - 🟢 **Áudio do Sistema (ScreenCaptureKit Process Tap):** Ativo e capturando o áudio da reunião.
+   - 🟢 **Áudio do Sistema (CoreAudio Process Tap):** Ativo e capturando o áudio da reunião.
+
+#### No Windows 10/11 (CLI Portátil):
+1. Baixe o executável autossuficiente (`dist/windows-x64/tars-companion.exe` ou `dist/windows-arm64/tars-companion.exe`).
+2. Execute o comando fornecido no Cockpit Web:
+   `tars-companion.exe --session-id <SESSION_ID> --token <STREAM_KEY>`
+3. O companion conecta via WASAPI Loopback com autenticação por subprotocolo WebSocket, sem necessidade de drivers virtuais.
 
 *O canal do entrevistador (microfone) é capturado diretamente pelo navegador com o headset selecionado no painel do Cockpit.*
 
