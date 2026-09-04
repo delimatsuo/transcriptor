@@ -59,10 +59,6 @@ public static class Program
         }
 
         string urlString = $"{gatewayBase}/{sessionId}";
-        if (!string.IsNullOrEmpty(token))
-        {
-            urlString += $"?token={Uri.EscapeDataString(token)}";
-        }
 
         if (!Uri.TryCreate(urlString, UriKind.Absolute, out var uri))
         {
