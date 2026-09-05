@@ -24,4 +24,4 @@ fi
 export GOOGLE_APPLICATION_CREDENTIALS="${ADC}"
 
 cd "${REPO_ROOT}"
-exec .venv/bin/python -m uvicorn backend.main:app --host 127.0.0.1 --port "${PORT:-8000}"
+exec .venv/bin/python -m uvicorn backend.main:app --host 127.0.0.1 --port "${PORT:-8008}"
