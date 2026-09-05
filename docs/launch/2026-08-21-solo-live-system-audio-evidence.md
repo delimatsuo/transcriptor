@@ -1,10 +1,10 @@
 # Evidência — prova ao vivo do canal do candidato (piloto-solo)
 
 - **Gerado por:** `scripts/verify_live_system_audio.py --with-restart-drill`
-- **Data (UTC):** 2026-09-03T14:09:36+00:00
+- **Data (UTC):** 2026-09-05T02:31:50+00:00
 - **Máquina:** macOS / 26.6.2 / 25G83 (arm64)
-- **Commit:** `4be2ca963ad9f8737baa09f202137e7e05d2de88` — working tree: limpo
-- **App assinado exercitado:** `/Volumes/Extreme Pro/MYPROJECTS/Transcriptor/build/worktrees/task11-live-process-tap-source/dist/TarsCompanion.app`
+- **Commit:** `913fff80409c31a0745e240ac455094b0717bad9` — working tree: limpo
+- **App assinado exercitado:** `/Volumes/Extreme Pro/MYPROJECTS/Transcriptor/dist/TarsCompanion.app`
 - **Voz pt-BR usada:** Eddy (Portuguese (Brazil))
 - **Backend:** uvicorn real em `127.0.0.1:8010`, `AUTH_BYPASS=true`, `HOST_AUDIO_CAPTURE_ENABLED` não definido
 - **STT:** Google Speech-to-Text real (ADC verificada apenas por código de saída; nenhum token foi lido, impresso ou gravado)
@@ -40,10 +40,10 @@
 
 ## Contagens observadas
 
-- Frames injetados no canal do entrevistador (`source=microphone`): **656** quadros de 50 ms / 1600 B (1049.6 kB), dos quais **62** de fala real e o restante de silêncio de sustentação até o `/stop`
+- Frames injetados no canal do entrevistador (`source=microphone`): **655** quadros de 50 ms / 1600 B (1048.0 kB), dos quais **78** de fala real e o restante de silêncio de sustentação até o `/stop`
 - Frames do canal do candidato (`source=system_audio`): produzidos pelo app menu-bar assinado via Process Tap; o gateway não expõe um contador por fonte, então a prova desse canal é o segmento transcrito abaixo, não uma contagem
 - Segmentos no transcript antes do `/stop`: **6**
-- Segmentos no transcript depois do `/stop`: **6** (finais: **3**)
+- Segmentos no transcript depois do `/stop`: **6** (finais: **4**)
 - `transcription_complete` devolvido pelo `/stop`: **True**
 
 ### Transcript final observado
