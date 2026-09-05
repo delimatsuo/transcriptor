@@ -11,7 +11,11 @@ from backend.llm import gemini
 
 def test_global_vertex_location_is_rejected():
     with pytest.raises(ValueError, match="global is prohibited"):
-        Settings(google_cloud_project="test-project", llm_location="global")
+        Settings(
+            google_cloud_project="test-project",
+            llm_location="global",
+            _env_file=None,
+        )
 
 
 def test_global_vertex_location_allowed_with_opt_in():
@@ -19,13 +23,14 @@ def test_global_vertex_location_allowed_with_opt_in():
         google_cloud_project="test-project",
         llm_location="global",
         llm_allow_global=True,
+        _env_file=None,
     )
     assert settings.llm_location == "global"
     assert settings.llm_allow_global is True
 
 
 def test_default_llm_model_name_is_gemini_25_flash():
-    settings = Settings(google_cloud_project="test-project")
+    settings = Settings(google_cloud_project="test-project", _env_file=None)
     assert settings.llm_model_name == "gemini-2.5-flash"
 
 
@@ -33,19 +38,25 @@ def test_custom_llm_model_name_configured():
     settings = Settings(
         google_cloud_project="test-project",
         llm_model_name="gemini-3.8-flash",
+        _env_file=None,
     )
     assert settings.llm_model_name == "gemini-3.8-flash"
 
 
 def test_blank_llm_model_name_rejected():
     with pytest.raises(ValueError, match="LLM_MODEL_NAME must not be blank"):
-        Settings(google_cloud_project="test-project", llm_model_name="   ")
+        Settings(
+            google_cloud_project="test-project",
+            llm_model_name="   ",
+            _env_file=None,
+        )
 
 
 def test_vertex_location_is_trimmed_for_explicit_provider_routing():
     settings = Settings(
         google_cloud_project="test-project",
         llm_location=" southamerica-east1 ",
+        _env_file=None,
     )
     assert settings.llm_location == "southamerica-east1"
 
@@ -69,7 +80,9 @@ def test_reuses_model_for_static_system_prompt(monkeypatch):
     )
     monkeypatch.setattr(gemini, "GenerativeModel", make_model)
 
-    client = gemini.GeminiClient(Settings(google_cloud_project="test-project"))
+    client = gemini.GeminiClient(
+        Settings(google_cloud_project="test-project", _env_file=None)
+    )
 
     async def run():
         await client.generate("system", "first")
