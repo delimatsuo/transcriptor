@@ -892,3 +892,76 @@ async def test_workable_get_events_skips_missing_starts_at():
         assert len(events) == 1
         assert events[0].id == "e_valid"
         assert events[0].starts_at == "2026-09-05T10:00:00Z"
+
+
+@pytest.mark.anyio
+async def test_match_calendar_interview_endpoint():
+    from backend import main as backend_main
+    from backend.integrations.calendar import CalendarMonitor, ScheduledInterview
+
+    old_settings = backend_main.settings
+    backend_main.settings = Settings(
+        google_cloud_project="test-project",
+        workable_subdomain="acme",
+        workable_api_key="secret-key",
+    )
+    mock_interview = ScheduledInterview(
+        id="workable-101",
+        title="Entrevista com Carlos",
+        starts_at="2026-09-05T15:00:00Z",
+        candidate_name="Carlos",
+        candidate_id="c12345",
+        conference_url="https://meet.google.com/xyz-uvwx-rst",
+    )
+    try:
+        with patch.object(CalendarMonitor, "match_interview_by_meet_code", AsyncMock(return_value=mock_interview)):
+            res = await backend_main.match_calendar_interview(meet_code="xyz-uvwx-rst")
+            assert res["ok"] is True
+            assert res["matched"] is True
+            assert res["interview"]["candidate_name"] == "Carlos"
+
+        with patch.object(CalendarMonitor, "match_interview_by_meet_code", AsyncMock(return_value=None)):
+            res_none = await backend_main.match_calendar_interview(meet_code="not-found-meet")
+            assert res_none["ok"] is True
+            assert res_none["matched"] is False
+            assert res_none["interview"] is None
+    finally:
+        backend_main.settings = old_settings
+
+
+@pytest.mark.anyio
+async def test_get_and_post_integrations_settings_endpoint():
+    from backend import main as backend_main
+    from backend.schemas.models import IntegrationsSettingsUpdateRequest
+
+    old_settings = backend_main.settings
+    test_settings = Settings(
+        google_cloud_project="test-project",
+        workable_subdomain="acme",
+        workable_api_key="secret-12345-token",
+        calendar_ical_url="https://example.com/feed.ics",
+    )
+    backend_main.settings = test_settings
+    try:
+        # 1. GET settings (secrets must be masked)
+        get_res = await backend_main.get_integrations_settings()
+        assert get_res["ok"] is True
+        assert get_res["workable"]["configured"] is True
+        assert get_res["workable"]["subdomain"] == "acme"
+        assert get_res["workable"]["api_key_masked"] == "secr••••oken"
+        assert get_res["calendar"]["configured"] is True
+        assert "••••" in get_res["calendar"]["ical_url_masked"]
+
+        # 2. POST settings test_only
+        with patch.object(WorkableClient, "get_jobs", AsyncMock(return_value=[{"title": "Job 1"}])):
+            post_test = await backend_main.update_integrations_settings(
+                IntegrationsSettingsUpdateRequest(
+                    workable_subdomain="testcompany",
+                    workable_api_key="valid-key",
+                    test_only=True,
+                )
+            )
+            assert post_test["ok"] is True
+            assert post_test["workable"]["ok"] is True
+    finally:
+        backend_main.settings = old_settings

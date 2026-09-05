@@ -178,6 +178,13 @@ class WorkableExportRequest(BaseModel):
     policy: list[str] | None = None
 
 
+class IntegrationsSettingsUpdateRequest(BaseModel):
+    workable_subdomain: str | None = None
+    workable_api_key: str | None = None
+    calendar_ical_url: str | None = None
+    test_only: bool = False
+
+
 # --- Active Speaker (Chrome Extension) ---
 
 class ActiveSpeakerEvent(BaseModel):

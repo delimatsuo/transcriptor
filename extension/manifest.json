@@ -11,12 +11,18 @@
   ],
   "host_permissions": [
     "https://meet.google.com/*",
-    "http://localhost/*"
+    "http://localhost/*",
+    "http://127.0.0.1/*"
   ],
   "content_scripts": [
     {
       "matches": ["https://meet.google.com/*"],
-      "js": ["content/meet-selectors.js", "content/meet-observer.js"],
+      "css": ["content/meet-prompt.css"],
+      "js": [
+        "content/meet-selectors.js",
+        "content/meet-observer.js",
+        "content/meet-prompt.js"
+      ],
       "run_at": "document_idle"
     }
   ],

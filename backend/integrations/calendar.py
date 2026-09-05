@@ -192,3 +192,39 @@ class CalendarMonitor:
         # Sort reverse chronologically by start time (newest / most upcoming first)
         interviews.sort(key=lambda x: x.starts_at, reverse=True)
         return interviews[:limit]
+
+    async def match_interview_by_meet_code(
+        self,
+        meet_code: str,
+        time_window_minutes: int = 30,
+    ) -> ScheduledInterview | None:
+        """Find an upcoming or active interview that matches a Google Meet code.
+
+        Matches by:
+        1. Exact occurrence of meet_code in conference_url (e.g. 'meet.google.com/abc-defg-hij').
+        2. Proximity in time: if an interview is scheduled within ±time_window_minutes.
+        """
+        clean_code = meet_code.strip().lower()
+        if not clean_code:
+            return None
+
+        interviews = await self.get_upcoming_interviews(days_ahead=3, days_behind=1, limit=50)
+
+        # 1. Exact match on meeting code in conference_url
+        for item in interviews:
+            if item.conference_url and clean_code in item.conference_url.lower():
+                return item
+
+        # 2. Time proximity match
+        now = datetime.now(timezone.utc)
+        for item in interviews:
+            try:
+                ts_str = item.starts_at.replace("Z", "+00:00")
+                start_dt = datetime.fromisoformat(ts_str)
+                diff_minutes = abs((now - start_dt).total_seconds()) / 60.0
+                if diff_minutes <= time_window_minutes:
+                    return item
+            except Exception:
+                continue
+
+        return None
