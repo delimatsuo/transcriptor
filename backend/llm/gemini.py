@@ -72,7 +72,7 @@ class GeminiClient:
             model = self._models.get(system_instruction)
             if model is None:
                 model = GenerativeModel(
-                    "gemini-2.5-flash",
+                    self.settings.llm_model_name,
                     system_instruction=[system_instruction],
                 )
                 self._models[system_instruction] = model

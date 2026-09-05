@@ -6,7 +6,7 @@ import ipaddress
 import re
 from typing import Any, Literal, Mapping
 from urllib.parse import urlsplit
-from pydantic import Field, field_validator
+from pydantic import Field, ValidationInfo, field_validator
 from pydantic_settings import BaseSettings
 
 
@@ -264,6 +264,16 @@ class Settings(BaseSettings):
 
     # Model/provider guardrails.  Keep one bounded queue across all Gemini
     # features so concurrent sessions cannot fan out unbounded provider work.
+    llm_model_name: str = Field(
+        default="gemini-2.5-flash",
+        min_length=1,
+        max_length=64,
+        description="Vertex AI model name for generative tasks (e.g. gemini-2.5-flash, gemini-3.8-flash)",
+    )
+    llm_allow_global: bool = Field(
+        default=False,
+        description="Explicit opt-in to permit LLM_LOCATION=global for models only served globally (e.g. Gemini 3.8 Flash)",
+    )
     llm_max_concurrent_requests: int = Field(
         default=2,
         gt=0,
@@ -325,14 +335,27 @@ class Settings(BaseSettings):
         ),
     )
 
+    @field_validator("llm_model_name")
+    @classmethod
+    def validate_llm_model_name(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("LLM_MODEL_NAME must not be blank")
+        return normalized
+
     @field_validator("llm_location")
     @classmethod
-    def validate_llm_location(cls, value: str) -> str:
+    def validate_llm_location(cls, value: str, info: ValidationInfo) -> str:
         normalized = value.strip()
         if not normalized:
             raise ValueError("LLM_LOCATION must not be blank")
-        if normalized.lower() == "global":
-            raise ValueError("LLM_LOCATION=global is prohibited by the privacy policy")
+        allow_global = False
+        if info and info.data:
+            allow_global = bool(info.data.get("llm_allow_global", False))
+        if normalized.lower() == "global" and not allow_global:
+            raise ValueError(
+                "LLM_LOCATION=global is prohibited by the privacy policy unless LLM_ALLOW_GLOBAL=true"
+            )
         return normalized
 
     # Audio
