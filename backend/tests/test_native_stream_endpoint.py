@@ -526,13 +526,39 @@ def test_stop_pipeline_stops_native_sms(monkeypatch):
         "connections": 1,
     }
     main.native_frame_last_seq["s-stop"] = {"system_audio": 42}
+    fake_ws = AsyncMock()
+    main.native_stream_websockets["s-stop"] = {fake_ws}
+
     result = asyncio.run(main._stop_pipeline("s-stop"))
     assert result is True
     sm.stop.assert_awaited_once()
+    fake_ws.close.assert_awaited_once_with(code=1000)
     assert "s-stop" not in main.native_stream_managers
     assert "s-stop" not in main.stream_keys
     assert "s-stop" not in main.native_session_health
     assert "s-stop" not in main.native_frame_last_seq
+    assert "s-stop" not in main.native_stream_websockets
+
+
+def test_native_stream_registers_and_cleans_active_websocket(monkeypatch):
+    key = _install_session(monkeypatch, "s-reg-clean")
+    registered_mid_stream = False
+
+    async def observe_registration():
+        nonlocal registered_mid_stream
+        registered_mid_stream = ws in main.native_stream_websockets.get("s-reg-clean", set())
+
+    ws = _MidStreamWebSocket(
+        [
+            {"text": json.dumps({"type": "ping"})},
+        ],
+        on_second_receive=observe_registration,
+        headers={"sec-websocket-protocol": f"tars-stream, {key}"},
+    )
+
+    asyncio.run(main.native_stream_endpoint(ws, "s-reg-clean"))
+    assert registered_mid_stream is True
+    assert "s-reg-clean" not in main.native_stream_websockets
 
 
 def test_stop_pipeline_survives_legacy_pipeline_pop(monkeypatch):
