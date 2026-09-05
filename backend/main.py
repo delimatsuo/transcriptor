@@ -153,6 +153,9 @@ native_sm_lock = asyncio.Lock()
 # session: physical_capture is "active" while it is >0, "stopped" only once
 # the LAST connection closes. Popped whole in _stop_pipeline.
 native_session_health: dict[str, dict] = {}
+# Active WebSocket connections per session for the native companion endpoint.
+# Closed cleanly on session stop so companions never stream orphaned frames.
+native_stream_websockets: dict[str, set[WebSocket]] = {}
 # Windowed per-(session_id, source) duplicate-frame guard: the companion may
 # legitimately resend a frame whose send() timed out but actually landed,
 # which would otherwise feed one 50ms chunk to STT twice. Nested
@@ -1531,6 +1534,12 @@ async def _stop_pipeline(session_id: str) -> bool:
         native_sms = native_stream_managers.pop(session_id, {})
         native_session_health.pop(session_id, None)
         native_frame_last_seq.pop(session_id, None)
+        active_native_ws = list(native_stream_websockets.pop(session_id, set()))
+    for ws in active_native_ws:
+        try:
+            await ws.close(code=1000)
+        except Exception:
+            pass
     for sm in native_sms.values():
         try:
             await sm.stop()
@@ -2710,6 +2719,9 @@ async def native_stream_endpoint(websocket: WebSocket, session_id: str):
     logger.info("native_companion_connected", session_id=session_id)
     app_settings = settings
 
+    async with native_sm_lock:
+        native_stream_websockets.setdefault(session_id, set()).add(websocket)
+
     # --- companion_health / coverage_gap emission -------------------------
     # Session-scoped (not connection-scoped): native_stream_endpoint serves
     # multiple concurrent WS connections per session (browser mic + native
@@ -2986,6 +2998,17 @@ async def native_stream_endpoint(websocket: WebSocket, session_id: str):
                     if pcm_payload:
                         await sm.send_audio(pcm_payload)
                 except Exception as e:
+                    if "session stopping" in str(e):
+                        logger.info(
+                            "native_stream_session_stopping_close",
+                            session_id=session_id,
+                            source=source_label,
+                        )
+                        try:
+                            await websocket.close(code=1000)
+                        except Exception:
+                            pass
+                        break
                     logger.warning(
                         "native_stream_audio_send_error",
                         session_id=session_id,
@@ -3056,6 +3079,12 @@ async def native_stream_endpoint(websocket: WebSocket, session_id: str):
     except Exception:
         logger.exception("native_stream_error", session_id=session_id)
     finally:
+        async with native_sm_lock:
+            if session_id in native_stream_websockets:
+                native_stream_websockets[session_id].discard(websocket)
+                if not native_stream_websockets[session_id]:
+                    native_stream_websockets.pop(session_id, None)
+
         stall_task.cancel()
         try:
             await stall_task

@@ -148,6 +148,34 @@ public static class Program
         Console.WriteLine("\nStreaming dual-channel audio to T.A.R.S. gateway...");
         Console.WriteLine("Press Ctrl+C to terminate.\n");
 
+        // Background loop to detect server-side WebSocket closure
+        _ = Task.Run(async () =>
+        {
+            var buffer = new byte[512];
+            try
+            {
+                while (clientWebSocket.State == WebSocketState.Open && !cts.IsCancellationRequested)
+                {
+                    var res = await clientWebSocket.ReceiveAsync(new ArraySegment<byte>(buffer), cts.Token);
+                    if (res.MessageType == WebSocketMessageType.Close)
+                    {
+                        Console.WriteLine("\n[tars-companion] Conexão encerrada pelo servidor (sessão finalizada).");
+                        cts.Cancel();
+                        break;
+                    }
+                }
+            }
+            catch (OperationCanceledException) { }
+            catch (Exception)
+            {
+                if (!cts.IsCancellationRequested)
+                {
+                    Console.WriteLine("\n[tars-companion] Conexão com o gateway perdida.");
+                    cts.Cancel();
+                }
+            }
+        });
+
         try
         {
             await Task.Delay(Timeout.Infinite, cts.Token);

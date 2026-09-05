@@ -278,10 +278,11 @@ struct TarsCompanionApp: App {
 
     private func handleJoin(_ request: JoinRequest) {
         guard !harnessMode else { return }
+        let storedGateway = UserDefaults.standard.string(forKey: "tars_gateway_base") ?? "ws://127.0.0.1:8000/api/stream/native"
+        let effectiveGateway = request.gateway ?? storedGateway
+
         switch controller.state {
         case .idle, .error:
-            let storedGateway = UserDefaults.standard.string(forKey: "tars_gateway_base") ?? "ws://127.0.0.1:8000/api/stream/native"
-            let effectiveGateway = request.gateway ?? storedGateway
             Task {
                 await controller.start(
                     sessionID: request.sessionID,
@@ -290,7 +291,21 @@ struct TarsCompanionApp: App {
                 )
             }
         case .connecting, .capturing, .reconnecting:
-            NSLog("TarsCompanion: sessão já ativa — link ignorado")
+            if controller.activeSessionID == request.sessionID {
+                NSLog("TarsCompanion: mesma sessão já ativa (%@) — link ignorado", String(request.sessionID.prefix(8)))
+            } else {
+                NSLog("TarsCompanion: trocando de sessão (%@ -> %@)",
+                      controller.activeSessionID.map { String($0.prefix(8)) } ?? "nenhuma",
+                      String(request.sessionID.prefix(8)))
+                Task {
+                    await controller.stop()
+                    await controller.start(
+                        sessionID: request.sessionID,
+                        streamKey: request.streamKey,
+                        gatewayBase: effectiveGateway
+                    )
+                }
+            }
         }
     }
 
