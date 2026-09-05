@@ -83,8 +83,18 @@ from backend.schemas.models import (
     SummaryUpdate,
     TranscriptDelta,
     TranscriptSegment,
+    WorkableExportRequest,
+    WorkableParseRequest,
     WSMessage,
     WSMessageType,
+)
+from backend.integrations.workable import (
+    WorkableAuthError,
+    WorkableClient,
+    WorkableConfigurationError,
+    WorkableError,
+    WorkableNotFoundError,
+    WorkableRateLimitError,
 )
 from backend.speaker_correlation import SpeakerCorrelator
 from backend.startup_credentials import probe_application_default_credentials
@@ -1968,7 +1978,7 @@ async def upload_document(
 async def set_interview_context(session_id: str, body: SetContextRequest):
     """Set interview context text directly (e.g., pasted job description or briefing)."""
     assert session_mgr and firestore_storage
-    allowed_types = {"resume", "jd", "briefing", "candidate_name", "next_steps"}
+    allowed_types = {"resume", "jd", "briefing", "candidate_name", "next_steps", "workable_candidate_id"}
     if body.doc_type not in allowed_types:
         raise HTTPException(status_code=400, detail=f"doc_type must be one of {allowed_types}")
     if len(body.text) > 100_000:
@@ -1988,6 +1998,95 @@ async def set_interview_context(session_id: str, body: SetContextRequest):
         interview_documents[session_id] = {}
     interview_documents[session_id][body.doc_type] = body.text
     return {"ok": True, "chars": len(body.text)}
+
+
+@app.post("/api/integrations/workable/parse")
+async def parse_workable_dossier(body: WorkableParseRequest):
+    """Fetch and parse candidate, job, and previous notes from Workable."""
+    if not settings or not settings.has_workable_integration:
+        raise HTTPException(
+            status_code=400,
+            detail="Integração com o Workable não configurada. Defina WORKABLE_SUBDOMAIN e WORKABLE_API_KEY no backend.",
+        )
+    raw_input = body.url_or_id.strip()
+    if not raw_input:
+        raise HTTPException(status_code=400, detail="URL ou identificador do candidato é obrigatório.")
+
+    client = WorkableClient(
+        subdomain=settings.workable_subdomain,
+        api_key=settings.workable_api_key,
+    )
+    try:
+        dossier = await client.import_candidate_dossier(raw_input)
+        return {"ok": True, "dossier": dossier.model_dump()}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except WorkableNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except WorkableAuthError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+    except WorkableRateLimitError as exc:
+        raise HTTPException(status_code=429, detail=str(exc)) from exc
+    except WorkableError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.post("/api/sessions/{session_id}/workable/import")
+async def import_workable_to_session(session_id: str, body: WorkableParseRequest):
+    """Import Workable candidate, job, and previous notes directly into session context."""
+    assert session_mgr and firestore_storage
+    _require_active_interview(session_id)
+    if not settings or not settings.has_workable_integration:
+        raise HTTPException(
+            status_code=400,
+            detail="Integração com o Workable não configurada. Defina WORKABLE_SUBDOMAIN e WORKABLE_API_KEY no backend.",
+        )
+    raw_input = body.url_or_id.strip()
+    if not raw_input:
+        raise HTTPException(status_code=400, detail="URL ou identificador do candidato é obrigatório.")
+
+    client = WorkableClient(
+        subdomain=settings.workable_subdomain,
+        api_key=settings.workable_api_key,
+    )
+    try:
+        dossier = await client.import_candidate_dossier(raw_input)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except WorkableNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except WorkableAuthError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+    except WorkableRateLimitError as exc:
+        raise HTTPException(status_code=429, detail=str(exc)) from exc
+    except WorkableError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    slots_to_save: list[tuple[str, str]] = [
+        ("candidate_name", dossier.candidate_name),
+        ("jd", dossier.jd_text),
+        ("resume", dossier.cv_text),
+        ("briefing", dossier.briefing_text),
+        ("workable_candidate_id", dossier.candidate_id),
+    ]
+    if session_id not in interview_documents:
+        interview_documents[session_id] = {}
+
+    for doc_type, text in slots_to_save:
+        if text and text.strip():
+            try:
+                await firestore_storage.save_interview_context(
+                    session_id,
+                    doc_type,
+                    text,
+                )
+            except InterviewReportConflict as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from None
+            interview_documents[session_id][doc_type] = text
+
+    interview_documents[session_id]["workable_candidate_id"] = dossier.candidate_id
+
+    return {"ok": True, "dossier": dossier.model_dump()}
 
 
 @app.post("/api/analyze")
@@ -2371,6 +2470,103 @@ async def get_approved_client_report(session_id: str):
     except (InterviewReportConflict, InterviewReportError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from None
     return client_report.model_dump(mode="json")
+
+
+@app.post("/api/sessions/{session_id}/workable/export")
+async def export_report_to_workable(session_id: str, body: WorkableExportRequest):
+    """Export approved executive feedback report to candidate's Workable timeline."""
+    assert firestore_storage
+    session = await _read_completed_interview(session_id)
+    _assert_session_access(session)
+
+    if not settings or not settings.has_workable_integration:
+        raise HTTPException(
+            status_code=400,
+            detail="Integração com o Workable não configurada. Defina WORKABLE_SUBDOMAIN e WORKABLE_API_KEY no backend.",
+        )
+
+    try:
+        report = await firestore_storage.get_interview_report(session_id)
+        _assert_report_scope(report, session)
+        if report is None:
+            raise InterviewReportConflict("Relatório não encontrado.")
+        if report.status != ReportStatus.APPROVED:
+            raise InterviewReportConflict("O relatório de entrevista precisa ser aprovado antes da exportação para o Workable.")
+        client_rep = approved_client_report(report)
+    except (InterviewReportConflict, InterviewReportError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+
+    candidate_id = body.candidate_id
+    if not candidate_id:
+        doc_ctx = interview_documents.get(session_id, {})
+        candidate_id = doc_ctx.get("workable_candidate_id")
+
+    # Fallback to durable Firestore context across server restarts / Cloud Run scaling
+    durable_contexts: dict[str, str] = {}
+    if not candidate_id or not interview_documents.get(session_id, {}).get("candidate_name"):
+        try:
+            stored_contexts = await firestore_storage.get_interview_context(session_id)
+            durable_contexts = {
+                str(rec.get("type") or rec.get("id", "")): str(rec.get("text", ""))
+                for rec in stored_contexts
+                if isinstance(rec, dict)
+            }
+        except Exception as exc:
+            logger.warning("Could not read durable interview context for session %s: %s", session_id, exc)
+
+    if not candidate_id:
+        candidate_id = durable_contexts.get("workable_candidate_id")
+
+    if not candidate_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Identificador do candidato no Workable (candidate_id) é obrigatório para exportação.",
+        )
+
+    cand_name = (
+        interview_documents.get(session_id, {}).get("candidate_name")
+        or durable_contexts.get("candidate_name")
+        or getattr(session, "title", None)
+        or "Candidato"
+    )
+    report_date = report.updated_at.strftime("%d/%m/%Y")
+
+    comment_lines = [
+        "# Parecer de Entrevista Executiva — Ella Executive Search",
+        f"**Candidato**: {cand_name}",
+        f"**Data da Entrevista**: {report_date}",
+        "**Status da Avaliação**: Aprovado para Cliente",
+        "",
+        "## 1. Trajetória Executiva",
+        client_rep.trajectory,
+        "",
+        "## 2. Avaliação de Competências e Fit Cultural",
+        client_rep.assessment,
+    ]
+    if report.internal_sections:
+        comment_lines.append("")
+        comment_lines.append("## 3. Avaliações Internas por Competência")
+        for sec in report.internal_sections:
+            rating_str = f" [Nota: {sec.rating}/5]" if sec.rating is not None else ""
+            comment_lines.append(f"### {sec.title}{rating_str}")
+            comment_lines.append(sec.body)
+            comment_lines.append("")
+
+    full_comment = "\n".join(comment_lines).strip()
+    client = WorkableClient(
+        subdomain=settings.workable_subdomain,
+        api_key=settings.workable_api_key,
+    )
+    try:
+        res = await client.post_candidate_comment(
+            candidate_id=candidate_id,
+            body=full_comment,
+            policy=body.policy,
+        )
+        return {"ok": True, "candidate_id": candidate_id, "result": res}
+    except WorkableError as exc:
+        logger.warning("Failed to export report to Workable for candidate %s: %s", candidate_id, exc)
+        raise HTTPException(status_code=502, detail=f"Erro ao exportar para o Workable: {exc}") from exc
 
 
 @app.post("/api/sessions/{session_id}/ws-ticket")

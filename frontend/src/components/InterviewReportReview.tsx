@@ -87,12 +87,43 @@ export default function InterviewReportReview({
   const [clientExport, setClientExport] = useState<ApprovedClientReport | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
+  const [workableExporting, setWorkableExporting] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [retrying, setRetrying] = useState(false);
   const [reloadNonce, setReloadNonce] = useState(0);
   const requestTokenRef = useRef(0);
+
+  const exportToWorkable = async () => {
+    if (!clientExport || busy || workableExporting) return;
+    setWorkableExporting(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const response = await apiFetch(
+        apiUrl(`/api/sessions/${encodeURIComponent(sessionId)}/workable/export`),
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({}),
+        },
+      );
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({}));
+        throw new Error(err.detail || "Falha ao exportar para o Workable.");
+      }
+      setNotice("✓ Relatório exportado com sucesso para a timeline do Workable.");
+    } catch (exportErr) {
+      setError(
+        exportErr instanceof Error
+          ? exportErr.message
+          : "Falha ao exportar para o Workable.",
+      );
+    } finally {
+      setWorkableExporting(false);
+    }
+  };
 
   const adoptReport = (next: InterviewReport) => {
     setReport(next);
@@ -472,9 +503,29 @@ export default function InterviewReportReview({
             </>
           )}
           {clientExport && (
-            <button type="button" onClick={() => window.print()}>
-              Exportar PDF
-            </button>
+            <>
+              <button type="button" onClick={() => window.print()}>
+                Exportar PDF
+              </button>
+              <button
+                type="button"
+                onClick={() => void exportToWorkable()}
+                disabled={busy || workableExporting}
+                style={{
+                  backgroundColor: "#007aff",
+                  color: "#ffffff",
+                  border: "none",
+                  borderRadius: 6,
+                  padding: "6px 12px",
+                  fontSize: 13,
+                  fontWeight: 500,
+                  cursor: busy || workableExporting ? "default" : "pointer",
+                  opacity: busy || workableExporting ? 0.6 : 1,
+                }}
+              >
+                {workableExporting ? "Exportando..." : "Exportar para o Workable"}
+              </button>
+            </>
           )}
         </div>
       </div>

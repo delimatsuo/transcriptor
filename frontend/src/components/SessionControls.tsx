@@ -48,6 +48,58 @@ export default function SessionControls({
   const [analyzing, setAnalyzing] = useState(false);
   const [analyzeError, setAnalyzeError] = useState<string | null>(null);
 
+  // Workable ATS integration state
+  const [workableInput, setWorkableInput] = useState("");
+  const [workableLoading, setWorkableLoading] = useState(false);
+  const [workableError, setWorkableError] = useState<string | null>(null);
+  const [workableSuccess, setWorkableSuccess] = useState<string | null>(null);
+  const [workableCandidateId, setWorkableCandidateId] = useState<string | null>(null);
+
+  const handleWorkableImport = async () => {
+    if (!workableInput.trim() || disabled || workableLoading) return;
+    setWorkableLoading(true);
+    setWorkableError(null);
+    setWorkableSuccess(null);
+    try {
+      const res = await apiFetch(apiUrl("/api/integrations/workable/parse"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url_or_id: workableInput.trim() }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || "Falha ao importar dados do Workable.");
+      }
+      const data = await res.json();
+      const dossier = data.dossier;
+      if (dossier.candidate_name) {
+        setCandidateName(dossier.candidate_name);
+      }
+      if (dossier.jd_text) {
+        setJdText(dossier.jd_text);
+      }
+      if (dossier.cv_text) {
+        setCvText(dossier.cv_text);
+      }
+      if (dossier.briefing_text) {
+        setBriefing(dossier.briefing_text);
+        onBriefingReady?.(dossier.briefing_text);
+      }
+      setWorkableCandidateId(dossier.candidate_id);
+      setWorkableSuccess(
+        `✓ Importado do Workable: ${dossier.candidate_name}${
+          dossier.job_title ? ` (${dossier.job_title})` : ""
+        }`
+      );
+    } catch (err) {
+      setWorkableError(
+        err instanceof Error ? err.message : "Erro ao importar do Workable."
+      );
+    } finally {
+      setWorkableLoading(false);
+    }
+  };
+
   const resetBriefing = () => {
     setBriefing(null);
     setCvText(null);
@@ -168,6 +220,10 @@ export default function SessionControls({
 
         if (nextSteps.trim()) {
           uploads.push(sendContext(sid, "next_steps", nextSteps.trim()));
+        }
+
+        if (workableCandidateId) {
+          uploads.push(sendContext(sid, "workable_candidate_id", workableCandidateId));
         }
 
         if (uploads.length > 0) await Promise.all(uploads);
@@ -386,6 +442,72 @@ export default function SessionControls({
               entrevista (roteiro de aviso da Ella).
             </span>
           </label>
+
+          {/* Workable 1-Click Import */}
+          <div
+            style={{
+              marginBottom: 16,
+              padding: 14,
+              backgroundColor: "#f0f7ff",
+              borderRadius: 10,
+              border: "1px solid #cce5ff",
+            }}
+          >
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <input
+                type="text"
+                placeholder="Link ou ID do Candidato no Workable (ex: c12345 ou URL completa)"
+                value={workableInput}
+                onChange={(e) => setWorkableInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    void handleWorkableImport();
+                  }
+                }}
+                disabled={disabled || workableLoading}
+                style={{
+                  flex: 1,
+                  padding: "8px 12px",
+                  borderRadius: 8,
+                  border: "1px solid #b8daff",
+                  fontSize: 13,
+                  outline: "none",
+                  backgroundColor: "white",
+                  color: "#1d1d1f",
+                }}
+              />
+              <button
+                type="button"
+                onClick={() => void handleWorkableImport()}
+                disabled={disabled || workableLoading || !workableInput.trim()}
+                style={{
+                  padding: "8px 16px",
+                  backgroundColor: "#007aff",
+                  color: "white",
+                  border: "none",
+                  borderRadius: 8,
+                  fontSize: 13,
+                  fontWeight: 500,
+                  cursor: !disabled && !workableLoading && workableInput.trim() ? "pointer" : "default",
+                  opacity: !disabled && !workableLoading && workableInput.trim() ? 1 : 0.6,
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {workableLoading ? "Importando..." : "Importar do Workable"}
+              </button>
+            </div>
+            {workableSuccess && (
+              <p style={{ margin: "8px 0 0 0", fontSize: 12, color: "#155724" }}>
+                {workableSuccess}
+              </p>
+            )}
+            {workableError && (
+              <p style={{ margin: "8px 0 0 0", fontSize: 12, color: "#721c24" }}>
+                {workableError}
+              </p>
+            )}
+          </div>
 
           {/* Candidate name */}
           <div style={{ marginBottom: 12 }}>

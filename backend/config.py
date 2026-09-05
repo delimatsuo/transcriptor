@@ -358,6 +358,42 @@ class Settings(BaseSettings):
             )
         return normalized
 
+    # Workable ATS Integration
+    workable_subdomain: str | None = Field(
+        default=None,
+        description="Workable company subdomain (e.g. 'acme' in acme.workable.com)",
+    )
+    workable_api_key: str | None = Field(
+        default=None,
+        description="Workable API partner access token",
+    )
+
+    @field_validator("workable_subdomain")
+    @classmethod
+    def validate_workable_subdomain(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip().lower()
+        if not normalized:
+            return None
+        if not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", normalized):
+            raise ValueError("WORKABLE_SUBDOMAIN must be valid subdomain alphanumeric with hyphens")
+        return normalized
+
+    @field_validator("workable_api_key")
+    @classmethod
+    def validate_workable_api_key(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized:
+            return None
+        return normalized
+
+    @property
+    def has_workable_integration(self) -> bool:
+        return bool(self.workable_subdomain and self.workable_api_key)
+
     # Audio
     blackhole_device_name: str = Field(
         default="BlackHole 2ch",
