@@ -674,15 +674,27 @@ export default function SessionControls({
                     </div>
                     <button
                       type="button"
-                      onClick={() =>
-                        void handleWorkableImport(
-                          item.candidate_id || item.title,
-                        )
-                      }
+                      onClick={() => {
+                        if (item.candidate_id) {
+                          void handleWorkableImport(item.candidate_id);
+                        } else {
+                          // Calendar event fallback: prefill candidate name and title
+                          if (item.candidate_name) {
+                            setCandidateName(item.candidate_name);
+                          } else if (item.title) {
+                            setCandidateName(item.title);
+                          }
+                          if (item.title) {
+                            setTitle(item.title);
+                          }
+                          setShowManualForm(true);
+                        }
+                      }}
                       disabled={disabled || workableLoading}
                       style={{
                         padding: "6px 14px",
                         backgroundColor:
+                          Boolean(workableCandidateId) &&
                           workableCandidateId === item.candidate_id
                             ? "#34c759"
                             : "#007aff",
@@ -697,7 +709,8 @@ export default function SessionControls({
                         opacity: disabled || workableLoading ? 0.6 : 1,
                       }}
                     >
-                      {workableCandidateId === item.candidate_id
+                      {Boolean(workableCandidateId) &&
+                      workableCandidateId === item.candidate_id
                         ? "✓ Carregado"
                         : "Carregar Entrevista"}
                     </button>

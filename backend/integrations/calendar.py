@@ -40,13 +40,27 @@ class ScheduledInterview(BaseModel):
     interviewers: list[str] = Field(default_factory=list, description="List of interviewer names")
 
 
+def _unfold_ical(raw_ical: str) -> list[str]:
+    """Unfold lines according to RFC 5545 Section 3.1."""
+    lines: list[str] = []
+    for line in raw_ical.splitlines():
+        if not line:
+            continue
+        if (line.startswith(" ") or line.startswith("\t")) and lines:
+            lines[-1] += line[1:]
+        else:
+            lines.append(line)
+    return lines
+
+
 def parse_ical_events(raw_ical: str) -> list[ScheduledInterview]:
     """Parse RFC 5545 iCal stream into ScheduledInterview items."""
     events: list[ScheduledInterview] = []
     current_event: dict[str, str] = {}
     in_event = False
 
-    for line in raw_ical.splitlines():
+    unfolded = _unfold_ical(raw_ical)
+    for line in unfolded:
         line = line.strip()
         if line == "BEGIN:VEVENT":
             in_event = True
@@ -65,17 +79,17 @@ def parse_ical_events(raw_ical: str) -> list[ScheduledInterview]:
                 desc = current_event.get("DESCRIPTION", "")
                 loc = current_event.get("LOCATION", "")
                 conf_match = re.search(
-                    r"https://(?:meet\.google\.com|zoom\.us|teams\.microsoft\.com)/[^\s]+",
+                    r"https://(?:meet\.google\.com|zoom\.us|teams\.microsoft\.com)/[^\s\"<>]+",
                     f"{desc} {loc}",
                 )
-                conf_url = conf_match.group(0) if conf_match else None
+                conf_url = conf_match.group(0).rstrip(".,;\\\"'") if conf_match else None
 
                 is_interview = any(
                     kw in summary.lower()
                     for kw in ["entrevista", "interview", "call with", "conversa", "workable", "rtr", "screening"]
                 )
 
-                if is_interview or len(events) < 5:
+                if is_interview:
                     events.append(
                         ScheduledInterview(
                             id=uid,

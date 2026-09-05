@@ -394,6 +394,18 @@ class Settings(BaseSettings):
             return None
         return normalized
 
+    @field_validator("calendar_ical_url")
+    @classmethod
+    def validate_calendar_ical_url(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized:
+            return None
+        if not normalized.startswith("https://"):
+            raise ValueError("CALENDAR_ICAL_URL must use https:// scheme")
+        return normalized
+
     @property
     def has_workable_integration(self) -> bool:
         return bool(self.workable_subdomain and self.workable_api_key)

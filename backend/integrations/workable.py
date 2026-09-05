@@ -541,7 +541,10 @@ class WorkableClient:
         raw_events = res.get("events", []) if isinstance(res, dict) else []
         parsed_events: list[WorkableEvent] = []
         for e in raw_events:
-            if not isinstance(e, dict):
+            if not isinstance(e, dict) or not e.get("id"):
+                continue
+            starts_at_val = e.get("starts_at")
+            if not starts_at_val:
                 continue
             cand = e.get("candidate") or {}
             job = e.get("job") or {}
@@ -552,7 +555,7 @@ class WorkableClient:
                     id=str(e.get("id")),
                     title=e.get("title") or "Entrevista",
                     event_type=str(e.get("type", "interview")),
-                    starts_at=str(e.get("starts_at")),
+                    starts_at=str(starts_at_val),
                     ends_at=str(e.get("ends_at")) if e.get("ends_at") else None,
                     cancelled=bool(e.get("cancelled", False)),
                     candidate_id=str(cand.get("id")) if cand.get("id") else None,

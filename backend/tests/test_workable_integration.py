@@ -817,4 +817,78 @@ async def test_calendar_upcoming_endpoint():
         backend_main.settings = old_settings
 
 
+def test_calendar_ical_url_validation():
+    # Rejects non-https URLs
+    with pytest.raises(ValueError, match="CALENDAR_ICAL_URL must use https:// scheme"):
+        Settings(
+            google_cloud_project="test-project",
+            calendar_ical_url="http://example.com/calendar.ics",
+        )
 
+    # Accepts valid https URL
+    s = Settings(
+        google_cloud_project="test-project",
+        calendar_ical_url="https://calendar.google.com/calendar/ical/token/basic.ics",
+    )
+    assert s.calendar_ical_url == "https://calendar.google.com/calendar/ical/token/basic.ics"
+
+
+def test_parse_ical_events_privacy_and_conference_regex():
+    from backend.integrations.calendar import parse_ical_events
+
+    raw_ical = """BEGIN:VCALENDAR
+VERSION:2.0
+BEGIN:VEVENT
+UID:personal-1
+SUMMARY:Consulta no Dentista
+DTSTART:20260906T100000Z
+DESCRIPTION:Consulta particular de rotina
+END:VEVENT
+BEGIN:VEVENT
+UID:personal-2
+SUMMARY:Almoço de Aniversário
+DTSTART:20260906T120000Z
+DESCRIPTION:Restaurante Família
+END:VEVENT
+BEGIN:VEVENT
+UID:interview-1
+SUMMARY:Entrevista com Bruno Silva - Tech Lead
+DTSTART:20260906T150000Z
+DESCRIPTION:<a href="https://meet.google.com/abc-defg-hij">Entrar na chamada</a>
+LOCATION:Online
+END:VEVENT
+END:VCALENDAR"""
+
+    events = parse_ical_events(raw_ical)
+    # Personal appointments must NOT be admitted (privacy defense)
+    assert len(events) == 1
+    assert events[0].id == "interview-1"
+    assert events[0].title == "Entrevista com Bruno Silva - Tech Lead"
+    # Conference URL must not capture HTML quotes or tags
+    assert events[0].conference_url == "https://meet.google.com/abc-defg-hij"
+
+
+@pytest.mark.anyio
+async def test_workable_get_events_skips_missing_starts_at():
+    mock_events_response = {
+        "events": [
+            {
+                "id": "e_valid",
+                "title": "Interview 1",
+                "starts_at": "2026-09-05T10:00:00Z",
+                "candidate": {"id": "c1", "name": "Candidate 1"},
+            },
+            {
+                "id": "e_no_starts_at",
+                "title": "Interview 2",
+                "starts_at": None,
+                "candidate": {"id": "c2", "name": "Candidate 2"},
+            },
+        ]
+    }
+    client = WorkableClient(subdomain="acme", api_key="secret-key")
+    with patch.object(client, "_request", AsyncMock(return_value=mock_events_response)):
+        events = await client.get_events()
+        assert len(events) == 1
+        assert events[0].id == "e_valid"
+        assert events[0].starts_at == "2026-09-05T10:00:00Z"

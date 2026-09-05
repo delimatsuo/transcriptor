@@ -79,4 +79,16 @@ test("SessionControls integrates Workable scheduled interviews and automated job
     source.includes("Ocultar preenchimento manual"),
     "Expected toggle label for manual inputs",
   );
+
+  // Verifies null === null bug defense (Boolean guard)
+  assert.ok(
+    source.includes("Boolean(workableCandidateId) &&"),
+    "Expected Boolean(workableCandidateId) check to prevent null === null bug",
+  );
+
+  // Verifies calendar event fallback when no workable candidate_id exists
+  assert.ok(
+    source.includes("if (item.candidate_id) {"),
+    "Expected check for candidate_id before triggering workable import",
+  );
 });
