@@ -24,12 +24,14 @@ def configure_test_settings(monkeypatch):
     main.stream_keys.clear()
     main.native_session_health.clear()
     main.native_frame_last_seq.clear()
+    main.native_stream_websockets.clear()
     yield
     main.native_stream_managers.clear()
     main.stream_managers.clear()
     main.stream_keys.clear()
     main.native_session_health.clear()
     main.native_frame_last_seq.clear()
+    main.native_stream_websockets.clear()
 
 
 def _encode_native_packet(header: dict, payload: bytes = b"\x00\x00" * 800) -> bytes:
@@ -604,6 +606,7 @@ def test_get_or_create_sm_refuses_new_sm_after_stop_pipeline(mock_sm_cls, monkey
     # an orphaned StreamManager nothing will ever stop.
     assert mock_sm_cls.call_count == 1
     assert mock_sm.send_audio.await_count == 1
+    assert ws.closed_code == 1000
 
 
 @patch("backend.main.StreamManager")
@@ -636,6 +639,7 @@ def test_get_or_create_sm_refuses_new_sm_when_stream_key_popped(mock_sm_cls, mon
 
     assert mock_sm_cls.call_count == 1           # only the microphone SM was ever built
     assert mock_sm.send_audio.await_count == 1   # system_audio frame after the pop was refused
+    assert ws.closed_code == 1000
 
 
 def _health_msgs(fake_ws_manager):
