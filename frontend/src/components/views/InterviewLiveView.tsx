@@ -47,7 +47,7 @@ export default function InterviewLiveView({
   streamKey,
 }: Props) {
   const [heroState, setHeroState] = useState(initialHeroState);
-  const [sheetOpen, setSheetOpen] = useState(false);
+  const [sheetOpen, setSheetOpen] = useState(true);
   const [questionsOpen, setQuestionsOpen] = useState(false);
 
   const hero = selectHero(suggestionHistory, heroState);

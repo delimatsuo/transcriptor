@@ -15,6 +15,29 @@ from backend.config import Settings
 logger = structlog.get_logger()
 
 
+def normalize_response_schema(schema: Any) -> Any:
+    """Normalize JSON schema types to uppercase for Vertex AI GAPIC compatibility.
+
+    Vertex AI GenerationConfig proto expects Schema.type to match the
+    gapic_content_types.openapi.Type enum ('OBJECT', 'STRING', 'INTEGER', etc.).
+    Passing lowercase types raises KeyError in proto-plus marshal rules.
+    """
+    if isinstance(schema, dict):
+        normalized: dict[str, Any] = {}
+        for key, value in schema.items():
+            if key == "type" and isinstance(value, str):
+                normalized[key] = value.upper()
+            else:
+                normalized[key] = normalize_response_schema(value)
+        return normalized
+    if isinstance(schema, list):
+        return [normalize_response_schema(item) for item in schema]
+    return schema
+
+
+_normalize_response_schema = normalize_response_schema
+
+
 class GeminiClient:
     """Async wrapper for Gemini 2.5 Flash on Vertex AI."""
 
@@ -107,7 +130,9 @@ class GeminiClient:
         if response_mime_type:
             generation_config["response_mime_type"] = response_mime_type
         if response_schema:
-            generation_config["response_schema"] = response_schema
+            generation_config["response_schema"] = _normalize_response_schema(
+                response_schema
+            )
 
         queued_at = time.monotonic()
         timeout_seconds = self.settings.llm_request_timeout_seconds

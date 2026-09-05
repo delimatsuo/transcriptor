@@ -90,6 +90,8 @@ export default function InterviewReportReview({
   const [dirty, setDirty] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [retrying, setRetrying] = useState(false);
+  const [reloadNonce, setReloadNonce] = useState(0);
   const requestTokenRef = useRef(0);
 
   const adoptReport = (next: InterviewReport) => {
@@ -210,7 +212,28 @@ export default function InterviewReportReview({
       controller.abort();
       if (retryTimer) clearTimeout(retryTimer);
     };
-  }, [isSummaryFinal, sessionId, summary]);
+  }, [isSummaryFinal, reloadNonce, sessionId, summary]);
+
+  const retryReport = async (): Promise<void> => {
+    setRetrying(true);
+    setError(null);
+    try {
+      const response = await apiFetch(
+        apiUrl(`/api/sessions/${encodeURIComponent(sessionId)}/report/retry`),
+        { method: "POST" },
+      );
+      if (!response.ok) {
+        const body = (await response.json().catch(() => null)) as { detail?: string } | null;
+        throw new Error(body?.detail || "Falha ao solicitar nova tentativa de geração.");
+      }
+      setLoading(true);
+      setReloadNonce((n) => n + 1);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Erro desconhecido ao tentar gerar relatório.");
+    } finally {
+      setRetrying(false);
+    }
+  };
 
   const save = async () => {
     if (!report || report.status !== "draft" || busy) return;
@@ -392,7 +415,26 @@ export default function InterviewReportReview({
           </div>
           {controls}
         </div>
-        {error && <p role="alert" style={{ color: "#ff3b30" }}>{error}</p>}
+        {error && (
+          <div style={{ marginTop: 12, display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+            <p role="alert" style={{ color: "#ff3b30", margin: 0 }}>{error}</p>
+            <button
+              type="button"
+              onClick={() => void retryReport()}
+              disabled={retrying}
+              style={{
+                fontSize: 12,
+                padding: "4px 10px",
+                borderRadius: 6,
+                border: "1px solid #d2d2d7",
+                background: "white",
+                cursor: retrying ? "default" : "pointer",
+              }}
+            >
+              {retrying ? "Solicitando…" : "Tentar novamente"}
+            </button>
+          </div>
+        )}
         {summary && (
           <div style={{ padding: 20, borderRadius: 12, background: "#fafafa" }}>
             <ReactMarkdown allowedElements={LEGACY_ALLOWED_ELEMENTS}>{summary}</ReactMarkdown>

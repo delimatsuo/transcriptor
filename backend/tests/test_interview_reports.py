@@ -11,6 +11,7 @@ from google.cloud import firestore
 
 from backend import main as backend_main
 from backend.config import Settings
+from backend.llm.gemini import normalize_response_schema
 from backend.schemas.models import Session, SessionMode, SessionStatus, TranscriptSegment
 from backend.sessions.reports import (
     ApproveInterviewReportRequest,
@@ -519,6 +520,9 @@ class EmptyManager:
     def get_transcript(self, _session_id):
         return []
 
+    def set_summary(self, _session_id, _summary):
+        pass
+
 
 class ReadReportStorage:
     def __init__(self, report, reason_code=None):
@@ -948,3 +952,138 @@ def test_queued_generation_remains_pending_then_accepts_a_slow_success(monkeypat
     assert storage.report is not None
     assert storage.state["status"] == "ready"
     assert gemini.generate.await_count == 1
+
+
+def test_normalize_response_schema_uppercases_types():
+    raw_schema = {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string"},
+            "count": {"type": "integer"},
+            "tags": {
+                "type": "array",
+                "items": {"type": "string"},
+            },
+            "meta": {
+                "type": "object",
+                "properties": {
+                    "valid": {"type": "boolean"},
+                },
+            },
+        },
+    }
+    normalized = normalize_response_schema(raw_schema)
+    assert normalized["type"] == "OBJECT"
+    assert normalized["properties"]["name"]["type"] == "STRING"
+    assert normalized["properties"]["count"]["type"] == "INTEGER"
+    assert normalized["properties"]["tags"]["type"] == "ARRAY"
+    assert normalized["properties"]["tags"]["items"]["type"] == "STRING"
+    assert normalized["properties"]["meta"]["type"] == "OBJECT"
+    assert normalized["properties"]["meta"]["properties"]["valid"]["type"] == "BOOLEAN"
+
+
+def test_retry_interview_report_endpoint_queues_regeneration(monkeypatch):
+    class RetryStorage:
+        def __init__(self):
+            self.state = {"status": "failed", "reasonCode": "provider_or_validation_failure"}
+            self.states = []
+
+        async def get_session_record(self, _session_id):
+            return session_record()
+
+        async def get_interview_report(self, _session_id):
+            return None
+
+        async def get_report_generation_state(self, _session_id):
+            return self.state
+
+        async def save_report_generation_state(self, _session_id, status, reason_code=None, **_kwargs):
+            self.state = {"status": status, "reasonCode": reason_code}
+            self.states.append((status, reason_code))
+
+    storage = RetryStorage()
+    scheduled = []
+
+    def fake_schedule(session_id):
+        scheduled.append(session_id)
+
+    monkeypatch.setattr(backend_main, "session_mgr", EmptyManager())
+    monkeypatch.setattr(backend_main, "firestore_storage", storage)
+    monkeypatch.setattr(backend_main, "_schedule_final_summary_once", fake_schedule)
+    monkeypatch.setattr(backend_main, "_assert_session_access", lambda _s: None)
+
+    res = asyncio.run(backend_main.retry_interview_report(SESSION_ID))
+    assert res == {"status": "queued", "sessionId": SESSION_ID}
+    assert ("queued", None) in storage.states
+    assert scheduled == [SESSION_ID]
+
+
+def test_retry_interview_report_rejects_already_approved(monkeypatch):
+    class ApprovedStorage:
+        async def get_session_record(self, _session_id):
+            return session_record()
+
+        async def get_interview_report(self, _session_id):
+            report = parsed_report()
+            report.status = ReportStatus.APPROVED
+            return report
+
+    monkeypatch.setattr(backend_main, "session_mgr", EmptyManager())
+    monkeypatch.setattr(backend_main, "firestore_storage", ApprovedStorage())
+    monkeypatch.setattr(backend_main, "_assert_session_access", lambda _s: None)
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(backend_main.retry_interview_report(SESSION_ID))
+    assert exc_info.value.status_code == 409
+    assert "já aprovado" in exc_info.value.detail
+
+
+def test_retry_interview_report_rejects_actively_generating(monkeypatch):
+    class GeneratingStorage:
+        async def get_session_record(self, _session_id):
+            return session_record()
+
+        async def get_interview_report(self, _session_id):
+            return None
+
+        async def get_report_generation_state(self, _session_id):
+            return {
+                "status": "generating",
+                "updatedAt": datetime.now(timezone.utc),
+            }
+
+    monkeypatch.setattr(backend_main, "session_mgr", EmptyManager())
+    monkeypatch.setattr(backend_main, "firestore_storage", GeneratingStorage())
+    monkeypatch.setattr(backend_main, "_assert_session_access", lambda _s: None)
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(backend_main.retry_interview_report(SESSION_ID))
+    assert exc_info.value.status_code == 425
+
+
+def test_generate_final_summary_recovers_session_from_firestore(monkeypatch):
+    class FirestoreOnlyStorage(GenerationStorage):
+        def __init__(self):
+            super().__init__()
+            self.save_session = AsyncMock()
+
+        async def get_session_record(self, _session_id):
+            return session_record()
+
+    storage = FirestoreOnlyStorage()
+    gemini = type(
+        "Gemini",
+        (),
+        {"generate": AsyncMock(return_value=json.dumps(generated_payload()))},
+    )()
+    monkeypatch.setattr(backend_main, "session_mgr", EmptyManager())
+    monkeypatch.setattr(backend_main, "firestore_storage", storage)
+    monkeypatch.setattr(backend_main, "gemini_client", gemini)
+    monkeypatch.setattr(backend_main.ws_manager, "broadcast", AsyncMock())
+
+    asyncio.run(backend_main._generate_final_summary(SESSION_ID))
+
+    assert storage.report is not None
+    assert storage.states == [("generating", None), ("ready", None)]
+    assert storage.save_session.await_count == 1
+
