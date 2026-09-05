@@ -96,6 +96,7 @@ from backend.integrations.workable import (
     WorkableNotFoundError,
     WorkableRateLimitError,
 )
+from backend.integrations.calendar import CalendarMonitor
 from backend.speaker_correlation import SpeakerCorrelator
 from backend.startup_credentials import probe_application_default_credentials
 from backend.utils.sanitize import sanitize_participant_name
@@ -1998,6 +1999,84 @@ async def set_interview_context(session_id: str, body: SetContextRequest):
         interview_documents[session_id] = {}
     interview_documents[session_id][body.doc_type] = body.text
     return {"ok": True, "chars": len(body.text)}
+
+
+@app.get("/api/calendar/upcoming")
+async def get_upcoming_interviews(
+    days_ahead: int = 14,
+    days_behind: int = 30,
+    limit: int = 20,
+):
+    """Fetch scheduled upcoming and recent recruiting interviews from Workable and Calendar."""
+    if not settings:
+        raise HTTPException(status_code=500, detail="Configuração do servidor indisponível.")
+
+    monitor = CalendarMonitor(settings)
+    try:
+        interviews = await monitor.get_upcoming_interviews(
+            days_ahead=days_ahead,
+            days_behind=days_behind,
+            limit=limit,
+        )
+        return {"ok": True, "interviews": [i.model_dump() for i in interviews]}
+    except Exception as exc:
+        logger.warning("Failed to fetch upcoming interviews: %s", exc)
+        return {"ok": True, "interviews": []}
+
+
+@app.get("/api/integrations/workable/jobs")
+async def get_workable_jobs(state: str | None = None, limit: int = 50):
+    """Fetch active jobs from Workable for candidate discovery."""
+    if not settings or not settings.has_workable_integration:
+        return {"ok": True, "jobs": []}
+    client = WorkableClient(
+        subdomain=settings.workable_subdomain,
+        api_key=settings.workable_api_key,
+    )
+    try:
+        jobs = await client.get_jobs(state=state, limit=limit)
+        clean_jobs = [
+            {
+                "title": j.get("title") or j.get("full_title"),
+                "shortcode": j.get("shortcode"),
+                "department": j.get("department"),
+                "location": j.get("location", {}).get("location_str") if isinstance(j.get("location"), dict) else None,
+            }
+            for j in jobs
+            if isinstance(j, dict) and j.get("shortcode")
+        ]
+        return {"ok": True, "jobs": clean_jobs}
+    except Exception as exc:
+        logger.warning("Failed to fetch Workable jobs: %s", exc)
+        return {"ok": True, "jobs": []}
+
+
+@app.get("/api/integrations/workable/jobs/{shortcode}/candidates")
+async def get_workable_job_candidates(shortcode: str, limit: int = 50):
+    """Fetch candidates under a Workable job for 1-click selection."""
+    if not settings or not settings.has_workable_integration:
+        return {"ok": True, "candidates": []}
+    client = WorkableClient(
+        subdomain=settings.workable_subdomain,
+        api_key=settings.workable_api_key,
+    )
+    try:
+        candidates = await client.get_candidates_for_job(shortcode=shortcode, limit=limit)
+        clean_cands = [
+            {
+                "id": c.get("id"),
+                "name": c.get("name"),
+                "headline": c.get("headline"),
+                "stage": c.get("stage"),
+                "email": c.get("email"),
+            }
+            for c in candidates
+            if isinstance(c, dict) and c.get("id")
+        ]
+        return {"ok": True, "candidates": clean_cands}
+    except Exception as exc:
+        logger.warning("Failed to fetch candidates for job %s: %s", shortcode, exc)
+        return {"ok": True, "candidates": []}
 
 
 @app.post("/api/integrations/workable/parse")

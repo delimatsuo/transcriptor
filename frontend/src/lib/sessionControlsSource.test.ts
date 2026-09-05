@@ -41,3 +41,54 @@ test("SessionControls renders AudioDeviceSelector unconditionally outside showIn
     "{audioCapture && ( must precede <AudioDeviceSelector",
   );
 });
+
+test("SessionControls integrates Workable scheduled interviews and automated job/candidate selectors", () => {
+  const sourceUrl = new URL("../components/SessionControls.tsx", import.meta.url);
+  const source = readFileSync(sourceUrl, "utf8");
+
+  // Verifies calendar/upcoming endpoint call
+  assert.ok(
+    source.includes("/api/calendar/upcoming"),
+    "Expected SessionControls to query /api/calendar/upcoming",
+  );
+
+  // Verifies workable jobs endpoint call
+  assert.ok(
+    source.includes("/api/integrations/workable/jobs"),
+    "Expected SessionControls to query /api/integrations/workable/jobs",
+  );
+
+  // Verifies scheduled interviews section
+  assert.ok(
+    source.includes("Entrevistas Agendadas (Workable & Calendário)"),
+    "Expected scheduled interviews heading in SessionControls",
+  );
+
+  // Verifies 1-click load button
+  assert.ok(
+    source.includes("Carregar Entrevista"),
+    "Expected 'Carregar Entrevista' button in SessionControls",
+  );
+
+  // Verifies collapsible manual form toggle
+  assert.ok(
+    source.includes("showManualForm"),
+    "Expected showManualForm state toggle in SessionControls",
+  );
+  assert.ok(
+    source.includes("Ocultar preenchimento manual"),
+    "Expected toggle label for manual inputs",
+  );
+
+  // Verifies null === null bug defense (Boolean guard)
+  assert.ok(
+    source.includes("Boolean(workableCandidateId) &&"),
+    "Expected Boolean(workableCandidateId) check to prevent null === null bug",
+  );
+
+  // Verifies calendar event fallback when no workable candidate_id exists
+  assert.ok(
+    source.includes("if (item.candidate_id) {"),
+    "Expected check for candidate_id before triggering workable import",
+  );
+});

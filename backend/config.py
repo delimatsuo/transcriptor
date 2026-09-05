@@ -367,6 +367,10 @@ class Settings(BaseSettings):
         default=None,
         description="Workable API partner access token",
     )
+    calendar_ical_url: str | None = Field(
+        default=None,
+        description="Optional Google Calendar or Outlook secret iCal feed URL for automated interview detection",
+    )
 
     @field_validator("workable_subdomain")
     @classmethod
@@ -388,6 +392,18 @@ class Settings(BaseSettings):
         normalized = value.strip()
         if not normalized:
             return None
+        return normalized
+
+    @field_validator("calendar_ical_url")
+    @classmethod
+    def validate_calendar_ical_url(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized:
+            return None
+        if not normalized.startswith("https://"):
+            raise ValueError("CALENDAR_ICAL_URL must use https:// scheme")
         return normalized
 
     @property
