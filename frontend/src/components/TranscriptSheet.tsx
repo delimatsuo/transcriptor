@@ -2,6 +2,7 @@
 
 import TranscriptPanel from "@/components/TranscriptPanel";
 import { tokens } from "@/lib/tokens";
+import { ChevronDown, ChevronUp } from "lucide-react";
 import type { CoverageGapSegment, TranscriptSegment } from "@/types/ws";
 
 interface Props {
@@ -42,7 +43,7 @@ export default function TranscriptSheet({
         }}
       >
         <span>Transcrição</span>
-        <span aria-hidden="true">{open ? "⌄" : "⌃"}</span>
+        {open ? <ChevronDown size={15} aria-hidden="true" /> : <ChevronUp size={15} aria-hidden="true" />}
       </button>
 
       {open && (

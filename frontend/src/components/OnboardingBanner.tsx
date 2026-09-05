@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { apiFetch } from "@/lib/auth";
 import { apiUrl } from "@/lib/runtimeConfig";
+import { Sparkles, X } from "lucide-react";
 
 interface OnboardingBannerProps {
   onOpenModal: () => void;
@@ -53,7 +54,7 @@ export default function OnboardingBanner({ onOpenModal }: OnboardingBannerProps)
       }}
     >
       <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-        <span style={{ fontSize: 22 }}>✨</span>
+        <Sparkles size={22} color="#007aff" />
         <div>
           <strong style={{ fontSize: 13, color: "#004085", display: "block" }}>
             Conecte suas ferramentas de recrutamento
@@ -92,13 +93,16 @@ export default function OnboardingBanner({ onOpenModal }: OnboardingBannerProps)
             background: "none",
             border: "none",
             color: "#6c757d",
-            fontSize: 14,
             cursor: "pointer",
             padding: "4px 6px",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
           }}
           title="Dispensar aviso"
+          aria-label="Dispensar aviso"
         >
-          ✕
+          <X size={16} />
         </button>
       </div>
     </div>

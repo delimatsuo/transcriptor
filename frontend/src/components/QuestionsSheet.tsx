@@ -2,6 +2,7 @@
 
 import Label from "@/components/ui/Label";
 import { tokens } from "@/lib/tokens";
+import { ChevronDown, ChevronUp } from "lucide-react";
 import type { QuestionLog } from "@/lib/interviewQueue";
 import type { SuggestionEntry } from "@/types/ws";
 
@@ -95,7 +96,7 @@ export default function QuestionsSheet({ log, open, onToggle }: Props) {
         }}
       >
         <span>Perguntas{total > 0 ? ` (${total})` : ""}</span>
-        <span aria-hidden="true">{open ? "⌄" : "⌃"}</span>
+        {open ? <ChevronDown size={15} aria-hidden="true" /> : <ChevronUp size={15} aria-hidden="true" />}
       </button>
 
       {open && (

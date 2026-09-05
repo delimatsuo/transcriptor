@@ -2,6 +2,7 @@
 
 import { formatSourceHealth } from "@/lib/companionHealth";
 import type { PhysicalCaptureState, SourceHealthState } from "@/types/ws";
+import { AlertTriangle } from "lucide-react";
 
 interface Props {
   captureState?: PhysicalCaptureState;
@@ -91,7 +92,7 @@ export default function CaptureSourceStatus({
             fontWeight: 600,
           }}
         >
-          <span aria-hidden="true">⚠</span>
+          <AlertTriangle size={12} aria-hidden="true" color="#c97000" />
           <span>{message}</span>
         </div>
       )}

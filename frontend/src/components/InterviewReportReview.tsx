@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
+import { Check } from "lucide-react";
 
 import {
   buildReportUpdateRequest,
@@ -113,7 +114,7 @@ export default function InterviewReportReview({
         const err = await response.json().catch(() => ({}));
         throw new Error(err.detail || "Falha ao exportar para o Workable.");
       }
-      setNotice("✓ Relatório exportado com sucesso para a timeline do Workable.");
+      setNotice("Relatório exportado com sucesso para a timeline do Workable.");
     } catch (exportErr) {
       setError(
         exportErr instanceof Error
@@ -531,7 +532,20 @@ export default function InterviewReportReview({
       </div>
 
       {error && <p role="alert" style={{ color: "#ff3b30" }}>{error}</p>}
-      {notice && <p aria-live="polite" style={{ color: "#248a3d" }}>{notice}</p>}
+      {notice && (
+        <p
+          aria-live="polite"
+          style={{
+            color: "#248a3d",
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 6,
+          }}
+        >
+          <Check size={14} color="#248a3d" />
+          <span>{notice}</span>
+        </p>
+      )}
       {dirty && (
         <p style={{ color: "#8a4b00", fontSize: 13 }}>
           Salve as alterações antes de aprovar esta versão.
