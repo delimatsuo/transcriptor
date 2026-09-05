@@ -72,6 +72,7 @@ from backend.schemas.models import (
     ErrorPayload,
     ErrorSeverity,
     HeartbeatRequest,
+    IntegrationsSettingsUpdateRequest,
     ParticipantsList,
     SessionMode,
     SessionStatus,
@@ -2022,6 +2023,149 @@ async def get_upcoming_interviews(
     except Exception as exc:
         logger.warning("Failed to fetch upcoming interviews: %s", exc)
         return {"ok": True, "interviews": []}
+
+
+@app.get("/api/calendar/match")
+async def match_calendar_interview(meet_code: str, time_window_minutes: int = 30):
+    """Match a Google Meet code or current time window to a scheduled recruiting interview."""
+    if not settings:
+        raise HTTPException(status_code=500, detail="Configuração do servidor indisponível.")
+
+    monitor = CalendarMonitor(settings)
+    try:
+        matched = await monitor.match_interview_by_meet_code(
+            meet_code=meet_code,
+            time_window_minutes=time_window_minutes,
+        )
+        if matched:
+            return {"ok": True, "matched": True, "interview": matched.model_dump()}
+        return {"ok": True, "matched": False, "interview": None}
+    except Exception as exc:
+        logger.warning("Failed to match meeting code %s: %s", meet_code, exc)
+        return {"ok": True, "matched": False, "interview": None}
+
+
+@app.get("/api/settings/integrations")
+async def get_integrations_settings():
+    """Return status of integrations with secrets safely masked."""
+    if not settings:
+        raise HTTPException(status_code=500, detail="Configuração do servidor indisponível.")
+
+    def mask_secret(secret: str | None) -> str | None:
+        if not secret:
+            return None
+        if len(secret) <= 8:
+            return "••••••••"
+        return f"{secret[:4]}••••{secret[-4:]}"
+
+    return {
+        "ok": True,
+        "workable": {
+            "configured": settings.has_workable_integration,
+            "subdomain": settings.workable_subdomain,
+            "api_key_masked": mask_secret(settings.workable_api_key),
+        },
+        "calendar": {
+            "configured": bool(settings.calendar_ical_url),
+            "ical_url_masked": mask_secret(settings.calendar_ical_url),
+        },
+    }
+
+
+@app.post("/api/settings/integrations")
+async def update_integrations_settings(body: IntegrationsSettingsUpdateRequest):
+    """Test or update integration settings dynamically."""
+    global settings
+    if not settings:
+        raise HTTPException(status_code=500, detail="Configuração do servidor indisponível.")
+
+    workable_status: dict[str, Any] = {"tested": False, "ok": True}
+    if body.workable_subdomain is not None or body.workable_api_key is not None:
+        clean_subdomain = (body.workable_subdomain or "").strip()
+        clean_api_key = (body.workable_api_key or "").strip()
+        if clean_subdomain and clean_api_key:
+            workable_status["tested"] = True
+            client = WorkableClient(subdomain=clean_subdomain, api_key=clean_api_key)
+            try:
+                jobs = await client.get_jobs(limit=1)
+                workable_status["ok"] = True
+                workable_status["message"] = f"Conexão com Workable validada com sucesso! ({len(jobs)} vagas acessíveis)"
+            except Exception as exc:
+                workable_status["ok"] = False
+                workable_status["error"] = f"Falha ao validar credenciais do Workable: {exc}"
+                if body.test_only:
+                    return {"ok": False, "workable": workable_status}
+
+    calendar_status: dict[str, Any] = {"tested": False, "ok": True}
+    if body.calendar_ical_url is not None:
+        clean_ical = body.calendar_ical_url.strip()
+        if clean_ical:
+            if not clean_ical.startswith("https://"):
+                raise HTTPException(status_code=400, detail="CALENDAR_ICAL_URL deve começar com https://")
+            calendar_status["tested"] = True
+            try:
+                async with httpx.AsyncClient(timeout=8.0) as http_client:
+                    resp = await http_client.get(clean_ical)
+                    if resp.status_code == 200:
+                        from backend.integrations.calendar import parse_ical_events
+                        events = parse_ical_events(resp.text)
+                        calendar_status["ok"] = True
+                        calendar_status["message"] = f"Calendário validado com sucesso! ({len(events)} entrevistas detectadas)"
+                    else:
+                        calendar_status["ok"] = False
+                        calendar_status["error"] = f"Calendário retornou código HTTP {resp.status_code}"
+            except Exception as exc:
+                calendar_status["ok"] = False
+                calendar_status["error"] = f"Falha ao acessar URL do calendário: {exc}"
+                if body.test_only:
+                    return {"ok": False, "calendar": calendar_status}
+
+    if body.test_only:
+        all_ok = workable_status["ok"] and calendar_status["ok"]
+        return {"ok": all_ok, "workable": workable_status, "calendar": calendar_status}
+
+    # Apply changes in-memory
+    if body.workable_subdomain is not None:
+        settings.workable_subdomain = body.workable_subdomain.strip() or None
+    if body.workable_api_key is not None:
+        settings.workable_api_key = body.workable_api_key.strip() or None
+    if body.calendar_ical_url is not None:
+        settings.calendar_ical_url = body.calendar_ical_url.strip() or None
+
+    # Persist updates to .env so changes survive restarts
+    try:
+        from pathlib import Path
+        env_path = Path("/Volumes/Extreme Pro/MYPROJECTS/Transcriptor/.env")
+        if env_path.exists():
+            content = env_path.read_text(encoding="utf-8")
+            if body.workable_subdomain is not None:
+                sub = body.workable_subdomain.strip()
+                if "WORKABLE_SUBDOMAIN=" in content:
+                    content = re.sub(r"WORKABLE_SUBDOMAIN=.*", f"WORKABLE_SUBDOMAIN={sub}", content)
+                else:
+                    content += f"\nWORKABLE_SUBDOMAIN={sub}\n"
+            if body.workable_api_key is not None:
+                key = body.workable_api_key.strip()
+                if "WORKABLE_API_KEY=" in content:
+                    content = re.sub(r"WORKABLE_API_KEY=.*", f"WORKABLE_API_KEY={key}", content)
+                else:
+                    content += f"\nWORKABLE_API_KEY={key}\n"
+            if body.calendar_ical_url is not None:
+                cal = body.calendar_ical_url.strip()
+                if "CALENDAR_ICAL_URL=" in content:
+                    content = re.sub(r"CALENDAR_ICAL_URL=.*", f"CALENDAR_ICAL_URL={cal}", content)
+                else:
+                    content += f"\nCALENDAR_ICAL_URL={cal}\n"
+            env_path.write_text(content, encoding="utf-8")
+    except Exception as exc:
+        logger.warning("Failed to persist integration settings to .env: %s", exc)
+
+    return {
+        "ok": True,
+        "message": "Configurações atualizadas com sucesso!",
+        "workable": workable_status,
+        "calendar": calendar_status,
+    }
 
 
 @app.get("/api/integrations/workable/jobs")

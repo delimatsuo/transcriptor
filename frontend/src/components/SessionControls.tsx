@@ -205,6 +205,28 @@ export default function SessionControls({
     };
   }, []);
 
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const candidateParam = params.get("candidate");
+      const jobParam = params.get("job");
+      if (candidateParam) {
+        setCandidateName(candidateParam);
+        setTitle(
+          `Entrevista: ${candidateParam}${jobParam ? ` - ${jobParam}` : ""}`,
+        );
+        setMode("interview");
+        setShowInterviewPrep(true);
+      }
+      if (jobParam) {
+        setJdText((prev) => prev || `Vaga: ${jobParam}`);
+      }
+    } catch {
+      // Ignore URL parsing errors
+    }
+  }, []);
+
   const handleJobSelect = async (shortcode: string) => {
     setSelectedJob(shortcode);
     setSelectedCandidateId("");
