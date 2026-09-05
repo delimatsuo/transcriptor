@@ -202,7 +202,9 @@ class CalendarMonitor:
 
         Matches by:
         1. Exact occurrence of meet_code in conference_url (e.g. 'meet.google.com/abc-defg-hij').
-        2. Proximity in time: if an interview is scheduled within ±time_window_minutes.
+        2. Proximity in time: if an interview is scheduled within ±time_window_minutes AND
+           does not have a conflicting meet.google.com conference URL. If multiple qualify,
+           the one closest in time to current moment is returned.
         """
         clean_code = meet_code.strip().lower()
         if not clean_code:
@@ -215,16 +217,28 @@ class CalendarMonitor:
             if item.conference_url and clean_code in item.conference_url.lower():
                 return item
 
-        # 2. Time proximity match
+        # 2. Time proximity match: ONLY if event does NOT have a conflicting Google Meet link
         now = datetime.now(timezone.utc)
+        eligible_candidates: list[tuple[float, ScheduledInterview]] = []
+
         for item in interviews:
+            # If the event already has an explicit meet.google.com link and it did not match in step 1,
+            # it belongs to a different room; do not trigger a false-positive prompt.
+            if item.conference_url and "meet.google.com" in item.conference_url.lower():
+                continue
+
             try:
                 ts_str = item.starts_at.replace("Z", "+00:00")
                 start_dt = datetime.fromisoformat(ts_str)
-                diff_minutes = abs((now - start_dt).total_seconds()) / 60.0
-                if diff_minutes <= time_window_minutes:
-                    return item
+                diff_seconds = abs((now - start_dt).total_seconds())
+                if diff_seconds <= time_window_minutes * 60:
+                    eligible_candidates.append((diff_seconds, item))
             except Exception:
                 continue
+
+        if eligible_candidates:
+            # Pick the interview closest in time to current moment
+            eligible_candidates.sort(key=lambda x: x[0])
+            return eligible_candidates[0][1]
 
         return None

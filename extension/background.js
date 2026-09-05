@@ -12,6 +12,7 @@
   let linkedSessionId = null;
   let backendUrl = "http://localhost:8008";
   let sessionToken = null;
+  let userToken = null;
   let clockOffset = 0; // seconds: server_time - client_time
   let clockUncertainty = 0.5; // seconds
   let eventBatch = [];
@@ -30,6 +31,7 @@
       linkedSessionId,
       backendUrl,
       sessionToken,
+      userToken,
       clockOffset,
       clockUncertainty,
     });
@@ -40,12 +42,14 @@
       "linkedSessionId",
       "backendUrl",
       "sessionToken",
+      "userToken",
       "clockOffset",
       "clockUncertainty",
     ]);
     if (data.linkedSessionId) linkedSessionId = data.linkedSessionId;
     if (data.backendUrl) backendUrl = data.backendUrl;
     if (data.sessionToken) sessionToken = data.sessionToken;
+    if (data.userToken) userToken = data.userToken;
     if (data.clockOffset !== undefined) clockOffset = data.clockOffset;
     if (data.clockUncertainty !== undefined) clockUncertainty = data.clockUncertainty;
   }
@@ -68,8 +72,9 @@
 
   function apiHeaders() {
     const headers = { "Content-Type": "application/json" };
-    if (sessionToken) {
-      headers["Authorization"] = `Bearer ${sessionToken}`;
+    const token = sessionToken || userToken;
+    if (token) {
+      headers["Authorization"] = `Bearer ${token}`;
     }
     return headers;
   }
@@ -197,7 +202,7 @@
           return false;
         }
         const url = `${backendUrl}/api/calendar/match?meet_code=${encodeURIComponent(meetCode)}`;
-        fetch(url)
+        fetch(url, { headers: apiHeaders() })
           .then((res) => {
             if (!res.ok) throw new Error(`HTTP ${res.status}`);
             return res.json();

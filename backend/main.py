@@ -2072,6 +2072,23 @@ async def get_integrations_settings():
     }
 
 
+def _update_env_key(content: str, key: str, value: str) -> str:
+    """Safely update or append a key-value pair in .env without regex replacement hazard."""
+    lines = content.splitlines()
+    found = False
+    new_lines = []
+    prefix = f"{key}="
+    for line in lines:
+        if line.startswith(prefix):
+            new_lines.append(f'{key}="{value}"')
+            found = True
+        else:
+            new_lines.append(line)
+    if not found:
+        new_lines.append(f'{key}="{value}"')
+    return "\n".join(new_lines) + "\n"
+
+
 @app.post("/api/settings/integrations")
 async def update_integrations_settings(body: IntegrationsSettingsUpdateRequest):
     """Test or update integration settings dynamically."""
@@ -2135,27 +2152,15 @@ async def update_integrations_settings(body: IntegrationsSettingsUpdateRequest):
     # Persist updates to .env so changes survive restarts
     try:
         from pathlib import Path
-        env_path = Path("/Volumes/Extreme Pro/MYPROJECTS/Transcriptor/.env")
+        env_path = Path(__file__).resolve().parent.parent / ".env"
         if env_path.exists():
             content = env_path.read_text(encoding="utf-8")
             if body.workable_subdomain is not None:
-                sub = body.workable_subdomain.strip()
-                if "WORKABLE_SUBDOMAIN=" in content:
-                    content = re.sub(r"WORKABLE_SUBDOMAIN=.*", f"WORKABLE_SUBDOMAIN={sub}", content)
-                else:
-                    content += f"\nWORKABLE_SUBDOMAIN={sub}\n"
+                content = _update_env_key(content, "WORKABLE_SUBDOMAIN", body.workable_subdomain.strip())
             if body.workable_api_key is not None:
-                key = body.workable_api_key.strip()
-                if "WORKABLE_API_KEY=" in content:
-                    content = re.sub(r"WORKABLE_API_KEY=.*", f"WORKABLE_API_KEY={key}", content)
-                else:
-                    content += f"\nWORKABLE_API_KEY={key}\n"
+                content = _update_env_key(content, "WORKABLE_API_KEY", body.workable_api_key.strip())
             if body.calendar_ical_url is not None:
-                cal = body.calendar_ical_url.strip()
-                if "CALENDAR_ICAL_URL=" in content:
-                    content = re.sub(r"CALENDAR_ICAL_URL=.*", f"CALENDAR_ICAL_URL={cal}", content)
-                else:
-                    content += f"\nCALENDAR_ICAL_URL={cal}\n"
+                content = _update_env_key(content, "CALENDAR_ICAL_URL", body.calendar_ical_url.strip())
             env_path.write_text(content, encoding="utf-8")
     except Exception as exc:
         logger.warning("Failed to persist integration settings to .env: %s", exc)

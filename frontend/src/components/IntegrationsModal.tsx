@@ -686,7 +686,7 @@ export default function IntegrationsModal({
                         fontSize: 11,
                       }}
                     >
-                      /Volumes/Extreme Pro/MYPROJECTS/Transcriptor/extension
+                      [pasta-do-projeto]/extension
                     </code>
                   </li>
                 </ol>
