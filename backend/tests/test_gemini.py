@@ -14,6 +14,34 @@ def test_global_vertex_location_is_rejected():
         Settings(google_cloud_project="test-project", llm_location="global")
 
 
+def test_global_vertex_location_allowed_with_opt_in():
+    settings = Settings(
+        google_cloud_project="test-project",
+        llm_location="global",
+        llm_allow_global=True,
+    )
+    assert settings.llm_location == "global"
+    assert settings.llm_allow_global is True
+
+
+def test_default_llm_model_name_is_gemini_25_flash():
+    settings = Settings(google_cloud_project="test-project")
+    assert settings.llm_model_name == "gemini-2.5-flash"
+
+
+def test_custom_llm_model_name_configured():
+    settings = Settings(
+        google_cloud_project="test-project",
+        llm_model_name="gemini-3.8-flash",
+    )
+    assert settings.llm_model_name == "gemini-3.8-flash"
+
+
+def test_blank_llm_model_name_rejected():
+    with pytest.raises(ValueError, match="LLM_MODEL_NAME must not be blank"):
+        Settings(google_cloud_project="test-project", llm_model_name="   ")
+
+
 def test_vertex_location_is_trimmed_for_explicit_provider_routing():
     settings = Settings(
         google_cloud_project="test-project",
@@ -55,6 +83,37 @@ def test_reuses_model_for_static_system_prompt(monkeypatch):
     ]
     assert constructors[0][0] == ("gemini-2.5-flash",)
     assert constructors[0][1]["system_instruction"] == ["system"]
+
+
+def test_model_for_uses_configured_llm_model_name(monkeypatch):
+    constructors = []
+
+    class FakeModel:
+        async def generate_content_async(self, *_args, **_kwargs):
+            return SimpleNamespace(text="ok")
+
+    def make_model(*args, **kwargs):
+        constructors.append((args, kwargs))
+        return FakeModel()
+
+    monkeypatch.setattr(gemini.aiplatform, "init", lambda **kwargs: None)
+    monkeypatch.setattr(gemini, "GenerativeModel", make_model)
+
+    client = gemini.GeminiClient(
+        Settings(
+            google_cloud_project="test-project",
+            llm_model_name="gemini-3.8-flash",
+        )
+    )
+
+    async def run():
+        await client.generate("system-prompt", "hello")
+
+    asyncio.run(run())
+
+    assert len(constructors) == 1
+    assert constructors[0][0] == ("gemini-3.8-flash",)
+    assert constructors[0][1]["system_instruction"] == ["system-prompt"]
 
 
 def test_concurrent_first_requests_share_model_initialization(monkeypatch):
