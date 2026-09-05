@@ -169,6 +169,15 @@ class SetContextRequest(BaseModel):
     text: str
 
 
+class WorkableParseRequest(BaseModel):
+    url_or_id: str
+
+
+class WorkableExportRequest(BaseModel):
+    candidate_id: str | None = None
+    policy: list[str] | None = None
+
+
 # --- Active Speaker (Chrome Extension) ---
 
 class ActiveSpeakerEvent(BaseModel):
