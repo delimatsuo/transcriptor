@@ -16,7 +16,7 @@ test.describe("Integrations Onboarding and Google Meet Recognition", () => {
 
     // Tab 1: Workable ATS
     await expect(
-      page.getByRole("button", { name: "🏢 Workable" }),
+      page.getByRole("button", { name: "Workable", exact: true }),
     ).toBeVisible();
     await expect(page.getByText("Subdomínio da Empresa")).toBeVisible();
     await expect(
@@ -27,7 +27,7 @@ test.describe("Integrations Onboarding and Google Meet Recognition", () => {
     });
 
     // Tab 2: Calendário
-    const calTab = page.getByRole("button", { name: "📅 Calendário" });
+    const calTab = page.getByRole("button", { name: "Calendário", exact: true });
     await calTab.click();
     await expect(
       page.getByText("Endereço secreto no formato iCal (.ics)"),
@@ -40,7 +40,7 @@ test.describe("Integrations Onboarding and Google Meet Recognition", () => {
     });
 
     // Tab 3: Extensão Meet
-    const extTab = page.getByRole("button", { name: "🧩 Extensão Meet" });
+    const extTab = page.getByRole("button", { name: "Extensão Meet", exact: true });
     await extTab.click();
     await expect(
       page.getByText("Como carregar a extensão no Chrome:"),
@@ -54,7 +54,8 @@ test.describe("Integrations Onboarding and Google Meet Recognition", () => {
 
     // Tab 4: Áudio & Companion
     const companionTab = page.getByRole("button", {
-      name: "🎙️ Áudio & Companion",
+      name: "Áudio & Companion",
+      exact: true,
     });
     await companionTab.click();
     await expect(
@@ -65,7 +66,7 @@ test.describe("Integrations Onboarding and Google Meet Recognition", () => {
     });
 
     // Close modal via Fechar button
-    const closeBtn = page.getByRole("button", { name: "Fechar" });
+    const closeBtn = page.getByRole("button", { name: "Fechar" }).last();
     await closeBtn.click();
     await expect(page.getByText("Conexões & Integrações")).not.toBeVisible();
   });

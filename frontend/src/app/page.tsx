@@ -17,6 +17,7 @@ import AudioDeviceSelector from "@/components/AudioDeviceSelector";
 import IntegrationsModal from "@/components/IntegrationsModal";
 import OnboardingBanner from "@/components/OnboardingBanner";
 import { useBrowserAudioCapture } from "@/hooks/useBrowserAudioCapture";
+import { Settings } from "lucide-react";
 import type { SessionMode, SessionReview } from "@/types/ws";
 
 function reviewLoadError(status: number): string {
@@ -280,7 +281,8 @@ function AuthenticatedHome({ auth }: { auth: AuthenticatedAuthState }) {
             }}
             title="Configurar conexões com Workable, Calendário e Extensão do Meet"
           >
-            <span>⚙️ Conexões</span>
+            <Settings size={14} />
+            <span>Conexões</span>
           </button>
           {hasContent && <ConnectionStatus health={connectionHealth} />}
         </div>

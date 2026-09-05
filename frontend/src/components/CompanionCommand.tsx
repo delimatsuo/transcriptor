@@ -1,6 +1,7 @@
 "use client";
 
 import { buildJoinLink } from "@/lib/joinLink";
+import { Check } from "lucide-react";
 
 interface Props {
   sessionId: string;
@@ -31,7 +32,7 @@ export default function CompanionCommand({ sessionId, streamKey, isConnected }: 
           fontWeight: 600,
         }}
       >
-        <span aria-hidden="true">✓</span>
+        <Check size={14} aria-hidden="true" />
         <span>Companion conectado</span>
       </div>
     );

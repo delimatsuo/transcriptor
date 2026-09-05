@@ -6,6 +6,7 @@ import { apiFetch, authBypassEnabled } from "@/lib/auth";
 import { apiUrl } from "@/lib/runtimeConfig";
 import AudioDeviceSelector from "@/components/AudioDeviceSelector";
 import type { UseBrowserAudioCaptureReturn } from "@/hooks/useBrowserAudioCapture";
+import { Calendar, Video, Search, Check, ChevronDown, ChevronRight } from "lucide-react";
 
 interface ScheduledInterviewItem {
   id: string;
@@ -161,7 +162,7 @@ export default function SessionControls({
         }`,
       );
       setWorkableSuccess(
-        `✓ Dados carregados: ${dossier.candidate_name}${
+        `Dados carregados: ${dossier.candidate_name}${
           dossier.job_title ? ` (${dossier.job_title})` : ""
         }`,
       );
@@ -617,7 +618,8 @@ export default function SessionControls({
                     gap: 6,
                   }}
                 >
-                  <span>📅</span> Entrevistas Agendadas (Workable & Calendário)
+                  <Calendar size={15} color="#007aff" />
+                  <span>Entrevistas Agendadas (Workable & Calendário)</span>
                 </h4>
                 {loadingSchedule && (
                   <span style={{ fontSize: 11, color: "#86868b" }}>
@@ -690,7 +692,8 @@ export default function SessionControls({
                             gap: 4,
                           }}
                         >
-                          <span>📹</span> Abrir chamada de vídeo
+                          <Video size={12} />
+                          <span>Abrir chamada de vídeo</span>
                         </a>
                       )}
                     </div>
@@ -732,9 +735,14 @@ export default function SessionControls({
                       }}
                     >
                       {Boolean(workableCandidateId) &&
-                      workableCandidateId === item.candidate_id
-                        ? "✓ Carregado"
-                        : "Carregar Entrevista"}
+                      workableCandidateId === item.candidate_id ? (
+                        <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+                          <Check size={12} />
+                          <span>Carregado</span>
+                        </span>
+                      ) : (
+                        "Carregar Entrevista"
+                      )}
                     </button>
                   </div>
                 ))}
@@ -758,9 +766,13 @@ export default function SessionControls({
                 fontWeight: 600,
                 color: "#004085",
                 margin: "0 0 10px 0",
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
               }}
             >
-              🔍 Selecionar Candidato do Workable
+              <Search size={14} color="#004085" />
+              <span>Selecionar Candidato do Workable</span>
             </h4>
 
             {/* Vaga e Candidato Dropdowns */}
@@ -981,9 +993,22 @@ export default function SessionControls({
                       flexWrap: "wrap",
                     }}
                   >
-                    <span>✓ Currículo & Histórico Carregados</span>
-                    {jdText && <span>✓ Descrição da Vaga</span>}
-                    {briefing && <span>✓ Briefing e Notas Anteriores</span>}
+                    <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+                      <Check size={12} color="#27ae60" />
+                      <span>Currículo & Histórico Carregados</span>
+                    </span>
+                    {jdText && (
+                      <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+                        <Check size={12} color="#27ae60" />
+                        <span>Descrição da Vaga</span>
+                      </span>
+                    )}
+                    {briefing && (
+                      <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+                        <Check size={12} color="#27ae60" />
+                        <span>Briefing e Notas Anteriores</span>
+                      </span>
+                    )}
                   </div>
                 </div>
                 <button
@@ -1026,7 +1051,7 @@ export default function SessionControls({
                 gap: 6,
               }}
             >
-              <span>{showManualForm ? "▼" : "▶"}</span>
+              {showManualForm ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
               <span>
                 {showManualForm
                   ? "Ocultar preenchimento manual"

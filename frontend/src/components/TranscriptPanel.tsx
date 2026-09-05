@@ -8,6 +8,7 @@ import {
   formatTimeRange,
 } from "@/lib/transcriptCoverage";
 import type { CoverageGapSegment, TranscriptSegment } from "@/types/ws";
+import { AlertTriangle } from "lucide-react";
 
 interface Props {
   segments: TranscriptSegment[];
@@ -143,13 +144,17 @@ const CoverageGapRow = memo(function CoverageGapRow({
           style={{
             fontSize: 11,
             fontWeight: 600,
-            color: "#ff9500",
+            color: "#b45309",
             backgroundColor: "rgba(255, 149, 0, 0.12)",
             padding: "2px 8px",
             borderRadius: 6,
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 4,
           }}
         >
-          ⚠ Lacuna de Áudio
+          <AlertTriangle size={12} color="#b45309" />
+          <span>Lacuna de Áudio</span>
         </span>
         <span style={{ color: "#1d1d1f", fontWeight: 500 }}>
           {sourceStr}: {reasonStr}

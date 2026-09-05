@@ -2,6 +2,7 @@
 
 import React, { useState } from "react";
 import type { AudioInputDevice, PermissionState } from "@/hooks/useBrowserAudioCapture";
+import { Mic } from "lucide-react";
 
 interface Props {
   devices: AudioInputDevice[];
@@ -40,7 +41,7 @@ export default function AudioDeviceSelector({
     return (
       <div style={compactContainerStyle}>
         <span style={iconStyle} title="Microfone ativo">
-          🎙️
+          <Mic size={14} color="#6e6e73" />
         </span>
         <select
           value={selectedDeviceId}
@@ -73,7 +74,7 @@ export default function AudioDeviceSelector({
     <div style={cardContainerStyle}>
       <div style={headerRowStyle}>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <span style={{ fontSize: 18 }}>🎙️</span>
+          <Mic size={20} color="#007aff" />
           <div>
             <div style={{ fontWeight: 600, fontSize: 13, color: "#1d1d1f" }}>
               Microfone de Entrada

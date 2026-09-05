@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { apiFetch } from "@/lib/auth";
 import { apiUrl } from "@/lib/runtimeConfig";
+import { Settings, Briefcase, Calendar, Puzzle, Mic, Check, X } from "lucide-react";
 
 interface IntegrationsModalProps {
   isOpen: boolean;
@@ -243,8 +244,9 @@ export default function IntegrationsModal({
           }}
         >
           <div>
-            <h2 style={{ fontSize: 16, fontWeight: 600, color: "#1d1d1f", margin: 0 }}>
-              ⚙️ Conexões & Integrações
+            <h2 style={{ fontSize: 16, fontWeight: 600, color: "#1d1d1f", margin: 0, display: "flex", alignItems: "center", gap: 8 }}>
+              <Settings size={18} color="#1d1d1f" />
+              <span>Conexões & Integrações</span>
             </h2>
             <p style={{ fontSize: 12, color: "#86868b", margin: "4px 0 0 0" }}>
               Configure o Workable, Google Calendar e a extensão do Google Meet
@@ -253,16 +255,19 @@ export default function IntegrationsModal({
           <button
             type="button"
             onClick={onClose}
+            aria-label="Fechar"
             style={{
               background: "none",
               border: "none",
-              fontSize: 18,
               cursor: "pointer",
               color: "#86868b",
               padding: 4,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
             }}
           >
-            ✕
+            <X size={18} />
           </button>
         </div>
 
@@ -292,7 +297,8 @@ export default function IntegrationsModal({
               gap: 6,
             }}
           >
-            <span>🏢 Workable</span>
+            <Briefcase size={15} />
+            <span>Workable</span>
             <span
               style={{
                 width: 7,
@@ -320,7 +326,8 @@ export default function IntegrationsModal({
               gap: 6,
             }}
           >
-            <span>📅 Calendário</span>
+            <Calendar size={15} />
+            <span>Calendário</span>
             <span
               style={{
                 width: 7,
@@ -343,9 +350,13 @@ export default function IntegrationsModal({
               cursor: "pointer",
               color: activeTab === "extension" ? "#007aff" : "#6e6e73",
               borderBottom: activeTab === "extension" ? "2px solid #007aff" : "2px solid transparent",
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
             }}
           >
-            🧩 Extensão Meet
+            <Puzzle size={15} />
+            <span>Extensão Meet</span>
           </button>
 
           <button
@@ -360,9 +371,13 @@ export default function IntegrationsModal({
               cursor: "pointer",
               color: activeTab === "audio" ? "#007aff" : "#6e6e73",
               borderBottom: activeTab === "audio" ? "2px solid #007aff" : "2px solid transparent",
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
             }}
           >
-            🎙️ Áudio & Companion
+            <Mic size={15} />
+            <span>Áudio & Companion</span>
           </button>
         </div>
 
@@ -394,7 +409,7 @@ export default function IntegrationsModal({
                     gap: 8,
                   }}
                 >
-                  <span>✓</span>
+                  <Check size={14} color="#27ae60" />
                   <span>
                     Conexão configurada para <strong>{workableSubdomain}.workable.com</strong> (Token: {workableMaskedKey})
                   </span>
@@ -562,7 +577,7 @@ export default function IntegrationsModal({
                     gap: 8,
                   }}
                 >
-                  <span>✓</span>
+                  <Check size={14} color="#27ae60" />
                   <span>Calendário ativo: {calendarMaskedUrl}</span>
                 </div>
               )}
