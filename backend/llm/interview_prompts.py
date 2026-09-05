@@ -114,7 +114,7 @@ Use exatamente esta forma JSON:
     "trajectory": "Um único parágrafo de trajetória.",
     "assessment": "Um único parágrafo de avaliação em primeira pessoa.",
     "trajectory_evidence": [
-      {"source": "context", "evidence_id": "resume"}
+      {"source": "transcript", "evidence_id": "seg-id"}
     ],
     "assessment_evidence": [
       {"source": "transcript", "evidence_id": "seg-id"}
@@ -122,39 +122,42 @@ Use exatamente esta forma JSON:
   }
 }
 
-Valores válidos de source: transcript, recruiter_note, context. Use null em rating \
+Valores válidos de source: transcript, recruiter_note, context. Só use "source": "context" \
+se houver documentos listados sob "## Fontes de contexto duráveis". Se não houver, use \
+"source": "transcript" para todas as evidências (inclusive na trajetória). NUNCA invente \
+IDs nem use "resume" ou "seg-id" se eles não constarem na entrada real. Use null em rating \
 quando não houver base suficiente. O texto para o cliente não mostra os arrays de \
 evidência; eles existem para a revisão interna e a aprovação humana obrigatória.
 """
 
 
 REPORT_EVIDENCE_SCHEMA = {
-    "type": "object",
+    "type": "OBJECT",
     "properties": {
         "source": {
-            "type": "string",
+            "type": "STRING",
             "enum": ["transcript", "recruiter_note", "context"],
         },
-        "evidence_id": {"type": "string"},
+        "evidence_id": {"type": "STRING"},
     },
     "required": ["source", "evidence_id"],
 }
 
 
 INTERVIEW_REPORT_RESPONSE_SCHEMA = {
-    "type": "object",
+    "type": "OBJECT",
     "properties": {
         "internal_sections": {
-            "type": "array",
+            "type": "ARRAY",
             "items": {
-                "type": "object",
+                "type": "OBJECT",
                 "properties": {
-                    "id": {"type": "string"},
-                    "title": {"type": "string"},
-                    "body": {"type": "string"},
-                    "rating": {"type": "integer", "nullable": True},
+                    "id": {"type": "STRING"},
+                    "title": {"type": "STRING"},
+                    "body": {"type": "STRING"},
+                    "rating": {"type": "INTEGER", "nullable": True},
                     "evidence": {
-                        "type": "array",
+                        "type": "ARRAY",
                         "items": REPORT_EVIDENCE_SCHEMA,
                     },
                 },
@@ -162,16 +165,16 @@ INTERVIEW_REPORT_RESPONSE_SCHEMA = {
             },
         },
         "client_narrative": {
-            "type": "object",
+            "type": "OBJECT",
             "properties": {
-                "trajectory": {"type": "string"},
-                "assessment": {"type": "string"},
+                "trajectory": {"type": "STRING"},
+                "assessment": {"type": "STRING"},
                 "trajectory_evidence": {
-                    "type": "array",
+                    "type": "ARRAY",
                     "items": REPORT_EVIDENCE_SCHEMA,
                 },
                 "assessment_evidence": {
-                    "type": "array",
+                    "type": "ARRAY",
                     "items": REPORT_EVIDENCE_SCHEMA,
                 },
             },

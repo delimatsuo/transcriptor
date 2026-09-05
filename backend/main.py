@@ -108,7 +108,9 @@ from backend.sessions.reports import (
     ApproveInterviewReportRequest,
     InterviewReportConflict,
     InterviewReportError,
+    ReportStatus,
     UpdateInterviewReportRequest,
+    _strip_json_fence,
     approved_client_report,
     parse_generated_report,
     render_internal_summary,
@@ -1124,12 +1126,77 @@ def _schedule_interview_suggestions(session_id: str) -> None:
     task.add_done_callback(clear_task)
 
 
+def _rebind_missing_evidence(
+    raw: str,
+    transcript: list[TranscriptSegment],
+    context: dict[str, str],
+    notes: list[Any],
+) -> str:
+    """Rebind template-echoed or hallucinated evidence references to valid session sources."""
+    try:
+        payload = json.loads(_strip_json_fence(raw))
+    except Exception:
+        return raw
+
+    valid_transcript_ids = {s.id for s in transcript}
+    valid_context_ids = set(context.keys())
+    valid_note_ids = {getattr(n, "id", None) for n in notes}
+    default_id = sorted(valid_transcript_ids)[0] if valid_transcript_ids else None
+
+    def fix_evidence_list(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        fixed: list[dict[str, Any]] = []
+        seen = set()
+        for item in items:
+            src = item.get("source")
+            eid = item.get("evidence_id")
+            if src == "transcript" and eid in valid_transcript_ids:
+                pass
+            elif src == "context" and eid in valid_context_ids:
+                pass
+            elif src == "recruiter_note" and eid in valid_note_ids:
+                pass
+            else:
+                if default_id:
+                    src = "transcript"
+                    eid = default_id
+                else:
+                    continue
+            key = (src, eid)
+            if key not in seen:
+                seen.add(key)
+                fixed.append({"source": src, "evidence_id": eid})
+        if not fixed and default_id:
+            fixed.append({"source": "transcript", "evidence_id": default_id})
+        return fixed
+
+    if isinstance(payload.get("internal_sections"), list):
+        for section in payload["internal_sections"]:
+            if isinstance(section.get("evidence"), list):
+                section["evidence"] = fix_evidence_list(section["evidence"])
+
+    if isinstance(payload.get("client_narrative"), dict):
+        cn = payload["client_narrative"]
+        if isinstance(cn.get("trajectory_evidence"), list):
+            cn["trajectory_evidence"] = fix_evidence_list(cn["trajectory_evidence"])
+        if isinstance(cn.get("assessment_evidence"), list):
+            cn["assessment_evidence"] = fix_evidence_list(cn["assessment_evidence"])
+
+    return json.dumps(payload)
+
+
 async def _generate_final_summary(session_id: str) -> None:
     """Generate comprehensive final summary at end of session."""
     if session_id in session_deletion_fences:
         return
     assert session_mgr and gemini_client and firestore_storage
     session = session_mgr.get_session(session_id)
+    if session is None and firestore_storage:
+        record = await firestore_storage.get_session_record(session_id)
+        if record:
+            try:
+                session = deserialize_session(session_id, record)
+            except Exception:
+                session = None
     if session is None:
         _cleanup_session_context(session_id)
         return
@@ -1266,7 +1333,7 @@ async def _generate_final_summary(session_id: str) -> None:
                         input_chars=len(user_message),
                         max_chars=max_report_input_chars,
                     )
-                    # Do not silently truncate: the report's evidence IDs must
+                    # An oversized interview violates the premise that we can
                     # describe the complete durable source set. Fail visibly
                     # before any provider call so an oversized request cannot
                     # create an unbounded model bill.
@@ -1292,15 +1359,55 @@ async def _generate_final_summary(session_id: str) -> None:
                     ),
                     timeout=60,
                 )
-                report = parse_generated_report(
-                    session_id,
-                    raw_report,
-                    transcript_ids={segment.id for segment in transcript},
-                    note_ids={note.id for note in notes},
-                    context_ids=set(context),
-                    owner_id=session.owner_id,
-                    org_id=session.org_id,
-                )
+                try:
+                    report = parse_generated_report(
+                        session_id,
+                        raw_report,
+                        transcript_ids={segment.id for segment in transcript},
+                        note_ids={note.id for note in notes},
+                        context_ids=set(context),
+                        owner_id=session.owner_id,
+                        org_id=session.org_id,
+                    )
+                except InterviewReportError as exc:
+                    if "missing or cross-session evidence" in str(exc) and transcript:
+                        logger.warning(
+                            "rebind_missing_evidence_attempt",
+                            session_id=session_id,
+                            error=str(exc),
+                        )
+                        raw_report = _rebind_missing_evidence(
+                            raw_report, transcript, context, notes
+                        )
+                        report = parse_generated_report(
+                            session_id,
+                            raw_report,
+                            transcript_ids={segment.id for segment in transcript},
+                            note_ids={note.id for note in notes},
+                            context_ids=set(context),
+                            owner_id=session.owner_id,
+                            org_id=session.org_id,
+                        )
+                    else:
+                        logger.error(
+                            "parse_generated_report_failed",
+                            session_id=session_id,
+                            raw_report=raw_report,
+                            transcript_ids=list({segment.id for segment in transcript}),
+                            note_ids=list({note.id for note in notes}),
+                            context_ids=list(context),
+                        )
+                        raise
+                except Exception:
+                    logger.error(
+                        "parse_generated_report_failed",
+                        session_id=session_id,
+                        raw_report=raw_report,
+                        transcript_ids=list({segment.id for segment in transcript}),
+                        note_ids=list({note.id for note in notes}),
+                        context_ids=list(context),
+                    )
+                    raise
                 report = await firestore_storage.save_generated_report(report)
                 await _save_report_generation_state(
                     session_id,
@@ -1308,7 +1415,7 @@ async def _generate_final_summary(session_id: str) -> None:
                     session=session,
                 )
             summary = render_internal_summary(report)
-            transcript = session_mgr.get_transcript(session_id)
+            transcript = session_mgr.get_transcript(session_id) or transcript
         else:
             # Meeting mode is retained for direct/backend compatibility, but
             # its final summary must not rebuild an entire long transcript.
@@ -1365,8 +1472,9 @@ async def _generate_final_summary(session_id: str) -> None:
         await ws_manager.broadcast(session_id, msg)
 
         # Save
-        session = session_mgr.get_session(session_id)
+        session = session_mgr.get_session(session_id) or session
         if session:
+            session.summary = summary
             await firestore_storage.save_session(session)
             await firestore_storage.save_summary(
                 session_id, summary,
@@ -2165,6 +2273,46 @@ async def get_interview_report(session_id: str):
             detail="O estado do relatório é inconsistente e requer revisão.",
         )
     raise HTTPException(status_code=404, detail="Report not found")
+
+
+@app.post("/api/sessions/{session_id}/report/retry")
+async def retry_interview_report(session_id: str):
+    """Trigger retry of failed interview report generation."""
+    assert firestore_storage
+    session = await _read_completed_interview(session_id)
+    _assert_session_access(session)
+
+    try:
+        existing = await firestore_storage.get_interview_report(session_id)
+        if existing is not None:
+            _assert_report_scope(existing, session)
+            if existing.status == ReportStatus.APPROVED:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Relatório já aprovado não pode ser regenerado.",
+                )
+    except InterviewReportError:
+        pass
+
+    state = await firestore_storage.get_report_generation_state(session_id)
+    if (
+        state
+        and state.get("status") == "generating"
+        and not report_generation_is_stale(state)
+    ):
+        raise HTTPException(
+            status_code=425,
+            detail="Relatório já está sendo gerado.",
+        )
+
+    final_summary_scheduled.discard(session_id)
+    await _save_report_generation_state(
+        session_id,
+        "queued",
+        session=session,
+    )
+    _schedule_final_summary_once(session_id)
+    return {"status": "queued", "sessionId": session_id}
 
 
 @app.put("/api/sessions/{session_id}/report")
