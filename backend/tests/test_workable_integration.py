@@ -672,3 +672,149 @@ async def test_export_report_to_workable_endpoint():
         backend_main.settings = old_settings
 
 
+@pytest.mark.anyio
+async def test_workable_get_events():
+    mock_events_payload = {
+        "events": [
+            {
+                "id": "ev_101",
+                "title": "Call with Ana Mantovan - NG.CASH - CTO",
+                "type": "CallEvent",
+                "starts_at": "2026-03-17T20:30:00.000Z",
+                "ends_at": "2026-03-17T21:00:00.000Z",
+                "cancelled": False,
+                "candidate": {"id": "cand_99", "name": "Ana Mantovan"},
+                "job": {"shortcode": "ngc123", "title": "NG.CASH - CTO"},
+                "conference": {"url": "https://meet.google.com/abc-defg-hij"},
+                "members": [{"name": "Deli Matsuo - Ella"}],
+            }
+        ]
+    }
+    client = WorkableClient(subdomain="ella", api_key="test_key")
+    with patch.object(client, "_request", AsyncMock(return_value=mock_events_payload)):
+        events = await client.get_events(start_date="2026-03-01", end_date="2026-03-31")
+        assert len(events) == 1
+        ev = events[0]
+        assert ev.id == "ev_101"
+        assert ev.candidate_id == "cand_99"
+        assert ev.candidate_name == "Ana Mantovan"
+        assert ev.job_shortcode == "ngc123"
+        assert ev.job_title == "NG.CASH - CTO"
+        assert ev.conference_url == "https://meet.google.com/abc-defg-hij"
+        assert ev.interviewers == ["Deli Matsuo - Ella"]
+
+
+@pytest.mark.anyio
+async def test_workable_get_jobs_and_candidates():
+    client = WorkableClient(subdomain="ella", api_key="test_key")
+    with patch.object(
+        client,
+        "_request",
+        AsyncMock(side_effect=[
+            {"jobs": [{"title": "CTO", "shortcode": "sc1", "department": "Tech"}]},
+            {"candidates": [{"id": "c1", "name": "Alice", "stage": "Screening"}]},
+        ]),
+    ):
+        jobs = await client.get_jobs()
+        assert len(jobs) == 1
+        assert jobs[0]["title"] == "CTO"
+
+        cands = await client.get_candidates_for_job("sc1")
+        assert len(cands) == 1
+        assert cands[0]["name"] == "Alice"
+
+
+@pytest.mark.anyio
+async def test_calendar_monitor_workable_and_ical():
+    from backend.integrations.calendar import CalendarMonitor, parse_ical_events
+
+    raw_ical = (
+        "BEGIN:VCALENDAR\n"
+        "BEGIN:VEVENT\n"
+        "UID:event-ical-1\n"
+        "SUMMARY:Entrevista com Bruno Silva - Tech Lead\n"
+        "DTSTART:20260905T180000Z\n"
+        "DTEND:20260905T190000Z\n"
+        "DESCRIPTION:Link da chamada: https://meet.google.com/xyz-uvw-rst\n"
+        "END:VEVENT\n"
+        "END:VCALENDAR\n"
+    )
+    parsed = parse_ical_events(raw_ical)
+    assert len(parsed) == 1
+    assert parsed[0].id == "event-ical-1"
+    assert parsed[0].title == "Entrevista com Bruno Silva - Tech Lead"
+    assert parsed[0].conference_url == "https://meet.google.com/xyz-uvw-rst"
+
+    # Test monitor aggregation
+    settings = Settings(
+        google_cloud_project="test-project",
+        workable_subdomain="ella",
+        workable_api_key="key",
+        calendar_ical_url="https://example.com/calendar.ics",
+        _env_file=None,
+    )
+    mock_workable_client = MagicMock()
+    mock_workable_client.is_configured = True
+    from backend.integrations.workable import WorkableEvent
+
+    mock_ev = WorkableEvent(
+        id="ev_live",
+        title="Call with Ana",
+        starts_at="2026-09-05T15:00:00Z",
+        candidate_id="c_live",
+        candidate_name="Ana",
+        job_title="CTO",
+    )
+    mock_workable_client.get_events = AsyncMock(return_value=[mock_ev])
+
+    monitor = CalendarMonitor(settings, workable_client=mock_workable_client)
+    with patch("httpx.AsyncClient.get", AsyncMock(return_value=MagicMock(status_code=200, text=raw_ical))):
+        interviews = await monitor.get_upcoming_interviews()
+        assert len(interviews) == 2
+        # Verify both workable and ical events are present
+        sources = {i.source for i in interviews}
+        assert "workable" in sources
+        assert "calendar" in sources
+
+
+@pytest.mark.anyio
+async def test_calendar_upcoming_endpoint():
+    from backend import main as backend_main
+
+    old_settings = backend_main.settings
+    test_settings = Settings(
+        google_cloud_project="test-project",
+        workable_subdomain="ella",
+        workable_api_key="key",
+        _env_file=None,
+    )
+    backend_main.settings = test_settings
+    try:
+        from backend.integrations.calendar import CalendarMonitor, ScheduledInterview
+
+        sample_interviews = [
+            ScheduledInterview(
+                id="workable-1",
+                title="Interview with Marcus Csaky",
+                starts_at="2026-09-05T14:30:00Z",
+                candidate_id="883bf60",
+                candidate_name="Marcus Csaky",
+                job_title="Chief Data Officer",
+            )
+        ]
+        with patch.object(CalendarMonitor, "get_upcoming_interviews", AsyncMock(return_value=sample_interviews)):
+            res = await backend_main.get_upcoming_interviews()
+            assert res["ok"] is True
+            assert len(res["interviews"]) == 1
+            assert res["interviews"][0]["candidate_name"] == "Marcus Csaky"
+
+        with patch.object(WorkableClient, "get_jobs", AsyncMock(return_value=[{"title": "CDO", "shortcode": "cdo1"}])):
+            jobs_res = await backend_main.get_workable_jobs()
+            assert jobs_res["ok"] is True
+            assert len(jobs_res["jobs"]) == 1
+            assert jobs_res["jobs"][0]["shortcode"] == "cdo1"
+    finally:
+        backend_main.settings = old_settings
+
+
+

@@ -367,6 +367,10 @@ class Settings(BaseSettings):
         default=None,
         description="Workable API partner access token",
     )
+    calendar_ical_url: str | None = Field(
+        default=None,
+        description="Optional Google Calendar or Outlook secret iCal feed URL for automated interview detection",
+    )
 
     @field_validator("workable_subdomain")
     @classmethod

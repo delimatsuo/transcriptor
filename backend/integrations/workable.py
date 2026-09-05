@@ -59,6 +59,23 @@ class WorkableCandidateDossier(BaseModel):
     )
 
 
+class WorkableEvent(BaseModel):
+    """Scheduled interview or call event from Workable."""
+
+    id: str = Field(description="Event unique identifier")
+    title: str = Field(description="Event title / subject")
+    event_type: str = Field(default="interview", description="Event type (call, interview, meeting)")
+    starts_at: str = Field(description="Event start time (ISO 8601)")
+    ends_at: str | None = Field(default=None, description="Event end time (ISO 8601)")
+    cancelled: bool = Field(default=False, description="Whether event was cancelled")
+    candidate_id: str | None = Field(default=None, description="Linked candidate ID")
+    candidate_name: str | None = Field(default=None, description="Linked candidate name")
+    job_shortcode: str | None = Field(default=None, description="Linked job shortcode")
+    job_title: str | None = Field(default=None, description="Linked job title")
+    conference_url: str | None = Field(default=None, description="Meeting video link (Google Meet, Zoom, etc.)")
+    interviewers: list[str] = Field(default_factory=list, description="Names of participating interviewers")
+
+
 def strip_html(raw_html: str | None) -> str:
     """Safely convert HTML formatting (from Workable descriptions/notes) into clean plain text/markdown."""
     if not raw_html:
@@ -507,6 +524,59 @@ class WorkableClient:
         payload = {"comment": comment_payload}
         res = await self._request("POST", f"/candidates/{candidate_id}/comments", json_data=payload)
         return res
+
+    async def get_events(
+        self,
+        start_date: str | None = None,
+        end_date: str | None = None,
+        limit: int = 50,
+    ) -> list[WorkableEvent]:
+        """Fetch scheduled recruiting events: GET /spi/v3/events."""
+        params: dict[str, Any] = {"limit": limit}
+        if start_date:
+            params["start_date"] = start_date
+        if end_date:
+            params["end_date"] = end_date
+        res = await self._request("GET", "/events", params=params)
+        raw_events = res.get("events", []) if isinstance(res, dict) else []
+        parsed_events: list[WorkableEvent] = []
+        for e in raw_events:
+            if not isinstance(e, dict):
+                continue
+            cand = e.get("candidate") or {}
+            job = e.get("job") or {}
+            conf = e.get("conference") or {}
+            members = e.get("members") or []
+            parsed_events.append(
+                WorkableEvent(
+                    id=str(e.get("id")),
+                    title=e.get("title") or "Entrevista",
+                    event_type=str(e.get("type", "interview")),
+                    starts_at=str(e.get("starts_at")),
+                    ends_at=str(e.get("ends_at")) if e.get("ends_at") else None,
+                    cancelled=bool(e.get("cancelled", False)),
+                    candidate_id=str(cand.get("id")) if cand.get("id") else None,
+                    candidate_name=cand.get("name"),
+                    job_shortcode=str(job.get("shortcode")) if job.get("shortcode") else None,
+                    job_title=job.get("title"),
+                    conference_url=conf.get("url"),
+                    interviewers=[m.get("name") for m in members if isinstance(m, dict) and m.get("name")],
+                )
+            )
+        return parsed_events
+
+    async def get_jobs(self, state: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
+        """Fetch jobs: GET /spi/v3/jobs."""
+        params: dict[str, Any] = {"limit": limit}
+        if state:
+            params["state"] = state
+        res = await self._request("GET", "/jobs", params=params)
+        return res.get("jobs", []) if isinstance(res, dict) else []
+
+    async def get_candidates_for_job(self, shortcode: str, limit: int = 50) -> list[dict[str, Any]]:
+        """Fetch candidates for a job: GET /spi/v3/jobs/{shortcode}/candidates."""
+        res = await self._request("GET", f"/jobs/{shortcode}/candidates", params={"limit": limit})
+        return res.get("candidates", []) if isinstance(res, dict) else []
 
     async def import_candidate_dossier(self, url_or_id: str) -> WorkableCandidateDossier:
         """Fetch candidate, associated job, and previous notes to assemble a complete dossier."""
