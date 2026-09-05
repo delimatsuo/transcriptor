@@ -10,8 +10,9 @@
 
   // --- State (survives within SW lifetime, persisted to storage for recovery) ---
   let linkedSessionId = null;
-  let backendUrl = "http://localhost:8000";
+  let backendUrl = "http://localhost:8008";
   let sessionToken = null;
+  let userToken = null;
   let clockOffset = 0; // seconds: server_time - client_time
   let clockUncertainty = 0.5; // seconds
   let eventBatch = [];
@@ -30,6 +31,7 @@
       linkedSessionId,
       backendUrl,
       sessionToken,
+      userToken,
       clockOffset,
       clockUncertainty,
     });
@@ -40,12 +42,14 @@
       "linkedSessionId",
       "backendUrl",
       "sessionToken",
+      "userToken",
       "clockOffset",
       "clockUncertainty",
     ]);
     if (data.linkedSessionId) linkedSessionId = data.linkedSessionId;
     if (data.backendUrl) backendUrl = data.backendUrl;
     if (data.sessionToken) sessionToken = data.sessionToken;
+    if (data.userToken) userToken = data.userToken;
     if (data.clockOffset !== undefined) clockOffset = data.clockOffset;
     if (data.clockUncertainty !== undefined) clockUncertainty = data.clockUncertainty;
   }
@@ -68,8 +72,9 @@
 
   function apiHeaders() {
     const headers = { "Content-Type": "application/json" };
-    if (sessionToken) {
-      headers["Authorization"] = `Bearer ${sessionToken}`;
+    const token = sessionToken || userToken;
+    if (token) {
+      headers["Authorization"] = `Bearer ${token}`;
     }
     return headers;
   }
@@ -185,13 +190,40 @@
     }
   }
 
-  // --- Message handling from content scripts ---
+  // --- Message handling from content scripts & popup ---
 
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    if (!linkedSessionId) return;
-
     switch (message.type) {
+      // Meet automated interview recognition
+      case "CHECK_MEET_INTERVIEW": {
+        const meetCode = message.meetCode;
+        if (!meetCode) {
+          sendResponse({ ok: false, matched: false });
+          return false;
+        }
+        const url = `${backendUrl}/api/calendar/match?meet_code=${encodeURIComponent(meetCode)}`;
+        fetch(url, { headers: apiHeaders() })
+          .then((res) => {
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            return res.json();
+          })
+          .then((data) => {
+            sendResponse({
+              ok: true,
+              matched: Boolean(data.matched),
+              interview: data.interview || null,
+            });
+          })
+          .catch((err) => {
+            console.warn("[T.A.R.S.] Calendar match check failed:", err.message);
+            sendResponse({ ok: false, matched: false, error: err.message });
+          });
+        return true; // async sendResponse
+      }
+
+      // Active session speaker events (require linked session)
       case "active_speaker_change": {
+        if (!linkedSessionId) return;
         const adjustedTimestamp = adjustTimestamp(message.timestamp);
         eventBatch.push({
           participant_name: message.participantName,
@@ -201,6 +233,7 @@
       }
 
       case "participants_update": {
+        if (!linkedSessionId) return;
         // Forward to backend
         apiPost("/participants", {
           participants: message.participants,
@@ -211,6 +244,7 @@
       }
 
       case "heartbeat": {
+        if (!linkedSessionId) return;
         apiPost("/heartbeat", {
           can_detect_speaker: message.canDetectSpeaker,
         }).catch((e) => {

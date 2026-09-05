@@ -892,3 +892,205 @@ async def test_workable_get_events_skips_missing_starts_at():
         assert len(events) == 1
         assert events[0].id == "e_valid"
         assert events[0].starts_at == "2026-09-05T10:00:00Z"
+
+
+@pytest.mark.anyio
+async def test_match_calendar_interview_endpoint():
+    from backend import main as backend_main
+    from backend.integrations.calendar import CalendarMonitor, ScheduledInterview
+
+    old_settings = backend_main.settings
+    backend_main.settings = Settings(
+        google_cloud_project="test-project",
+        workable_subdomain="acme",
+        workable_api_key="secret-key",
+    )
+    mock_interview = ScheduledInterview(
+        id="workable-101",
+        title="Entrevista com Carlos",
+        starts_at="2026-09-05T15:00:00Z",
+        candidate_name="Carlos",
+        candidate_id="c12345",
+        conference_url="https://meet.google.com/xyz-uvwx-rst",
+    )
+    try:
+        with patch.object(CalendarMonitor, "match_interview_by_meet_code", AsyncMock(return_value=mock_interview)):
+            res = await backend_main.match_calendar_interview(meet_code="xyz-uvwx-rst")
+            assert res["ok"] is True
+            assert res["matched"] is True
+            assert res["interview"]["candidate_name"] == "Carlos"
+
+        with patch.object(CalendarMonitor, "match_interview_by_meet_code", AsyncMock(return_value=None)):
+            res_none = await backend_main.match_calendar_interview(meet_code="not-found-meet")
+            assert res_none["ok"] is True
+            assert res_none["matched"] is False
+            assert res_none["interview"] is None
+    finally:
+        backend_main.settings = old_settings
+
+
+@pytest.mark.anyio
+async def test_get_and_post_integrations_settings_endpoint():
+    from backend import main as backend_main
+    from backend.schemas.models import IntegrationsSettingsUpdateRequest
+
+    old_settings = backend_main.settings
+    test_settings = Settings(
+        google_cloud_project="test-project",
+        workable_subdomain="acme",
+        workable_api_key="secret-12345-token",
+        calendar_ical_url="https://example.com/feed.ics",
+    )
+    backend_main.settings = test_settings
+    try:
+        # 1. GET settings (secrets must be masked)
+        get_res = await backend_main.get_integrations_settings()
+        assert get_res["ok"] is True
+        assert get_res["workable"]["configured"] is True
+        assert get_res["workable"]["subdomain"] == "acme"
+        assert get_res["workable"]["api_key_masked"] == "secr••••oken"
+        assert get_res["calendar"]["configured"] is True
+        assert "••••" in get_res["calendar"]["ical_url_masked"]
+
+        # 2. POST settings test_only
+        with patch.object(WorkableClient, "get_jobs", AsyncMock(return_value=[{"title": "Job 1"}])):
+            post_test = await backend_main.update_integrations_settings(
+                IntegrationsSettingsUpdateRequest(
+                    workable_subdomain="testcompany",
+                    workable_api_key="valid-key",
+                    test_only=True,
+                )
+            )
+            assert post_test["ok"] is True
+            assert post_test["workable"]["ok"] is True
+    finally:
+        backend_main.settings = old_settings
+
+
+@pytest.mark.anyio
+async def test_calendar_monitor_direct_match_interview_by_meet_code():
+    from datetime import datetime, timezone, timedelta
+    from backend.integrations.calendar import CalendarMonitor, ScheduledInterview
+
+    monitor = CalendarMonitor(Settings(google_cloud_project="test-project"))
+    now = datetime.now(timezone.utc)
+
+    # 1. Exact match on conference_url
+    ev_exact = ScheduledInterview(
+        id="exact-1",
+        title="Entrevista com Bianca",
+        candidate_name="Bianca",
+        job_title="DevOps Engineer",
+        starts_at=(now + timedelta(hours=2)).isoformat(),
+        ends_at=(now + timedelta(hours=3)).isoformat(),
+        conference_url="https://meet.google.com/abc-defg-hij",
+        source="workable",
+    )
+
+    with patch.object(monitor, "get_upcoming_interviews", AsyncMock(return_value=[ev_exact])):
+        matched = await monitor.match_interview_by_meet_code("abc-defg-hij")
+        assert matched is not None
+        assert matched.id == "exact-1"
+        assert matched.candidate_name == "Bianca"
+
+    # 2. Conflicting conference_url should NEVER match via proximity
+    ev_conflict = ScheduledInterview(
+        id="conflict-1",
+        title="Entrevista com Marcos",
+        candidate_name="Marcos",
+        job_title="Data Scientist",
+        starts_at=(now + timedelta(minutes=2)).isoformat(),
+        ends_at=(now + timedelta(minutes=45)).isoformat(),
+        conference_url="https://meet.google.com/other-room-123",
+        source="workable",
+    )
+
+    with patch.object(monitor, "get_upcoming_interviews", AsyncMock(return_value=[ev_conflict])):
+        # Joining room 'abc-defg-hij' must NOT false-positive match 'other-room-123'
+        matched = await monitor.match_interview_by_meet_code("abc-defg-hij", time_window_minutes=30)
+        assert matched is None
+
+    # 3. Proximity match for event without conference_url picks the closest to now
+    ev_closer = ScheduledInterview(
+        id="close-1",
+        title="Entrevista com Ana",
+        candidate_name="Ana",
+        job_title="Product Manager",
+        starts_at=(now + timedelta(minutes=3)).isoformat(),
+        ends_at=(now + timedelta(minutes=45)).isoformat(),
+        conference_url=None,
+        source="calendar",
+    )
+    ev_farther = ScheduledInterview(
+        id="far-1",
+        title="Entrevista com Daniel",
+        candidate_name="Daniel",
+        job_title="Frontend Engineer",
+        starts_at=(now + timedelta(minutes=25)).isoformat(),
+        ends_at=(now + timedelta(minutes=60)).isoformat(),
+        conference_url=None,
+        source="calendar",
+    )
+
+    # Note: Pass in descending order (farther first) to ensure proximity sorts by closest delta
+    with patch.object(monitor, "get_upcoming_interviews", AsyncMock(return_value=[ev_farther, ev_closer])):
+        matched = await monitor.match_interview_by_meet_code("any-meet-room", time_window_minutes=30)
+        assert matched is not None
+        assert matched.id == "close-1"
+        assert matched.candidate_name == "Ana"
+
+    # 4. Outside time window should return None
+    ev_outside = ScheduledInterview(
+        id="outside-1",
+        title="Entrevista Passada",
+        candidate_name="Lucas",
+        job_title="Designer",
+        starts_at=(now - timedelta(minutes=45)).isoformat(),
+        ends_at=(now - timedelta(minutes=15)).isoformat(),
+        conference_url=None,
+        source="calendar",
+    )
+    with patch.object(monitor, "get_upcoming_interviews", AsyncMock(return_value=[ev_outside])):
+        matched = await monitor.match_interview_by_meet_code("any-meet-room", time_window_minutes=30)
+        assert matched is None
+
+
+def test_integrations_settings_update_request_crlf_and_injection_validation():
+    from pydantic import ValidationError
+    from backend.schemas.models import IntegrationsSettingsUpdateRequest
+    from backend.main import _update_env_key
+
+    # 1. Newlines / CRLF in workable_subdomain must be rejected
+    with pytest.raises(ValidationError):
+        IntegrationsSettingsUpdateRequest(workable_subdomain="company\nAUTH_BYPASS=true")
+
+    # 2. Invalid characters in workable_subdomain must be rejected
+    with pytest.raises(ValidationError):
+        IntegrationsSettingsUpdateRequest(workable_subdomain="company$bad#name")
+
+    # 3. Newlines / CRLF in workable_api_key must be rejected
+    with pytest.raises(ValidationError):
+        IntegrationsSettingsUpdateRequest(workable_api_key="secret\nEVIL_VAR=injection")
+
+    # 4. Newlines in calendar_ical_url must be rejected
+    with pytest.raises(ValidationError):
+        IntegrationsSettingsUpdateRequest(calendar_ical_url="https://example.com/feed.ics\r\nANOTHER=1")
+
+    # 5. Non-URL scheme for calendar_ical_url must be rejected
+    with pytest.raises(ValidationError):
+        IntegrationsSettingsUpdateRequest(calendar_ical_url="javascript:alert(1)")
+
+    # 6. Valid entries pass cleanly
+    valid = IntegrationsSettingsUpdateRequest(
+        workable_subdomain="ellaexecutivesearch",
+        workable_api_key="valid-secret_123-abc",
+        calendar_ical_url="https://calendar.google.com/calendar/ical/token/basic.ics",
+    )
+    assert valid.workable_subdomain == "ellaexecutivesearch"
+
+    # 7. _update_env_key safely updates and appends without regex hazard
+    base_env = 'FOO="bar"\nWORKABLE_API_KEY="old-key"\n'
+    updated = _update_env_key(base_env, "WORKABLE_API_KEY", "new-key\\g<1>")
+    assert 'WORKABLE_API_KEY="new-key\\g<1>"' in updated
+    assert 'FOO="bar"' in updated
+

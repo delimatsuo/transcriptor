@@ -14,6 +14,8 @@ import { apiFetch, useAuth } from "@/lib/auth";
 import { apiUrl } from "@/lib/runtimeConfig";
 import AuthControls from "@/components/AuthControls";
 import AudioDeviceSelector from "@/components/AudioDeviceSelector";
+import IntegrationsModal from "@/components/IntegrationsModal";
+import OnboardingBanner from "@/components/OnboardingBanner";
 import { useBrowserAudioCapture } from "@/hooks/useBrowserAudioCapture";
 import type { SessionMode, SessionReview } from "@/types/ws";
 
@@ -45,6 +47,7 @@ function AuthenticatedHome({ auth }: { auth: AuthenticatedAuthState }) {
   >(null);
   const [reviewLoading, setReviewLoading] = useState(false);
   const [stopCapability, setStopCapability] = useState<string | null>(null);
+  const [showIntegrationsModal, setShowIntegrationsModal] = useState(false);
   const disconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reviewRequestRef = useRef<AbortController | null>(null);
   const reviewRequestTokenRef = useRef(0);
@@ -259,6 +262,26 @@ function AuthenticatedHome({ auth }: { auth: AuthenticatedAuthState }) {
           >
             T.A.R.S.
           </h1>
+          <button
+            type="button"
+            onClick={() => setShowIntegrationsModal(true)}
+            style={{
+              padding: "4px 10px",
+              fontSize: 12,
+              fontWeight: 500,
+              color: "#1d1d1f",
+              backgroundColor: "#f2f2f7",
+              border: "1px solid #d2d2d7",
+              borderRadius: 8,
+              cursor: "pointer",
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 5,
+            }}
+            title="Configurar conexões com Workable, Calendário e Extensão do Meet"
+          >
+            <span>⚙️ Conexões</span>
+          </button>
           {hasContent && <ConnectionStatus health={connectionHealth} />}
         </div>
 
@@ -315,7 +338,12 @@ function AuthenticatedHome({ auth }: { auth: AuthenticatedAuthState }) {
         </div>
       )}
 
-      {/* Pre-session: centered welcome or briefing */}
+      {/* Pre-session: onboarding banner, centered welcome or briefing */}
+      {!hasContent && (
+        <div style={{ padding: "16px 28px 0 28px" }}>
+          <OnboardingBanner onOpenModal={() => setShowIntegrationsModal(true)} />
+        </div>
+      )}
       {!hasContent && (
         <PreSessionView
           preInterviewBriefing={preInterviewBriefing}
@@ -379,6 +407,10 @@ function AuthenticatedHome({ auth }: { auth: AuthenticatedAuthState }) {
           }}
         />
       )}
+      <IntegrationsModal
+        isOpen={showIntegrationsModal}
+        onClose={() => setShowIntegrationsModal(false)}
+      />
     </div>
   );
 }

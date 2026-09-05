@@ -4,10 +4,11 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from enum import Enum
+import re
 from typing import Any
 from uuid import uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 # --- Enums ---
@@ -176,6 +177,53 @@ class WorkableParseRequest(BaseModel):
 class WorkableExportRequest(BaseModel):
     candidate_id: str | None = None
     policy: list[str] | None = None
+
+
+class IntegrationsSettingsUpdateRequest(BaseModel):
+    workable_subdomain: str | None = None
+    workable_api_key: str | None = None
+    calendar_ical_url: str | None = None
+    test_only: bool = False
+
+    @field_validator("workable_subdomain")
+    @classmethod
+    def validate_workable_subdomain(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        v = v.strip()
+        if not v:
+            return None
+        if not re.fullmatch(r"[a-zA-Z0-9_-]{1,63}", v):
+            raise ValueError("Subdomínio do Workable inválido. Use apenas letras, números e hífens.")
+        return v
+
+    @field_validator("workable_api_key")
+    @classmethod
+    def validate_workable_api_key(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        v = v.strip()
+        if not v:
+            return None
+        if re.search(r"[\r\n\x00-\x1f\x7f]", v):
+            raise ValueError("Chave de API do Workable contém caracteres inválidos ou quebras de linha.")
+        if len(v) > 512:
+            raise ValueError("Chave de API do Workable muito longa.")
+        return v
+
+    @field_validator("calendar_ical_url")
+    @classmethod
+    def validate_calendar_ical_url(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        v = v.strip()
+        if not v:
+            return None
+        if re.search(r"[\r\n\x00-\x1f\x7f]", v):
+            raise ValueError("URL do calendário contém caracteres inválidos ou quebras de linha.")
+        if not (v.startswith("http://") or v.startswith("https://") or v.startswith("webcal://")):
+            raise ValueError("URL do calendário deve iniciar com https://, http:// ou webcal://.")
+        return v
 
 
 # --- Active Speaker (Chrome Extension) ---
