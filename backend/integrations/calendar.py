@@ -223,12 +223,17 @@ class CalendarMonitor:
             cache_key = item.candidate_email or item.candidate_name
             if cache_key and cache_key in self._candidate_cache:
                 candidates = self._candidate_cache[cache_key]
-            elif item.candidate_email:
-                candidates = await self.workable_client.search_candidates(email=item.candidate_email)
-                self._candidate_cache[item.candidate_email] = candidates
-            elif item.candidate_name:
-                candidates = await self.workable_client.search_candidates(name=item.candidate_name)
-                self._candidate_cache[item.candidate_name] = candidates
+            else:
+                if item.candidate_email:
+                    candidates = await self.workable_client.search_candidates(email=item.candidate_email)
+                    if candidates:
+                        self._candidate_cache[item.candidate_email] = candidates
+
+                # Fallback to name search if email search returned no results
+                if not candidates and item.candidate_name:
+                    candidates = await self.workable_client.search_candidates(name=item.candidate_name)
+                    if candidates:
+                        self._candidate_cache[item.candidate_name] = candidates
 
             if not candidates:
                 return
