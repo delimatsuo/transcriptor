@@ -91,4 +91,14 @@ test("SessionControls integrates Workable scheduled interviews and automated job
     source.includes("if (item.candidate_id) {"),
     "Expected check for candidate_id before triggering workable import",
   );
+
+  // Verifies candidate_id URL query param triggers automated Workable dossier import
+  assert.ok(
+    source.includes('const candidateIdParam = params.get("candidate_id");'),
+    "Expected SessionControls to inspect candidate_id URL query param",
+  );
+  assert.ok(
+    source.includes("void handleWorkableImport(candidateIdParam);"),
+    "Expected SessionControls to auto-trigger handleWorkableImport with candidate_id param",
+  );
 });

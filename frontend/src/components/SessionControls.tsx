@@ -166,6 +166,8 @@ export default function SessionControls({
           dossier.job_title ? ` (${dossier.job_title})` : ""
         }`,
       );
+      setMode("interview");
+      setShowInterviewPrep(true);
     } catch (err) {
       setWorkableError(
         err instanceof Error ? err.message : "Erro ao importar do Workable.",
@@ -211,8 +213,11 @@ export default function SessionControls({
     try {
       const params = new URLSearchParams(window.location.search);
       const candidateParam = params.get("candidate");
+      const candidateIdParam = params.get("candidate_id");
       const jobParam = params.get("job");
-      if (candidateParam) {
+      if (candidateIdParam) {
+        void handleWorkableImport(candidateIdParam);
+      } else if (candidateParam) {
         setCandidateName(candidateParam);
         setTitle(
           `Entrevista: ${candidateParam}${jobParam ? ` - ${jobParam}` : ""}`,
