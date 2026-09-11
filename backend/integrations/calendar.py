@@ -142,7 +142,7 @@ def parse_ical_events(raw_ical: str) -> list[ScheduledInterview]:
                     candidate_name, job_title = extract_candidate_and_job_from_title(summary)
 
                     # Extract candidate email and interviewers from attendees and organizer
-                    candidate_email = None
+                    candidate_emails: list[str] = []
                     interviewers: list[str] = []
                     org = current_event.get("ORGANIZER", "")
                     all_people_lines = current_attendees + ([org] if org else [])
@@ -156,7 +156,19 @@ def parse_ical_events(raw_ical: str) -> list[ScheduledInterview]:
                                 if em_clean not in interviewers:
                                     interviewers.append(em_clean)
                             elif not em_clean.endswith("@google.com") and not em_clean.endswith("@calendar.google.com"):
-                                candidate_email = em_clean
+                                if em_clean not in candidate_emails:
+                                    candidate_emails.append(em_clean)
+
+                    candidate_email = None
+                    if candidate_emails:
+                        if len(candidate_emails) == 1 or not candidate_name:
+                            candidate_email = candidate_emails[0]
+                        else:
+                            name_parts = [p.lower() for p in re.findall(r"\w+", candidate_name) if len(p) > 2]
+                            candidate_email = next(
+                                (em for em in candidate_emails if any(p in em for p in name_parts)),
+                                candidate_emails[0],
+                            )
 
                     # Extract Workable link if present in description
                     workable_match = re.search(r"https://[^\s\"<>]*workable\.com/[^\s\"<>]+", cleaned_text)
@@ -229,6 +241,26 @@ class CalendarMonitor:
         """Enrich a calendar event with matching Workable candidate dossier metadata."""
         if not self.workable_client.is_configured or item.candidate_id:
             return
+
+        # 0. If workable_url contains candidate ID, resolve directly
+        if item.workable_url and not item.candidate_id:
+            from backend.integrations.workable import parse_workable_candidate_input
+            cand_id, _ = parse_workable_candidate_input(item.workable_url)
+            if cand_id:
+                try:
+                    cand_data = await self.workable_client.get_candidate(cand_id)
+                    if cand_data:
+                        item.candidate_id = cand_data.get("id") or cand_id
+                        if cand_data.get("name"):
+                            item.candidate_name = cand_data["name"]
+                        if cand_data.get("job"):
+                            item.job_shortcode = cand_data["job"].get("shortcode")
+                            item.job_title = cand_data["job"].get("title") or item.job_title
+                        if not item.candidate_email and cand_data.get("email"):
+                            item.candidate_email = cand_data["email"]
+                        return
+                except Exception as exc:
+                    logger.debug("Failed to fetch candidate directly by workable_url ID: %s", exc)
 
         try:
             candidates: list[dict[str, Any]] = []

@@ -1220,4 +1220,63 @@ def test_parse_iso_instant_and_offset_sorting():
     assert _parse_iso_instant("malformed-date").tzinfo is not None
 
 
+def test_parse_ical_multi_attendee_correlation():
+    """Verify that when multiple external attendees exist, the candidate email correlates with title."""
+    from backend.integrations.calendar import parse_ical_events
+
+    raw_ical = """BEGIN:VCALENDAR
+VERSION:2.0
+BEGIN:VEVENT
+UID:evt-multi-att-1
+SUMMARY:Interview Deli and Tupy - VP Ume
+DTSTART:20260914T170000Z
+ATTENDEE;CN=Deli:mailto:deli@ellaexecutivesearch.com
+ATTENDEE;CN=Client Sponsor:mailto:sponsor@clientcorp.com
+ATTENDEE;CN=Candidate Tupy:mailto:tupy@riachao.com
+END:VEVENT
+END:VCALENDAR"""
+
+    events = parse_ical_events(raw_ical)
+    assert len(events) == 1
+    assert events[0].candidate_name == "Tupy"
+    assert events[0].candidate_email == "tupy@riachao.com"
+
+
+@pytest.mark.anyio
+async def test_enrich_interview_from_workable_url():
+    """Verify that an interview with workable_url resolves candidate directly without email/name search."""
+    from backend.integrations.calendar import CalendarMonitor, ScheduledInterview
+    from backend.integrations.workable import WorkableClient
+
+    client = WorkableClient(subdomain="test-sub", api_key="dummy-key")
+    monitor = CalendarMonitor(
+        Settings(google_cloud_project="test-project", workable_api_key="dummy-key"),
+        workable_client=client,
+    )
+
+    ev = ScheduledInterview(
+        id="evt-workable-url",
+        title="Candidate Interview",
+        starts_at="2026-09-14T17:00:00Z",
+        workable_url="https://test-sub.workable.com/backend/jobs/123/candidates/cand-direct-99",
+        source="calendar",
+    )
+
+    mock_cand = {
+        "id": "cand-direct-99",
+        "name": "Direct Workable Candidate",
+        "email": "direct@example.com",
+        "job": {"shortcode": "JOB-1", "title": "Staff Engineer"},
+    }
+
+    with patch.object(client, "get_candidate", AsyncMock(return_value=mock_cand)):
+        await monitor._enrich_interview_from_workable(ev)
+
+        assert ev.candidate_id == "cand-direct-99"
+        assert ev.candidate_name == "Direct Workable Candidate"
+        assert ev.candidate_email == "direct@example.com"
+        assert ev.job_title == "Staff Engineer"
+
+
+
 
