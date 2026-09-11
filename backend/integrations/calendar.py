@@ -202,6 +202,18 @@ def _parse_ical_datetime(raw: str) -> str:
     return raw
 
 
+def _parse_iso_instant(val: str) -> datetime:
+    """Parse ISO 8601 string or fallback into timezone-aware UTC datetime."""
+    try:
+        ts = val.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(ts)
+        if dt.tzinfo is None:
+            return dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except Exception:
+        return datetime.min.replace(tzinfo=timezone.utc)
+
+
 class CalendarMonitor:
     """Aggregator service for Workable recruiting events and external calendar feeds."""
 
@@ -325,20 +337,21 @@ class CalendarMonitor:
         # Sort: upcoming (starts_at >= now) sorted ascending (soonest first),
         # followed by past events reverse chronological
         now = datetime.now(timezone.utc)
-        min_start = (now - timedelta(days=days_behind)).isoformat()
-        max_start = (now + timedelta(days=days_ahead)).isoformat()
+        min_start_dt = now - timedelta(days=days_behind)
+        max_start_dt = now + timedelta(days=days_ahead)
 
         windowed = [
             ev for ev in interviews
-            if min_start <= ev.starts_at <= max_start
+            if min_start_dt <= _parse_iso_instant(ev.starts_at) <= max_start_dt
         ]
         pool = windowed if windowed else interviews
 
-        upcoming = [e for e in pool if e.starts_at >= (now - timedelta(hours=1)).isoformat()]
-        upcoming.sort(key=lambda x: x.starts_at)
+        threshold_dt = now - timedelta(hours=1)
+        upcoming = [e for e in pool if _parse_iso_instant(e.starts_at) >= threshold_dt]
+        upcoming.sort(key=lambda x: _parse_iso_instant(x.starts_at))
 
-        past = [e for e in pool if e.starts_at < (now - timedelta(hours=1)).isoformat()]
-        past.sort(key=lambda x: x.starts_at, reverse=True)
+        past = [e for e in pool if _parse_iso_instant(e.starts_at) < threshold_dt]
+        past.sort(key=lambda x: _parse_iso_instant(x.starts_at), reverse=True)
 
         ordered = upcoming + past
         top_interviews = ordered[:limit]
@@ -398,8 +411,9 @@ class CalendarMonitor:
                     continue
 
                 try:
-                    ts_str = item.starts_at.replace("Z", "+00:00")
-                    start_dt = datetime.fromisoformat(ts_str)
+                    start_dt = _parse_iso_instant(item.starts_at)
+                    if start_dt == datetime.min.replace(tzinfo=timezone.utc):
+                        continue
                     diff_seconds = abs((now - start_dt).total_seconds())
                     if diff_seconds <= time_window_minutes * 60:
                         eligible_candidates.append((diff_seconds, item))

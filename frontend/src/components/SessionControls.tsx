@@ -215,9 +215,7 @@ export default function SessionControls({
       const candidateParam = params.get("candidate");
       const candidateIdParam = params.get("candidate_id");
       const jobParam = params.get("job");
-      if (candidateIdParam) {
-        void handleWorkableImport(candidateIdParam);
-      } else if (candidateParam) {
+      if (candidateParam) {
         setCandidateName(candidateParam);
         setTitle(
           `Entrevista: ${candidateParam}${jobParam ? ` - ${jobParam}` : ""}`,
@@ -227,6 +225,9 @@ export default function SessionControls({
       }
       if (jobParam) {
         setJdText((prev) => prev || `Vaga: ${jobParam}`);
+      }
+      if (candidateIdParam) {
+        void handleWorkableImport(candidateIdParam);
       }
     } catch {
       // Ignore URL parsing errors

@@ -972,7 +972,7 @@ async def test_calendar_monitor_direct_match_interview_by_meet_code():
     from datetime import datetime, timezone, timedelta
     from backend.integrations.calendar import CalendarMonitor, ScheduledInterview
 
-    monitor = CalendarMonitor(Settings(google_cloud_project="test-project"))
+    monitor = CalendarMonitor(Settings(google_cloud_project="test-project", workable_api_key=""))
     now = datetime.now(timezone.utc)
 
     # 1. Exact match on conference_url
@@ -1205,5 +1205,19 @@ async def test_calendar_candidate_auto_enrichment():
         assert ev.candidate_name == "Osvaldo Matos Júnior - Tupy"
         assert ev.job_shortcode == "B68D9C83A6"
         assert ev.job_title == "UME - VP Engineering"
+
+
+def test_parse_iso_instant_and_offset_sorting():
+    """Verify ISO datetimes with varying timezone offsets compare chronologically."""
+    from backend.integrations.calendar import _parse_iso_instant
+
+    t1 = _parse_iso_instant("2026-09-14T14:00:00-03:00")  # 17:00 UTC
+    t2 = _parse_iso_instant("2026-09-14T16:00:00Z")       # 16:00 UTC
+    t3 = _parse_iso_instant("2026-09-14T12:00:00-05:00")  # 17:00 UTC
+
+    assert t2 < t1
+    assert t1 == t3
+    assert _parse_iso_instant("malformed-date").tzinfo is not None
+
 
 
