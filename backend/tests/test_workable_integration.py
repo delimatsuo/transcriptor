@@ -1163,7 +1163,11 @@ async def test_calendar_candidate_auto_enrichment():
     from backend.integrations.calendar import CalendarMonitor, ScheduledInterview
     from backend.integrations.workable import WorkableClient
 
-    settings = Settings(workable_subdomain="ellaexecutivesearch", workable_api_key="secret-key")
+    settings = Settings(
+        google_cloud_project="test-project",
+        workable_subdomain="ellaexecutivesearch",
+        workable_api_key="secret-key",
+    )
     client = WorkableClient(subdomain=settings.workable_subdomain, api_key=settings.workable_api_key)
     monitor = CalendarMonitor(settings, workable_client=client)
 
