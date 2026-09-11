@@ -972,7 +972,7 @@ async def test_calendar_monitor_direct_match_interview_by_meet_code():
     from datetime import datetime, timezone, timedelta
     from backend.integrations.calendar import CalendarMonitor, ScheduledInterview
 
-    monitor = CalendarMonitor(Settings(google_cloud_project="test-project"))
+    monitor = CalendarMonitor(Settings(google_cloud_project="test-project", workable_api_key=""))
     now = datetime.now(timezone.utc)
 
     # 1. Exact match on conference_url
@@ -1093,4 +1093,190 @@ def test_integrations_settings_update_request_crlf_and_injection_validation():
     updated = _update_env_key(base_env, "WORKABLE_API_KEY", "new-key\\g<1>")
     assert 'WORKABLE_API_KEY="new-key\\g<1>"' in updated
     assert 'FOO="bar"' in updated
+
+
+def test_extract_candidate_and_job_from_title():
+    from backend.integrations.calendar import extract_candidate_and_job_from_title
+
+    # 1. Deli and Candidate
+    c1, j1 = extract_candidate_and_job_from_title("Interview Deli and Tupy - VP Ume")
+    assert c1 == "Tupy"
+    assert j1 == "VP Ume"
+
+    # 2. Candidate and Deli
+    c2, j2 = extract_candidate_and_job_from_title("Interview Bruno Souza and Deli - VP Ume")
+    assert c2 == "Bruno Souza"
+    assert j2 == "VP Ume"
+
+    # 3. Entrevista Deli e Maria Silva
+    c3, j3 = extract_candidate_and_job_from_title("Entrevista Deli e Maria Silva - CTO")
+    assert c3 == "Maria Silva"
+    assert j3 == "CTO"
+
+    # 4. Direct title without Deli
+    c4, j4 = extract_candidate_and_job_from_title("Interview Felipe Perlino - CPO Gupy")
+    assert c4 == "Felipe Perlino"
+    assert j4 == "CPO Gupy"
+
+    # 5. Screening with colon
+    c5, j5 = extract_candidate_and_job_from_title("Screening: Carlos Eduardo")
+    assert c5 == "Carlos Eduardo"
+    assert j5 is None
+
+
+def test_parse_workable_candidate_input_browser_url():
+    from backend.integrations.workable import parse_workable_candidate_input
+
+    # Recruiter web UI URL pattern with singular 'candidate'
+    url = "https://ellaexecutivesearch.workable.com/backend/jobs/5634024/browser/recruiter-interview/candidate/673605079"
+    cand_id, job_id = parse_workable_candidate_input(url)
+    assert cand_id == "673605079"
+    assert job_id == "5634024"
+
+
+@pytest.mark.anyio
+async def test_workable_search_candidates():
+    from backend.integrations.workable import WorkableClient
+
+    client = WorkableClient(subdomain="ellaexecutivesearch", api_key="secret-key")
+    mock_response = {
+        "candidates": [
+            {
+                "id": "28266aa9",
+                "name": "Osvaldo Matos Júnior - Tupy",
+                "email": "tupy@riachao.com",
+                "job": {"shortcode": "B68D9C83A6", "title": "UME - VP Engineering"},
+                "disqualified": False,
+            }
+        ]
+    }
+
+    with patch.object(client, "_request", AsyncMock(return_value=mock_response)) as mock_req:
+        res = await client.search_candidates(email="tupy@riachao.com")
+        assert len(res) == 1
+        assert res[0]["id"] == "28266aa9"
+        mock_req.assert_called_once_with("GET", "/candidates", params={"limit": 20, "email": "tupy@riachao.com"})
+
+
+@pytest.mark.anyio
+async def test_calendar_candidate_auto_enrichment():
+    from backend.integrations.calendar import CalendarMonitor, ScheduledInterview
+    from backend.integrations.workable import WorkableClient
+
+    settings = Settings(
+        google_cloud_project="test-project",
+        workable_subdomain="ellaexecutivesearch",
+        workable_api_key="secret-key",
+    )
+    client = WorkableClient(subdomain=settings.workable_subdomain, api_key=settings.workable_api_key)
+    monitor = CalendarMonitor(settings, workable_client=client)
+
+    # Event from iCal with email but no candidate_id yet
+    ev = ScheduledInterview(
+        id="ical-123",
+        title="Interview Deli and Tupy - VP Ume",
+        starts_at="2026-09-14T17:00:00Z",
+        source="calendar",
+        candidate_name="Tupy",
+        candidate_email="tupy@riachao.com",
+        job_title="VP Ume",
+        conference_url="https://meet.google.com/bio-hiek-psg",
+    )
+
+    mock_candidates = [
+        {
+            "id": "old-candidate",
+            "name": "Osvaldo Matos Júnior - Tupy",
+            "job": {"shortcode": "OLD123", "title": "Old Role"},
+            "disqualified": True,
+        },
+        {
+            "id": "28266aa9",
+            "name": "Osvaldo Matos Júnior - Tupy",
+            "job": {"shortcode": "B68D9C83A6", "title": "UME - VP Engineering"},
+            "disqualified": False,
+        },
+    ]
+
+    with patch.object(client, "search_candidates", AsyncMock(return_value=mock_candidates)):
+        await monitor._enrich_interview_from_workable(ev)
+
+        assert ev.candidate_id == "28266aa9"
+        assert ev.candidate_name == "Osvaldo Matos Júnior - Tupy"
+        assert ev.job_shortcode == "B68D9C83A6"
+        assert ev.job_title == "UME - VP Engineering"
+
+
+def test_parse_iso_instant_and_offset_sorting():
+    """Verify ISO datetimes with varying timezone offsets compare chronologically."""
+    from backend.integrations.calendar import _parse_iso_instant
+
+    t1 = _parse_iso_instant("2026-09-14T14:00:00-03:00")  # 17:00 UTC
+    t2 = _parse_iso_instant("2026-09-14T16:00:00Z")       # 16:00 UTC
+    t3 = _parse_iso_instant("2026-09-14T12:00:00-05:00")  # 17:00 UTC
+
+    assert t2 < t1
+    assert t1 == t3
+    assert _parse_iso_instant("malformed-date").tzinfo is not None
+
+
+def test_parse_ical_multi_attendee_correlation():
+    """Verify that when multiple external attendees exist, the candidate email correlates with title."""
+    from backend.integrations.calendar import parse_ical_events
+
+    raw_ical = """BEGIN:VCALENDAR
+VERSION:2.0
+BEGIN:VEVENT
+UID:evt-multi-att-1
+SUMMARY:Interview Deli and Tupy - VP Ume
+DTSTART:20260914T170000Z
+ATTENDEE;CN=Deli:mailto:deli@ellaexecutivesearch.com
+ATTENDEE;CN=Client Sponsor:mailto:sponsor@clientcorp.com
+ATTENDEE;CN=Candidate Tupy:mailto:tupy@riachao.com
+END:VEVENT
+END:VCALENDAR"""
+
+    events = parse_ical_events(raw_ical)
+    assert len(events) == 1
+    assert events[0].candidate_name == "Tupy"
+    assert events[0].candidate_email == "tupy@riachao.com"
+
+
+@pytest.mark.anyio
+async def test_enrich_interview_from_workable_url():
+    """Verify that an interview with workable_url resolves candidate directly without email/name search."""
+    from backend.integrations.calendar import CalendarMonitor, ScheduledInterview
+    from backend.integrations.workable import WorkableClient
+
+    client = WorkableClient(subdomain="test-sub", api_key="dummy-key")
+    monitor = CalendarMonitor(
+        Settings(google_cloud_project="test-project", workable_api_key="dummy-key"),
+        workable_client=client,
+    )
+
+    ev = ScheduledInterview(
+        id="evt-workable-url",
+        title="Candidate Interview",
+        starts_at="2026-09-14T17:00:00Z",
+        workable_url="https://test-sub.workable.com/backend/jobs/123/candidates/cand-direct-99",
+        source="calendar",
+    )
+
+    mock_cand = {
+        "id": "cand-direct-99",
+        "name": "Direct Workable Candidate",
+        "email": "direct@example.com",
+        "job": {"shortcode": "JOB-1", "title": "Staff Engineer"},
+    }
+
+    with patch.object(client, "get_candidate", AsyncMock(return_value=mock_cand)):
+        await monitor._enrich_interview_from_workable(ev)
+
+        assert ev.candidate_id == "cand-direct-99"
+        assert ev.candidate_name == "Direct Workable Candidate"
+        assert ev.candidate_email == "direct@example.com"
+        assert ev.job_title == "Staff Engineer"
+
+
+
 

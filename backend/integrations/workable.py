@@ -135,21 +135,18 @@ def parse_workable_candidate_input(url_or_id: str) -> tuple[str, str | None]:
         path = parsed.path.strip("/")
         segments = path.split("/")
 
-        # Pattern: .../jobs/{shortcode}/candidates/{candidate_id}
-        if "jobs" in segments and "candidates" in segments:
-            job_idx = segments.index("jobs")
-            cand_idx = segments.index("candidates")
-            shortcode = segments[job_idx + 1] if job_idx + 1 < len(segments) else None
+        # Pattern: .../jobs/{shortcode}/.../candidates/{candidate_id} or candidate/{candidate_id}
+        cand_key = "candidates" if "candidates" in segments else ("candidate" if "candidate" in segments else None)
+        if cand_key:
+            cand_idx = segments.index(cand_key)
             candidate_id = segments[cand_idx + 1] if cand_idx + 1 < len(segments) else None
+            shortcode = None
+            if "jobs" in segments:
+                job_idx = segments.index("jobs")
+                if job_idx + 1 < len(segments) and (job_idx + 1) != cand_idx:
+                    shortcode = segments[job_idx + 1]
             if candidate_id:
                 return candidate_id, shortcode
-
-        # Pattern: .../candidates/{candidate_id}
-        if "candidates" in segments:
-            cand_idx = segments.index("candidates")
-            candidate_id = segments[cand_idx + 1] if cand_idx + 1 < len(segments) else None
-            if candidate_id:
-                return candidate_id, None
 
         raise ValueError(
             f"Não foi possível extrair o ID do candidato a partir da URL do Workable: '{url_or_id}'. "
@@ -579,6 +576,21 @@ class WorkableClient:
     async def get_candidates_for_job(self, shortcode: str, limit: int = 50) -> list[dict[str, Any]]:
         """Fetch candidates for a job: GET /spi/v3/jobs/{shortcode}/candidates."""
         res = await self._request("GET", f"/jobs/{shortcode}/candidates", params={"limit": limit})
+        return res.get("candidates", []) if isinstance(res, dict) else []
+
+    async def search_candidates(
+        self,
+        email: str | None = None,
+        name: str | None = None,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        """Search candidates in Workable by email or name: GET /spi/v3/candidates."""
+        params: dict[str, Any] = {"limit": limit}
+        if email:
+            params["email"] = email
+        if name:
+            params["name"] = name
+        res = await self._request("GET", "/candidates", params=params)
         return res.get("candidates", []) if isinstance(res, dict) else []
 
     async def import_candidate_dossier(self, url_or_id: str) -> WorkableCandidateDossier:

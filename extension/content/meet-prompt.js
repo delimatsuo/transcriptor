@@ -48,9 +48,12 @@
       }
     }
 
+    const candidateIdParam = interview.candidate_id
+      ? `&candidate_id=${encodeURIComponent(interview.candidate_id)}`
+      : "";
     const transcriptorUrl = `http://localhost:3003/?candidate=${encodeURIComponent(
       candidateName,
-    )}&job=${encodeURIComponent(jobTitle)}&meet=${encodeURIComponent(meetCode)}&open=1`;
+    )}&job=${encodeURIComponent(jobTitle)}&meet=${encodeURIComponent(meetCode)}${candidateIdParam}&open=1`;
 
     const root = document.createElement("div");
     root.id = "transcriptor-meet-prompt-root";

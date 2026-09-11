@@ -166,6 +166,8 @@ export default function SessionControls({
           dossier.job_title ? ` (${dossier.job_title})` : ""
         }`,
       );
+      setMode("interview");
+      setShowInterviewPrep(true);
     } catch (err) {
       setWorkableError(
         err instanceof Error ? err.message : "Erro ao importar do Workable.",
@@ -211,6 +213,7 @@ export default function SessionControls({
     try {
       const params = new URLSearchParams(window.location.search);
       const candidateParam = params.get("candidate");
+      const candidateIdParam = params.get("candidate_id");
       const jobParam = params.get("job");
       if (candidateParam) {
         setCandidateName(candidateParam);
@@ -222,6 +225,9 @@ export default function SessionControls({
       }
       if (jobParam) {
         setJdText((prev) => prev || `Vaga: ${jobParam}`);
+      }
+      if (candidateIdParam) {
+        void handleWorkableImport(candidateIdParam);
       }
     } catch {
       // Ignore URL parsing errors
