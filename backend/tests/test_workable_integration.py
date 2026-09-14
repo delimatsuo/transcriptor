@@ -1278,5 +1278,33 @@ async def test_enrich_interview_from_workable_url():
         assert ev.job_title == "Staff Engineer"
 
 
+def test_parse_ical_diamond_format_and_parenthesized_role():
+    """Verify that 'Deli Matsuo <> Candidate (Role)' is recognized and parsed properly."""
+    from backend.integrations.calendar import parse_ical_events
+
+    raw_ical = """BEGIN:VCALENDAR
+VERSION:2.0
+BEGIN:VEVENT
+UID:evt-juan-1
+SUMMARY:Deli Matsuo <> Juan Martín Sotuyo Dodero  (CTO)
+DTSTART:20260914T133000Z
+ATTENDEE;CN=deli@ellaexecutivesearch.com:mailto:deli@ellaexecutivesearch.com
+ATTENDEE;CN=juansotuyo@gmail.com:mailto:juansotuyo@gmail.com
+DESCRIPTION:<a href="https://ellaexecutivesearch.workable.com/backend/jobs/5993441/browser/recruiter-interview/candidate/677544161">Workable</a>
+X-GOOGLE-CONFERENCE:https://meet.google.com/uwp-jvxo-eug
+END:VEVENT
+END:VCALENDAR"""
+
+    events = parse_ical_events(raw_ical)
+    assert len(events) == 1
+    ev = events[0]
+    assert ev.candidate_name == "Juan Martín Sotuyo Dodero"
+    assert ev.job_title == "CTO"
+    assert ev.candidate_email == "juansotuyo@gmail.com"
+    assert ev.conference_url == "https://meet.google.com/uwp-jvxo-eug"
+    assert "677544161" in (ev.workable_url or "")
+
+
+
 
 

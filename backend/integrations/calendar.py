@@ -61,27 +61,33 @@ def extract_candidate_and_job_from_title(summary: str) -> tuple[str | None, str 
     candidate_name = None
     job_title = None
 
+    # Check for trailing parenthesized role e.g. " (CTO)" or " (Produto)"
+    paren_job_match = re.search(r"\(([^)]+)\)\s*$", summary)
+    if paren_job_match:
+        job_title = paren_job_match.group(1).strip()
+        summary = summary[:paren_job_match.start()].strip()
+
     if " - " in summary:
         parts = summary.split(" - ", 1)
         name_part = parts[0].strip()
-        job_title = parts[1].strip() or None
+        if not job_title:
+            job_title = parts[1].strip() or None
     elif ":" in summary:
         parts = summary.split(":", 1)
         name_part = parts[1].strip()
-        job_title = None
     else:
         name_part = summary.strip()
 
-    # Strip prefixes like "Interview", "Entrevista", "Call with", "Conversa", "Screening"
+    # Strip prefixes like "[M]", "Interview", "Entrevista", "Call with", "Conversa", "Screening"
     cleaned_name = re.sub(
-        r"^(?:interview|entrevista|call\s+with|call|conversa|screening)\s*(?:with|com|de|da|do|para)?\s*:?\s*",
+        r"^(?:\[[a-z]\]\s*|(?:interview|entrevista|call\s+with|call|conversa|screening)\s*(?:with|com|de|da|do|para)?\s*:?\s*)",
         "",
         name_part,
         flags=re.I,
     ).strip()
 
-    # Check for "X and Y" or "X e Y" or "X + Y"
-    and_match = re.split(r"\s+(?:and|e|\+)\s+", cleaned_name, flags=re.I)
+    # Check for "X and Y" or "X e Y" or "X + Y" or "X & Y" or "X <> Y"
+    and_match = re.split(r"\s+(?:and|e|\+|&|<>)\s+", cleaned_name, flags=re.I)
     if len(and_match) == 2:
         part1, part2 = and_match[0].strip(), and_match[1].strip()
         if "deli" in part1.lower():
@@ -133,10 +139,16 @@ def parse_ical_events(raw_ical: str) -> list[ScheduledInterview]:
                 )
                 conf_url = conf_match.group(0).rstrip(".,;\\\"'") if conf_match else None
 
-                is_interview = any(
+                # Extract Workable link if present in description or location
+                workable_match = re.search(r"https://[^\s\"<>]*workable\.com/[^\s\"<>]+", cleaned_text)
+                workable_url = workable_match.group(0).rstrip(".,;\\\"'") if workable_match else None
+
+                has_interview_keywords = any(
                     kw in summary.lower()
-                    for kw in ["entrevista", "interview", "call with", "conversa", "workable", "rtr", "screening"]
-                )
+                    for kw in ["entrevista", "interview", "call with", "conversa", "workable", "rtr", "screening", "<>"]
+                ) or bool(re.search(r"^(?:\[[a-z]\]|call|meeting|sync)\b", summary, re.I)) or bool(re.search(r"\b(?:and|e|\+)\s+deli\b|\bdeli\s+(?:and|e|\+)\b", summary, re.I))
+
+                is_interview = bool(workable_url) or has_interview_keywords
 
                 if is_interview:
                     candidate_name, job_title = extract_candidate_and_job_from_title(summary)
@@ -170,9 +182,6 @@ def parse_ical_events(raw_ical: str) -> list[ScheduledInterview]:
                                 candidate_emails[0],
                             )
 
-                    # Extract Workable link if present in description
-                    workable_match = re.search(r"https://[^\s\"<>]*workable\.com/[^\s\"<>]+", cleaned_text)
-                    workable_url = workable_match.group(0).rstrip(".,;\\\"'") if workable_match else None
 
                     events.append(
                         ScheduledInterview(
@@ -275,9 +284,15 @@ class CalendarMonitor:
 
                 # Fallback to name search if email search returned no results
                 if not candidates and item.candidate_name:
-                    candidates = await self.workable_client.search_candidates(name=item.candidate_name)
-                    if candidates:
-                        self._candidate_cache[item.candidate_name] = candidates
+                    found = await self.workable_client.search_candidates(name=item.candidate_name)
+                    if found:
+                        name_words = [w.lower() for w in re.findall(r"\w+", item.candidate_name) if len(w) > 2]
+                        candidates = [
+                            c for c in found
+                            if any(w in c.get("name", "").lower() for w in name_words)
+                        ]
+                        if candidates:
+                            self._candidate_cache[item.candidate_name] = candidates
 
             if not candidates:
                 return
