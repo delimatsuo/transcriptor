@@ -373,7 +373,7 @@ class CalendarMonitor:
         # 2. Fetch from Google Calendar / Outlook iCal feed if configured
         if self.settings.calendar_ical_url:
             try:
-                async with httpx.AsyncClient(timeout=10.0) as client:
+                async with httpx.AsyncClient(timeout=30.0) as client:
                     resp = await client.get(self.settings.calendar_ical_url)
                     if resp.status_code == 200:
                         ical_events = parse_ical_events(resp.text)
