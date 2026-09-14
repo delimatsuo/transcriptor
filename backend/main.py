@@ -2183,7 +2183,19 @@ async def get_workable_jobs(state: str | None = None, limit: int = 50):
         api_key=settings.workable_api_key,
     )
     try:
-        jobs = await client.get_jobs(state=state, limit=limit)
+        if state:
+            jobs = await client.get_jobs(state=state, limit=limit)
+        else:
+            published = await client.get_jobs(state="published", limit=limit)
+            closed = await client.get_jobs(state="closed", limit=limit)
+            seen = set()
+            jobs = []
+            for j in published + closed:
+                sc = j.get("shortcode")
+                if sc and sc not in seen:
+                    seen.add(sc)
+                    jobs.append(j)
+
         clean_jobs = [
             {
                 "title": j.get("title") or j.get("full_title"),

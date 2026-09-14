@@ -593,12 +593,54 @@ class WorkableClient:
         res = await self._request("GET", "/candidates", params=params)
         return res.get("candidates", []) if isinstance(res, dict) else []
 
+    async def _resolve_numeric_candidate_id(
+        self, numeric_cand_id: str, numeric_job_id: str | None = None
+    ) -> str | None:
+        """Resolve internal recruiter browser numeric candidate ID to Workable SPI hex ID."""
+        if not numeric_cand_id.isdigit():
+            return None
+
+        # 1. If numeric job ID is known, search jobs to find shortcode
+        target_shortcodes: list[str] = []
+        if numeric_job_id:
+            for s in ["published", "closed"]:
+                try:
+                    jobs = await self.get_jobs(state=s, limit=50)
+                    for j in jobs:
+                        if str(j.get("id")) == numeric_job_id or numeric_job_id in (j.get("url") or ""):
+                            if j.get("shortcode"):
+                                target_shortcodes.append(j["shortcode"])
+                except Exception:
+                    pass
+
+        # 2. Query candidates for target shortcodes
+        for sc in target_shortcodes:
+            try:
+                res = await self._request("GET", "/candidates", params={"shortcode": sc, "limit": 100})
+                for c in (res.get("candidates", []) if isinstance(res, dict) else []):
+                    if numeric_cand_id in str(c.get("profile_url")):
+                        return c.get("id")
+            except Exception:
+                pass
+
+        return None
+
     async def import_candidate_dossier(self, url_or_id: str) -> WorkableCandidateDossier:
         """Fetch candidate, associated job, and previous notes to assemble a complete dossier."""
         candidate_id, url_shortcode = parse_workable_candidate_input(url_or_id)
 
-        # 1. Fetch candidate
-        candidate_data = await self.get_candidate(candidate_id)
+        # 1. Fetch candidate (with automatic resolution if numeric ID from browser URL)
+        candidate_data: dict[str, Any] | None = None
+        try:
+            candidate_data = await self.get_candidate(candidate_id)
+        except WorkableNotFoundError:
+            resolved_hex_id = await self._resolve_numeric_candidate_id(candidate_id, url_shortcode)
+            if resolved_hex_id:
+                candidate_id = resolved_hex_id
+                candidate_data = await self.get_candidate(candidate_id)
+            else:
+                raise WorkableNotFoundError(f"Candidato {candidate_id} não encontrado no Workable.")
+
         if not candidate_data or not isinstance(candidate_data, dict):
             raise WorkableNotFoundError(f"Candidato {candidate_id} não encontrado no Workable.")
 

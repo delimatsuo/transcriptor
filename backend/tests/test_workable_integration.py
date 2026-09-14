@@ -1305,6 +1305,47 @@ END:VCALENDAR"""
     assert "677544161" in (ev.workable_url or "")
 
 
+@pytest.mark.anyio
+async def test_import_candidate_dossier_with_recruiter_browser_url():
+    """Verify that a browser URL with numeric IDs resolves and loads the complete dossier."""
+    from backend.integrations.workable import WorkableClient
+
+    client = WorkableClient(subdomain="test-sub", api_key="dummy-key")
+    url = "https://test-sub.workable.com/backend/jobs/5993441/browser/recruiter-interview/candidate/677544161"
+
+    with patch.object(
+        client,
+        "_resolve_numeric_candidate_id",
+        AsyncMock(return_value="286285b3"),
+    ), patch.object(
+        client,
+        "get_candidate",
+        AsyncMock(side_effect=[
+            WorkableNotFoundError("404"),
+            {
+                "id": "286285b3",
+                "name": "Juan Martín Sotuyo Dodero",
+                "email": "juansotuyo@gmail.com",
+                "job": {"shortcode": "C5B48B5FE7", "title": "Unico Skill - CTO"},
+            },
+        ]),
+    ), patch.object(
+        client,
+        "get_job",
+        AsyncMock(return_value={"shortcode": "C5B48B5FE7", "title": "Unico Skill - CTO"}),
+    ), patch.object(
+        client,
+        "get_candidate_activities",
+        AsyncMock(return_value=[]),
+    ):
+        dossier = await client.import_candidate_dossier(url)
+        assert dossier.candidate_id == "286285b3"
+        assert dossier.candidate_name == "Juan Martín Sotuyo Dodero"
+        assert dossier.job_title == "Unico Skill - CTO"
+        assert dossier.candidate_email == "juansotuyo@gmail.com"
+
+
+
 
 
 
